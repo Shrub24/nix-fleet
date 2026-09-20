@@ -1,0 +1,42 @@
+# Working instructions — nix-fleet
+
+## Mission
+
+Reusable, host-agnostic NixOS infrastructure aspects shared across saurabhj's machines. This repo publishes `flake.modules.nixos.<aspect>` outputs only. Consumers (nix-homelab, dotfiles) select aspects, bind secrets, and own policy data. Read `README.md` first — it carries the full mission, seed-aspect list, and consumer contract.
+
+## Dendritic pattern — authoritative rules
+
+Follow the Dendritic Pattern (github.com/mightyiam/dendritic, README + references/examples.md) exactly:
+
+- Every file under `modules/` is a flake-parts module; no exceptions. `modules/flake-parts.nix` must import `inputs.flake-parts.flakeModules.modules`.
+- Aspect files are ordinary `.nix` files named for the feature. **Never use `default.nix` for an auto-discovered feature module** — only for real directory-import entrypoints.
+- Multiple contributors to one aspect = sibling files each contributing to the same `flake.modules.nixos.<name>` (deferredModule merge semantics; no cross-imports between siblings).
+- `_`-prefixed paths are a rare escape hatch for genuinely private non-discovered implementation or data helpers — never the primary way to define an aspect.
+- Values shared across aspects: declared flake-parts options or `let` bindings. Never `specialArgs`/`extraSpecialArgs`.
+- Cross-feature contracts: declared option namespaces (e.g. `services.<name>.*`). Provider and consumer aspects compose by selection/import, never by reading another aspect's internals.
+- Large single-owner features split into auto-imported sibling files, not `_` dirs.
+
+## Hard constraints
+
+- **No secrets, no `.sops.yaml`, no encrypted material** in this repo. Every secret enters through a typed `secretFiles.*`-style option the consumer binds.
+- **No hostnames, tailnet suffixes, provider endpoints, or cloud defaults.** Provider quirks live in consumer repos. Policy data (endpoint catalogs, publisher lists, builder URLs, S3 coordinates) is consumer-supplied through options.
+- **No host records, no `nixosConfigurations`, no deploy tooling.** A single fixture evaluation class for `nix flake check` is allowed and encouraged.
+- Fail closed with named errors (`"<aspect>: <specific problem>"`), never raw `builtins.head []`/null derefs.
+- jj colocated workflow: anonymous mutable changes off `main@origin`; Git-facing bookmark only at publish time. Never run `git reset`/`git checkout`/`git stash` (destroys the colocated index).
+
+## Validation baseline
+
+- `treefmt` (nixfmt) clean.
+- `nix flake check` green via the fixture evaluation class.
+- Every new aspect: typed options with defaults, a named fail-closed assertion for missing required bindings, and at least one mutation-style non-vacuity check in the fixture class where practical.
+
+## Extraction sources (wave 1)
+
+Reference implementations live in the sibling repo `/mnt/LinuxData/Projects/dev/nix-homelab` (read-only reference — do not import its code directly; re-express per the pattern above):
+
+- beszel-agent: `modules/flake/observability-agent.nix` (the hub in `modules/admin/beszel.nix` stays in nix-homelab)
+- builder-access: `modules/flake/builder-access.nix` + `modules/flake/_builder-access/nixbuild-ssh.nix`
+- niks3-cache: `modules/cache/niks3-cache.nix`
+- tailscale: `modules/flake/tailscale.nix`
+
+Behaviour parity with those sources is the acceptance bar; repo-local idioms (secret path derivation, policy imports) become typed options.
