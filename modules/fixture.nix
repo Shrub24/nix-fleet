@@ -1,17 +1,12 @@
-# Fixture evaluation class: exercises every aspect on a throwaway NixOS target
-# so `nix flake check` catches option/merge breakage without real hosts.
-#
-# The fixture is deliberately consumer-shaped: it imports the upstream modules
-# the aspects expect a consumer to supply (sops-nix for secret delivery, the
-# niks3 module for the cache server) and binds obviously-fake placeholder
-# values. Secret-file bindings point at a source file that already exists in
-# the store, which is all the aspects' existence gate asks for; this fixture is
-# never activated and never decrypts anything.
+# Fixture evaluation class: exercises every aspect on a throwaway NixOS target,
+# consumer-shaped — imports the upstream modules aspects expect and binds
+# obviously-fake placeholders. Never activated, never decrypts anything.
 { config, inputs, ... }:
 let
-  # Stand-in for a consumer's SOPS files: an existing path in the flake source,
-  # so the existence gates fire without committing a fake secret file.
-  fixtureSecretFile = ./. + "/fixture.nix";
+  # Stand-in for a consumer's SOPS files: an existing YAML placeholder in the
+  # flake source, so the existence gates and sops-nix's manifest validation
+  # pass without committing any real secret material.
+  fixtureSecretFile = ./. + "/fixture-secrets.yaml";
 
   # Placeholder age key path. sops-nix requires a configured key source and
   # rejects store paths for it; nothing here is ever activated, so this file
@@ -22,7 +17,13 @@ let
 in
 {
   configurations.nixos.fixture.module =
-    { config, ... }:
+    { config, pkgs, ... }:
+    let
+      # Stand-ins for the consumer-supplied daemon implementation.
+      fixtureDaemonPackage = pkgs.writeShellScriptBin "notification-daemon" "exit 0";
+
+      fixtureNotifyPackage = pkgs.writeShellScriptBin "notify" "exit 0";
+    in
     {
       imports = [
         inputs.sops-nix.nixosModules.sops
@@ -32,6 +33,8 @@ in
         beszel-agent
         builder-access
         niks3-cache
+        niks3-publisher
+        notification-daemon
         tailscale
       ]);
 
@@ -45,9 +48,7 @@ in
 
       sops.age.keyFile = fixtureAgeKeyFile;
 
-      # Non-vacuity guard: a fixture that evaluates with silently inert aspects
-      # is exactly the failure this class exists to catch, so each aspect has to
-      # show its contribution.
+      # Non-vacuity guard: every aspect must show its contribution.
       assertions = [
         {
           assertion = config.services.beszel.agent.enable;
@@ -65,7 +66,26 @@ in
           assertion = config.programs.ssh.knownHosts != { };
           message = "fixture: the builder-access aspect registered no known host.";
         }
+        {
+          assertion = config.systemd.services.notification-daemon.serviceConfig.ExecStart != null;
+          message = "fixture: the notification-daemon aspect deployed no daemon unit.";
+        }
+        {
+          assertion = config.sops.secrets ? "notification-daemon/telegram_bot_token";
+          message = "fixture: the notification-daemon aspect registered no Telegram token secret.";
+        }
+        {
+          assertion = config.systemd.services.fixture-monitored.onFailure != [ ];
+          message = "fixture: the notification-daemon aspect wired no monitor hook for a contributed unit.";
+        }
+        {
+          assertion = config.services.niks3-auto-upload.enable && config.nix.settings.post-build-hook != "";
+          message = "fixture: the niks3-publisher aspect did not wire the upload client.";
+        }
       ];
+
+      # A real unit for the monitor namespace to hook.
+      systemd.services.fixture-monitored.script = "true";
 
       services = {
         beszel-agent.secretFiles = {
@@ -86,6 +106,35 @@ in
           secretFiles = {
             host = fixtureSecretFile;
             apiToken = fixtureSecretFile;
+          };
+        };
+
+        niks3-publisher = {
+          serverUrl = "http://cache.invalid:5751";
+          secretFiles.apiToken = fixtureSecretFile;
+        };
+
+        notification-daemon = {
+          package = fixtureDaemonPackage;
+          notifyPackage = fixtureNotifyPackage;
+
+          secretFiles = {
+            host = fixtureSecretFile;
+            hostSystem = fixtureSecretFile;
+          };
+
+          telegram = {
+            chatId = "-1000000000000";
+            topics = {
+              critical = "2";
+              warning = "3";
+              info = "4";
+            };
+          };
+
+          monitor = {
+            enable = true;
+            units.fixture-monitored.onFailure = true;
           };
         };
 
