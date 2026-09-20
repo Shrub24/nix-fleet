@@ -7,6 +7,8 @@
       # add extracted aspects here as they land
     ];
     nixpkgs.hostPlatform = "x86_64-linux";
+    boot.loader.grub.enable = false;
+    fileSystems."/".device = "nodev";
     system.stateVersion = "25.11";
   };
 }
