@@ -28,25 +28,40 @@ Follow the Dendritic Pattern exactly: github.com/mightyiam/dendritic (README + `
 ## Repository shape
 
 ```
-flake.nix            # minimal: inputs (flake-parts, import-tree) + mkFlake + import-tree ./modules
+flake.nix            # minimal: inputs + mkFlake + import-tree ./modules
+lib/
+  secrets.nix        # canonical secrets helper (mkSecretFileOption, mkSecretKeyOption,
+                     # mkRequiredSecretAssertion, mkSecretsFromMap) — same file shape as
+                     # nix-homelab's lib/secrets.nix; aspects import it explicitly
 modules/
   flake-parts.nix    # imports inputs.flake-parts.flakeModules.modules (REQUIRED)
-  beszel-agent.nix   # example aspect
-  builder-access/
-    default-options.nix
-    nixbuild.nix
-  ...
-treefmt.toml
+  nixos.nix          # wiring: configurations.nixos -> flake.nixosConfigurations
+  fixture.nix        # single fixture evaluation class for `nix flake check`
+  tooling.nix        # published: flakeModules.tooling (treefmt-nix, priorities pinned)
+  devshell.nix       # repo-local operator dev shell
+  secrets-lib.nix    # published: lib.secrets (re-exports lib/secrets.nix)
+  tailscale.nix      # aspect: Tailscale baseline
+  beszel-agent.nix   # aspect: Beszel agent auth/enrollment
+  builder-access.nix # aspect: remote-builder SSH trust
+  niks3-cache.nix    # aspect: niks3 binary-cache server
+  niks3-publisher.nix    # aspect: niks3 closure-upload client (post-build hook)
+  notification-daemon.nix # aspect: notification dispatch + monitor registration
+.envrc               # direnv: use flake
+justfile             # fmt / fmt-check / check / lock
+lefthook.yml         # pre-commit fmt+statix+deadnix, pre-push flake check
+renovate.json        # weekly nix flake input updates
 ```
 
-## Seed aspects (extraction wave 1, from nix-homelab)
+````
 
-These four are already self-contained in nix-homelab (post D-054) and are the first extraction targets. Read their nix-homelab sources for behaviour; re-express here per the pattern above:
+## Aspects (extracted from nix-homelab)
 
-1. **`beszel-agent`** — Beszel agent auth/enrollment. Source: `nix-homelab/modules/flake/observability-agent.nix` (+ `modules/admin/beszel.nix` is the *hub*, which stays in nix-homelab — only the agent is shared). Key contract: derives the conventional host secret path, gates enrollment on its existence; keep that gate, but express the secret path as a typed option (`secretFiles.host`) with the conventional default, not a repo-relative path literal.
-2. **`builder-access`** — remote-builder SSH trust. Source: `nix-homelab/modules/flake/builder-access.nix` + `modules/flake/_builder-access/nixbuild-ssh.nix`. Keep the mechanism here; the builder *endpoint/URL* is consumer policy (nix-homelab passes it in via options; no nixbuild.net literals in this repo).
-3. **`niks3-cache`** — niks3 binary-cache *server*. Source: `nix-homelab/modules/cache/niks3-cache.nix`. S3 backend coordinates and signing keys arrive via typed options (`accessKeyFile`, `secretKeyFile`, `signKeyFiles`, backend endpoint); no R2 literals, no `policy/globals.nix` import.
-4. **`tailscale`** — Tailscale baseline. Source: `nix-homelab/modules/flake/tailscale.nix`. Mechanism here: enable, advertise connector behaviour, MTU debug option, systemd hardening. The auth key is a typed `secretFiles.auth` option (consumer binds it; the conventional `secrets/hosts/<host>/system.yaml` path stays in nix-homelab, not here). No tailnet suffix, no tag literals.
+1. **`tailscale`** — Tailscale baseline: enable, Tailscale SSH, systemd restart/ordering pinning, MTU debug option. Auth key via `secretFiles.auth`; unbound or missing file means the two-step sops bootstrap, registering nothing.
+2. **`beszel-agent`** — agent auth/enrollment (the hub stays in nix-homelab). Gated on `secretFiles.host` existing; credentials arrive via a sops template.
+3. **`builder-access`** — remote-builder SSH trust: known hosts and SSH client tuning. Builder endpoints/keys are consumer options (`services.builder-access.hosts`); substituter policy stays consumer-side.
+4. **`niks3-cache`** — niks3 binary-cache *server*. S3 coordinates, cache URL, secret paths are options; fails closed when unbound.
+5. **`niks3-publisher`** — niks3 closure-upload *client* (upstream post-build-hook module). `serverUrl` required; token via `secretFiles.apiToken`.
+6. **`notification-daemon`** — HTTP dispatch daemon (Telegram + ntfy) and the `services.notification-daemon.monitor.units.<unit>` registration namespace. Daemon/notify packages and dispatch policy are consumer-bound options; secrets follow the two-step bootstrap.
 
 ## Consumer contract (how nix-homelab / dotfiles will consume)
 
@@ -54,8 +69,23 @@ These four are already self-contained in nix-homelab (post D-054) and are the fi
 # consumer flake.nix
 inputs.nix-fleet.url = "git+ssh://.../nix-fleet";  # or path:../nix-fleet during bring-up
 
-# consumer module selecting an aspect
-imports = [ inputs.nix-fleet.flake.modules.nixos.tailscale ];
+# consumer flake adopting the shared treefmt definition
+# (top-level mkFlake imports, beside inputs.flake-parts.flakeModules.modules;
+# the consumer declares its own treefmt-nix input — inputs are not transitive)
+imports = [ inputs.nix-fleet.flakeModules.tooling ];
+
+# consumer code importing the canonical secrets helpers
+secretHelpers = inputs.nix-fleet.lib.secrets;
+```
+
+NixOS aspects are host modules, not flake-parts modules: they land in a host
+composition's NixOS module list, never in the consumer's flake-level imports.
+The consumer composes them the way it composes any other NixOS module — in
+nix-homelab, through its host records' `composition.aspects`:
+
+```nix
+# consumer host composition (a NixOS module evaluation)
+imports = [ inputs.nix-fleet.modules.nixos.tailscale ];
 ```
 
 Consumers keep: host identity, secrets, policy data, provider quirks. nix-fleet owns: the mechanism.
@@ -63,7 +93,8 @@ Consumers keep: host identity, secrets, policy data, provider quirks. nix-fleet 
 ## Working agreements
 
 - jj colocated repo; anonymous mutable changes off `main@origin`; bookmark only on publish.
-- `treefmt` with nixfmt; keep `nix flake check` green (a wiring module + one fixture NixOS class is enough to evaluate aspects without hosting real configs).
+- `treefmt` via `nix fmt` (nixfmt + statix + deadnix + mdformat/taplo/yamlfmt/jsonfmt, priorities pinned in `modules/tooling.nix` so the chain converges); `nix flake check` runs the same formatter as a check, so unformatted files fail CI. Same tooling shape as dotfiles `modules/flake/tooling.nix`.
+- Secrets enter through `/lib/secrets.nix` helpers only: `mkSecretFileOption` for consumer-bound paths, `mkRequiredSecretAssertion` for the named fail-closed gate, `mkSecretsFromMap` for `sops.secrets` registration. Byte-identical to nix-homelab's helper; consumers of these aspects do not need their own copy.
 - Every aspect declares its options; every option has a type; fail closed with named errors, never raw `builtins.head`/null derefs.
 - Provenance discipline: no secrets, no absolute paths, no machine names in this repo.
 
@@ -72,3 +103,32 @@ Consumers keep: host identity, secrets, policy data, provider quirks. nix-fleet 
 - Dendritic conventions evolved there: `AGENTS.md` (## Project Policy), `CONVENTIONS.md`.
 - The aspect inventory and ownership rules: `ARCHITECTURE.md` / `STRUCTURE.md` in nix-homelab.
 - The three registration patterns worth copying conceptually: `services.state-backups.services.<name>` (backup registration), `services.notification-daemon.monitor.units.<unit>` (per-unit hooks), `services.postgres.consumers.<name>` (database registration).
+
+## Tooling contract
+
+`flake.flakeModules.tooling` is the one treefmt definition for every repository
+that selects it. Consumers wire it beside their own flake-parts modules and
+declare `treefmt-nix` as their own input (inputs are not transitive):
+
+```nix
+imports = [ inputs.nix-fleet.flakeModules.tooling ];
+```
+
+Formatter priorities are pinned (deadnix < statix < nixfmt) because all three
+claim `*.nix`; with the default tie the rewriters can land after nixfmt and
+`nix fmt` never reaches a fixed point. With the pin, two `nix fmt` passes
+report zero changes, and `nix flake check` runs the same definition as a check.
+
+`flake.lib.secrets` (consumed as `inputs.nix-fleet.lib.secrets`) exposes the
+canonical SOPS helpers; consumers import it
+instead of carrying their own copy:
+
+```nix
+secretHelpers = inputs.nix-fleet.lib.secrets;
+```
+
+The four helpers (`mkSecretFileOption`, `mkSecretKeyOption`,
+`mkRequiredSecretAssertion`, `mkSecretsFromMap`) are byte-identical to
+nix-homelab's `lib/secrets.nix`, so options declared with either resolve to the
+same types.
+````

@@ -26,17 +26,21 @@ Follow the Dendritic Pattern (github.com/mightyiam/dendritic, README + reference
 
 ## Validation baseline
 
-- `treefmt` (nixfmt) clean.
+- `nix fmt` clean, and it stays clean: `modules/tooling.nix` pins formatter priorities (deadnix < statix < nixfmt) because statix and nixfmt both claim `*.nix` and a tie leaves code that `nix flake check` reports as unformatted. `nix flake check` runs the same treefmt config as a check, so formatting is enforced, not just available.
 - `nix flake check` green via the fixture evaluation class.
+- Nix reads this repo through the Git index, so **new or deleted files are invisible to `nix flake check`/`nix fmt` until a jj command snapshots the working copy** (`jj st` is enough). Symptom if skipped: a stale evaluation or "path exists on disk, but not in HEAD".
 - Every new aspect: typed options with defaults, a named fail-closed assertion for missing required bindings, and at least one mutation-style non-vacuity check in the fixture class where practical.
+- Secrets use `lib/secrets.nix` helpers (`mkSecretFileOption`, `mkSecretKeyOption`, `mkRequiredSecretAssertion`, `mkSecretsFromMap`) — the same file nix-homelab uses, so an aspect behaves identically in either consumer.
 
-## Extraction sources (wave 1)
+## Extraction sources
 
 Reference implementations live in the sibling repo `/mnt/LinuxData/Projects/dev/nix-homelab` (read-only reference — do not import its code directly; re-express per the pattern above):
 
 - beszel-agent: `modules/flake/observability-agent.nix` (the hub in `modules/admin/beszel.nix` stays in nix-homelab)
-- builder-access: `modules/flake/builder-access.nix` + `modules/flake/_builder-access/nixbuild-ssh.nix`
+- builder-access: `modules/flake/builder-access.nix` (nixbuild leaf consolidated inline there)
 - niks3-cache: `modules/cache/niks3-cache.nix`
+- niks3-publisher: `modules/cache/cache-publisher.nix` + `modules/cache/cache-publisher/upload-client.nix` (upstream post-build-hook module; nix-path-filter and post-deploy hooks stay homelab-side)
+- notification-daemon: `modules/notifications/notify.nix` (daemon/notify packages and dispatch policy become consumer options here)
 - tailscale: `modules/flake/tailscale.nix`
 
 Behaviour parity with those sources is the acceptance bar; repo-local idioms (secret path derivation, policy imports) become typed options.
