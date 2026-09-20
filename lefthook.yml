@@ -1,0 +1,20 @@
+# Git hooks reuse the canonical validation exposed by the flake (treefmt-nix,
+# statix, deadnix, flake checks) instead of maintaining independent logic.
+pre-commit:
+  commands:
+    fmt:
+      priority: 1
+      run: nix fmt -- {staged_files}
+      stage_fixed: true
+    lint-statix:
+      priority: 2
+      glob: ["*.nix", "**/*.nix"]
+      run: nix develop -c bash -c 'for f in "$@"; do statix check "$f" || exit 1; done' -- {staged_files}
+    lint-deadnix:
+      priority: 3
+      glob: ["*.nix", "**/*.nix"]
+      run: nix develop -c bash -c 'for f in "$@"; do deadnix --fail "$f" || exit 1; done' -- {staged_files}
+pre-push:
+  commands:
+    flake-check:
+      run: nix flake check --no-build --no-write-lock-file
