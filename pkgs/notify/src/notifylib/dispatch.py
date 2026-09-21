@@ -52,7 +52,10 @@ def _send_apprise(settings, title, message, severity, topic):
         log.error("telegram token unreadable: %s", exc)
         return ["telegram: token unreadable"]
 
-    topic_id = settings.get("topics", {}).get(topic or "")
+    topics = settings.get("topics", {})
+    topic_id = topics.get(topic) if topic else None
+    if not topic_id:
+        topic_id = topics.get(severity)
     if not topic_id:
         return []
     url = "tgram://%s/%s:%s" % (bot_token, settings["chat_id"], topic_id)

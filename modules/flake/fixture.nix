@@ -160,7 +160,10 @@ let
       # A unit owned by this module, registered on the notification contract:
       # failure severity defaulted, success pruned (a stop of a oneshot job is
       # not news). Severity defaults to "failure".
-      services.notify.events.fixture-monitored.failure = { };
+      services.notify.events.fixture-monitored = {
+        failure = { };
+        success = { };
+      };
 
       # A unit that exists only as a package-provided file (nixpkgs symlinks it
       # via systemd.packages); option-level config carries no ExecStart.

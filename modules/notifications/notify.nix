@@ -66,9 +66,9 @@
       # handler never needs fallback logic and the JSON only carries declared
       # events.
       eventEntry =
-        _event: policy:
+        event: policy:
         {
-          inherit (policy) severity;
+          severity = if policy.severity != null then policy.severity else event;
           inherit (policy) journalLines;
           inherit (policy) context;
         }
@@ -292,13 +292,11 @@
               wants = [ "notify.service" ];
             };
           }
-          // lib.mapAttrs' (unit: _ev: {
+          // lib.mapAttrs' (unit: ev: {
             name = unit;
             value = {
-              onFailure = lib.mkBefore [ "notify-event@${unit}.service" ];
-              onSuccess = lib.mkBefore (
-                lib.optional (cfg.events.${unit}.success != null) "notify-event@${unit}.service"
-              );
+              onFailure = lib.mkBefore (lib.optional (ev.failure != null) "notify-event@${unit}.service");
+              onSuccess = lib.mkBefore (lib.optional (ev.success != null) "notify-event@${unit}.service");
             };
           }) registeredUnits;
         })

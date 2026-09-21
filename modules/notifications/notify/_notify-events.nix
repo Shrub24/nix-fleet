@@ -25,15 +25,17 @@ let
   eventPolicyType = lib.types.submodule {
     options = {
       severity = lib.mkOption {
-        type = lib.types.enum [
-          "info"
-          "success"
-          "warning"
-          "failure"
-          "critical"
-        ];
-        default = "failure";
-        description = "Notification severity. Defaults mirror the event; critical is an explicit escalation.";
+        type = lib.types.nullOr (
+          lib.types.enum [
+            "info"
+            "success"
+            "warning"
+            "failure"
+            "critical"
+          ]
+        );
+        default = null;
+        description = "Notification severity; null defaults to the event name. critical is an explicit escalation.";
       };
 
       topic = lib.mkOption {

@@ -4,7 +4,7 @@ import argparse
 import os
 import sys
 
-from .connector import _post, _daemon_url, _socket_path, report_error
+from .connector import _post, _socket_path, report_error
 from .daemon import serve as _serve_daemon
 
 
