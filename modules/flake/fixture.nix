@@ -161,6 +161,13 @@ let
       # failure severity defaulted, success pruned (a stop of a oneshot job is
       # not news). Severity defaults to "failure".
       services.notify.events.fixture-monitored.failure = { };
+
+      # A unit that exists only as a package-provided file (nixpkgs symlinks it
+      # via systemd.packages); option-level config carries no ExecStart.
+      services.notify.events.nix-daemon = {
+        fromPackage = true;
+        failure = { };
+      };
     };
 in
 {

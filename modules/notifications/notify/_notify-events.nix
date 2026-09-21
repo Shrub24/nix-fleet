@@ -67,6 +67,19 @@ in
     type = lib.types.attrsOf (
       lib.types.submodule {
         options = {
+          fromPackage = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = ''
+              The unit comes from a systemd.packages entry (unit file provided
+              by a package, overrides land as drop-ins). Such registrations are
+              exempt from the implemented-unit check, which only sees
+              option-level definitions. The unit must actually exist in a
+              package — no aspect validates that; a typo fails at boot, not
+              evaluation.
+            '';
+          };
+
           failure = lib.mkOption {
             type = lib.types.nullOr eventPolicyType;
             default = null;

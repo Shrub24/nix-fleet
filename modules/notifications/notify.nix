@@ -185,9 +185,9 @@
             assertion = false;
             message = "notify: services.notify.ntfy.serverUrl must be set when ntfy is enabled.";
           }
-          ++ lib.mapAttrsToList (unit: _ev: {
-            assertion = unitImplemented unit;
-            message = "notify: events.${unit} is registered but has no systemd service implementation (serviceConfig.ExecStart or script); hooks attached by this aspect do not count. Register from the capability that owns the unit.";
+          ++ lib.mapAttrsToList (unit: ev: {
+            assertion = ev.fromPackage || unitImplemented unit;
+            message = "notify: events.${unit} is registered but has no systemd service implementation (serviceConfig.ExecStart or script; set fromPackage for units provided by systemd.packages); hooks attached by this aspect do not count. Register from the capability that owns the unit.";
           }) registeredUnits;
 
           environment.etc."notify/config.json" = {
