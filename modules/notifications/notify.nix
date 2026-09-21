@@ -92,12 +92,6 @@
           description = "Loopback TCP port for external HTTP callers (webhooks).";
         };
 
-        cliGroup = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = null;
-          description = "Group whose members may dispatch via the unix socket. Null = root-only local dispatch.";
-        };
-
         package = lib.mkOption {
           type = lib.types.package;
           default = packages.notify;
@@ -217,9 +211,10 @@
             extraGroups = [ "systemd-journal" ];
             description = "Notification daemon";
           };
+          # Socket access model: callers join this group from their own module
+          # (users.users.<name>.extraGroups += [ "notify" ]). Groups cannot
+          # nest, so membership is expressed per caller user, not here.
           users.groups.notify = { };
-          # Group membership grants unix-socket dispatch access.
-          users.groups.notify.members = lib.optionals (cfg.cliGroup != null) [ cfg.cliGroup ];
 
           systemd.services.notify = {
             description = "Notification dispatch daemon";
