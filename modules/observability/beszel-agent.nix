@@ -6,7 +6,7 @@
   flake.modules.nixos.beszel-agent =
     { config, lib, ... }:
     let
-      secretHelpers = import ../lib/secrets.nix { inherit lib; };
+      secretHelpers = import ../../lib/secrets.nix { inherit lib; };
 
       cfg = config.services.beszel-agent;
 

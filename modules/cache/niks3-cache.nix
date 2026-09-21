@@ -1,19 +1,12 @@
-# Aspect: niks3-cache — the niks3 sovereign Nix binary-cache *server*.
-#
-# Extracted from nix-homelab's `niks3-cache` aspect. It stays the server only:
-# the cache consumer, upload client, and publication/backup behavior belong to
-# the consumer's own cache aspects. S3 coordinates and the public cache URL are
-# deployment policy, so this aspect defaults them to nothing and fails closed
-# when they are unbound; secret *paths* keep the conventions from the source and
-# are materialized from the SOPS files the consumer binds.
-#
-# Consumer requirement: import `sops-nix.nixosModules.sops` (secrets) and the
-# upstream niks3 module (`services.niks3`), which is not part of nixpkgs.
+# niks3 binary-cache server. Selection is enablement; upload client and
+# publication/backup behavior belong to the consumer. S3 coordinates and the
+# public cache URL fail closed when unbound. Consumer requirement:
+# sops-nix.nixosModules.sops and the upstream niks3 module.
 _: {
   flake.modules.nixos.niks3-cache =
     { config, lib, ... }:
     let
-      secretHelpers = import ../lib/secrets.nix { inherit lib; };
+      secretHelpers = import ../../lib/secrets.nix { inherit lib; };
 
       cfg = config.services.niks3-cache;
     in

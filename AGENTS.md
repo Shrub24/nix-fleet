@@ -2,7 +2,7 @@
 
 ## Mission
 
-Reusable, host-agnostic NixOS infrastructure aspects shared across saurabhj's machines. This repo publishes `flake.modules.nixos.<aspect>` outputs only. Consumers (nix-homelab, dotfiles) select aspects, bind secrets, and own policy data. Read `README.md` first — it carries the full mission, seed-aspect list, and consumer contract.
+Reusable, host-agnostic NixOS infrastructure aspects shared across saurabhj's machines. This repo publishes `flake.modules.nixos.<aspect>` outputs and the implementation packages its mechanisms need (`packages.<system>.<name>`, sources in `pkgs/`). Consumers (nix-homelab, dotfiles) select aspects, bind secrets, and own policy data — placement, recipients/topics, endpoint policy, secrets/readership. Read `README.md` first — it carries the full mission, aspect list, and consumer contract.
 
 ## Dendritic pattern — authoritative rules
 
@@ -26,7 +26,7 @@ Follow the Dendritic Pattern (github.com/mightyiam/dendritic, README + reference
 
 ## Validation baseline
 
-- `nix fmt` clean, and it stays clean: `modules/tooling.nix` pins formatter priorities (deadnix < statix < nixfmt) because statix and nixfmt both claim `*.nix` and a tie leaves code that `nix flake check` reports as unformatted. `nix flake check` runs the same treefmt config as a check, so formatting is enforced, not just available.
+- `nix fmt` clean, and it stays clean: `modules/flake/tooling.nix` pins formatter priorities (deadnix < statix < nixfmt) because statix and nixfmt both claim `*.nix` and a tie leaves code that `nix flake check` reports as unformatted. `nix flake check` runs the same treefmt config as a check, so formatting is enforced, not just available.
 - `nix flake check` green via the fixture evaluation class.
 - Nix reads this repo through the Git index, so **new or deleted files are invisible to `nix flake check`/`nix fmt` until a jj command snapshots the working copy** (`jj st` is enough). Symptom if skipped: a stale evaluation or "path exists on disk, but not in HEAD".
 - Every new aspect: typed options with defaults, a named fail-closed assertion for missing required bindings, and at least one mutation-style non-vacuity check in the fixture class where practical.

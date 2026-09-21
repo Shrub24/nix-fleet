@@ -4,15 +4,17 @@ A dendritic flake-parts repository of **reusable, host-agnostic NixOS aspects** 
 
 ## Mission
 
-- Host **one authoritative copy** of infrastructure capabilities that more than one repository needs, so fixes land once.
-- Publish **aspects**, not configurations: every module here contributes `flake.modules.nixos.<aspect>` and nothing else. No hosts, no secrets, no policy data.
+- Host **one authoritative copy** of infrastructure capabilities that more than one repository needs, so fixes land once — including the implementation code specific to each mechanism (`pkgs/`), so a shared mechanism is never split across repositories.
+- Publish **aspects and owned implementation packages**, not configurations: modules contribute `flake.modules.nixos.<aspect>`; packages contribute `packages.<system>.<name>`. No hosts, no secrets, no policy data.
 - Stay **provider-agnostic**: no cloud-specific defaults, no tailnet suffixes, no literal hostnames.
 
 ## Non-goals
 
-- No host records, no `nixosConfigurations`, no deploy topology — consumers own those.
+- No host records, no `nixosConfigurations` beyond the fixture evaluation class, no deploy topology — consumers own those.
 - No secrets or `.sops.yaml` — consumers bind secret paths through typed option contracts.
-- No service policy data (endpoint catalogs, publisher lists) — those are consumer concerns.
+- No service policy data (recipients, topics, endpoint catalogs, publisher lists) — those are consumer concerns.
+
+The boundary in one line: **nix-fleet owns the mechanism and its code; consumers own placement, recipients/topics, endpoint policy, and secrets.**
 
 ## Pattern (dendritic, non-negotiable)
 
@@ -33,19 +35,29 @@ lib/
   secrets.nix        # canonical secrets helper (mkSecretFileOption, mkSecretKeyOption,
                      # mkRequiredSecretAssertion, mkSecretsFromMap) — same file shape as
                      # nix-homelab's lib/secrets.nix; aspects import it explicitly
+pkgs/
+  notification-daemon/  # owned implementation: dispatch daemon (FastAPI + apprise)
+  notify/               # owned implementation: notify CLI
 modules/
-  flake-parts.nix    # imports inputs.flake-parts.flakeModules.modules (REQUIRED)
-  nixos.nix          # wiring: configurations.nixos -> flake.nixosConfigurations
-  fixture.nix        # single fixture evaluation class for `nix flake check`
-  tooling.nix        # published: flakeModules.tooling (treefmt-nix, priorities pinned)
-  devshell.nix       # repo-local operator dev shell
-  secrets-lib.nix    # published: lib.secrets (re-exports lib/secrets.nix)
-  tailscale.nix      # aspect: Tailscale baseline
-  beszel-agent.nix   # aspect: Beszel agent auth/enrollment
-  builder-access.nix # aspect: remote-builder SSH trust
-  niks3-cache.nix    # aspect: niks3 binary-cache server
-  niks3-publisher.nix    # aspect: niks3 closure-upload client (post-build hook)
-  notification-daemon.nix # aspect: notification dispatch + monitor registration
+  flake/             # flake plumbing, not host features
+    flake-parts.nix  # imports inputs.flake-parts.flakeModules.modules (REQUIRED)
+    outputs.nix      # wiring: configurations.nixos -> nixosConfigurations + toplevel checks
+    fixture.nix      # fixture evaluation class for `nix flake check`
+    tooling.nix      # published: flakeModules.tooling (treefmt-nix, priorities pinned)
+    packages.nix     # owned implementation packages (pkgs/)
+    secrets-lib.nix  # published: lib.secrets (re-exports lib/secrets.nix)
+    devshell.nix     # repo-local operator dev shell
+  networking/
+    tailscale.nix    # aspect: Tailscale baseline
+  notifications/
+    notify.nix       # aspect: notification dispatch + monitor registration
+  cache/
+    niks3-cache.nix     # aspect: niks3 binary-cache server
+    niks3-publisher.nix # aspect: niks3 closure-upload client (post-build hook)
+  observability/
+    beszel-agent.nix # aspect: Beszel agent auth/enrollment
+  access/
+    builder-access.nix # aspect: remote-builder SSH trust
 .envrc               # direnv: use flake
 justfile             # fmt / fmt-check / check / lock
 lefthook.yml         # pre-commit fmt+statix+deadnix, pre-push flake check
@@ -61,7 +73,7 @@ renovate.json        # weekly nix flake input updates
 3. **`builder-access`** — remote-builder SSH trust: known hosts and SSH client tuning. Builder endpoints/keys are consumer options (`services.builder-access.hosts`); substituter policy stays consumer-side.
 4. **`niks3-cache`** — niks3 binary-cache *server*. S3 coordinates, cache URL, secret paths are options; fails closed when unbound.
 5. **`niks3-publisher`** — niks3 closure-upload *client* (upstream post-build-hook module). `serverUrl` required; token via `secretFiles.apiToken`.
-6. **`notification-daemon`** — HTTP dispatch daemon (Telegram + ntfy) and the `services.notification-daemon.monitor.units.<unit>` registration namespace. Daemon/notify packages and dispatch policy are consumer-bound options; secrets follow the two-step bootstrap.
+6. **`notification-daemon`** — HTTP dispatch daemon (Telegram + ntfy) and the `services.notification-daemon.monitor.units.<unit>` registration namespace. Implementation packages are owned (`pkgs/`, overridable via options); dispatch policy (chatId, topics, ntfy coordinates) is consumer-bound; secrets follow the two-step bootstrap.
 
 ## Consumer contract (how nix-homelab / dotfiles will consume)
 
@@ -93,7 +105,7 @@ Consumers keep: host identity, secrets, policy data, provider quirks. nix-fleet 
 ## Working agreements
 
 - jj colocated repo; anonymous mutable changes off `main@origin`; bookmark only on publish.
-- `treefmt` via `nix fmt` (nixfmt + statix + deadnix + mdformat/taplo/yamlfmt/jsonfmt, priorities pinned in `modules/tooling.nix` so the chain converges); `nix flake check` runs the same formatter as a check, so unformatted files fail CI. Same tooling shape as dotfiles `modules/flake/tooling.nix`.
+- `treefmt` via `nix fmt` (nixfmt + statix + deadnix + mdformat/taplo/yamlfmt/jsonfmt, priorities pinned in `modules/flake/tooling.nix` so the chain converges); `nix flake check` runs the same formatter as a check, so unformatted files fail CI. Same tooling shape as dotfiles' `modules/flake/tooling.nix`.
 - Secrets enter through `/lib/secrets.nix` helpers only: `mkSecretFileOption` for consumer-bound paths, `mkRequiredSecretAssertion` for the named fail-closed gate, `mkSecretsFromMap` for `sops.secrets` registration. Byte-identical to nix-homelab's helper; consumers of these aspects do not need their own copy.
 - Every aspect declares its options; every option has a type; fail closed with named errors, never raw `builtins.head`/null derefs.
 - Provenance discipline: no secrets, no absolute paths, no machine names in this repo.

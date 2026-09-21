@@ -6,7 +6,7 @@ _: {
   flake.modules.nixos.tailscale =
     { config, lib, ... }:
     let
-      secretHelpers = import ../lib/secrets.nix { inherit lib; };
+      secretHelpers = import ../../lib/secrets.nix { inherit lib; };
 
       cfg = config.services.tailscale;
       hostName = config.networking.hostName;

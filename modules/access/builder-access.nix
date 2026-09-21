@@ -1,13 +1,5 @@
-# Aspect: builder-access — remote-builder SSH trust (OPS-7).
-#
-# Extracted from nix-homelab's `builder-access` aspect plus its private
-# `nixbuild-ssh` leaf. The mechanism stays here: trusted host keys and the SSH
-# client tuning that keeps long remote builds alive. The builder endpoint, its
-# host key, and any substituted build policy are consumer policy — this aspect
-# carries no provider hostname, URL, or key literal.
-#
-# Substituter policy deliberately stays out: a consumer that wants the builder
-# as a substituter configures that in its own base aspect.
+# Remote-builder SSH trust: known host keys and client tuning for long builds.
+# Builder endpoints, keys, and substituter policy are consumer policy.
 _: {
   flake.modules.nixos.builder-access =
     { config, lib, ... }:

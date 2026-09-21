@@ -1,8 +1,9 @@
 # Notification dispatch (Telegram + ntfy) and the monitor.units registration
-# namespace. Selection is enablement. Package, notifyPackage, chatId, and
-# topics are consumer bindings — this repo publishes modules, not policy or
-# packages. Secrets follow the two-step sops bootstrap.
-_: {
+# namespace. Selection is enablement. The implementation packages are owned
+# here (overridable); chatId, topics, and other dispatch policy are consumer
+# bindings. Secrets follow the two-step sops bootstrap.
+{ withSystem, ... }:
+{
   flake.modules.nixos.notification-daemon =
     {
       config,
@@ -11,15 +12,20 @@ _: {
       ...
     }:
     let
-      secretHelpers = import ../lib/secrets.nix { inherit lib; };
+      secretHelpers = import ../../lib/secrets.nix { inherit lib; };
+
+      packages = withSystem pkgs.stdenv.hostPlatform.system (
+        { config, ... }:
+        {
+          inherit (config.packages) notification-daemon notify;
+        }
+      );
 
       cfg = config.services.notification-daemon;
 
       telegramTokenReady = cfg.secretFiles.host != null && builtins.pathExists cfg.secretFiles.host;
       ntfyTokenReady =
         cfg.secretFiles.hostSystem != null && builtins.pathExists cfg.secretFiles.hostSystem;
-
-      daemonReady = cfg.package != null && cfg.notifyPackage != null;
 
       notifyConfig = {
         token_file = cfg.telegram.tokenFile;
@@ -84,20 +90,22 @@ _: {
         };
 
         package = lib.mkOption {
-          type = lib.types.nullOr lib.types.package;
-          default = null;
+          type = lib.types.package;
+          default = packages.notification-daemon;
+          defaultText = lib.literalExpression "packages.notification-daemon";
           description = ''
             Notification daemon implementation providing `bin/notification-daemon`.
-            Consumer-supplied: this repository publishes modules only.
+            Owned by this repository; override only to swap the implementation.
           '';
         };
 
         notifyPackage = lib.mkOption {
-          type = lib.types.nullOr lib.types.package;
-          default = null;
+          type = lib.types.package;
+          default = packages.notify;
+          defaultText = lib.literalExpression "packages.notify";
           description = ''
-            Notify CLI implementation providing `bin/notify`. Consumer-supplied:
-            this repository publishes modules only.
+            Notify CLI implementation providing `bin/notify`. Owned by this
+            repository; override only to swap the implementation.
           '';
         };
 
@@ -207,14 +215,6 @@ _: {
         {
           assertions = [
             {
-              assertion = cfg.package != null;
-              message = "notification-daemon: services.notification-daemon.package must be set to the daemon implementation (this repository publishes modules, not packages).";
-            }
-            {
-              assertion = cfg.notifyPackage != null;
-              message = "notification-daemon: services.notification-daemon.notifyPackage must be set to the notify CLI implementation (this repository publishes modules, not packages).";
-            }
-            {
               assertion = cfg.telegram.chatId != null && cfg.telegram.chatId != "";
               message = "notification-daemon: services.notification-daemon.telegram.chatId must be set to the Telegram supergroup chat ID.";
             }
@@ -235,7 +235,7 @@ _: {
           );
         }
 
-        (lib.mkIf daemonReady {
+        {
           environment.etc."notification-daemon/config.json" = {
             mode = "0444";
             text = builtins.toJSON notifyConfig;
@@ -317,7 +317,7 @@ _: {
                 )
                 (lib.filterAttrs (_: events: events.onFailure || events.onStart || events.onStop) cfg.monitor.units)
           );
-        })
+        }
 
         (lib.mkIf telegramTokenReady {
           sops.secrets."notification-daemon/telegram_bot_token" = {

@@ -17,13 +17,7 @@ let
 in
 {
   configurations.nixos.fixture.module =
-    { config, pkgs, ... }:
-    let
-      # Stand-ins for the consumer-supplied daemon implementation.
-      fixtureDaemonPackage = pkgs.writeShellScriptBin "notification-daemon" "exit 0";
-
-      fixtureNotifyPackage = pkgs.writeShellScriptBin "notify" "exit 0";
-    in
+    { config, ... }:
     {
       imports = [
         inputs.sops-nix.nixosModules.sops
@@ -115,9 +109,6 @@ in
         };
 
         notification-daemon = {
-          package = fixtureDaemonPackage;
-          notifyPackage = fixtureNotifyPackage;
-
           secretFiles = {
             host = fixtureSecretFile;
             hostSystem = fixtureSecretFile;
