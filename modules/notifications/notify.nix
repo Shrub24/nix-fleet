@@ -251,9 +251,9 @@
             sopsFile = cfg.secretFiles.host;
             key = cfg.secretKeys.telegramBotToken;
             path = cfg.telegram.tokenFile;
-            owner = "root";
-            group = "root";
-            mode = "0440";
+            owner = "notify";
+            group = "notify";
+            mode = "0400";
           };
         })
 
@@ -262,9 +262,9 @@
             sopsFile = cfg.secretFiles.hostSystem;
             key = cfg.secretKeys.ntfyToken;
             path = cfg.ntfy.tokenFile;
-            owner = "root";
-            group = "root";
-            mode = "0440";
+            owner = "notify";
+            group = "notify";
+            mode = "0400";
           };
         })
 
