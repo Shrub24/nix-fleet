@@ -69,8 +69,9 @@ in
           message = "fixture: the notification-daemon aspect registered no Telegram token secret.";
         }
         {
-          assertion = config.systemd.services.fixture-monitored.onFailure != [ ];
-          message = "fixture: the notification-daemon aspect wired no monitor hook for a contributed unit.";
+          assertion =
+            config.systemd.services.fixture-monitored.onFailure == [ "notify-event@fixture-monitored.service" ];
+          message = "fixture: the notification aspect attached no native failure hook for a registered unit.";
         }
         {
           assertion = config.services.niks3-auto-upload.enable && config.nix.settings.post-build-hook != "";
@@ -123,13 +124,14 @@ in
             };
           };
 
-          monitor = {
-            enable = true;
-            units.fixture-monitored.onFailure = true;
-          };
         };
 
         tailscale.secretFiles.auth = fixtureSecretFile;
       };
+
+      # A unit owned by this module, registered on the notification contract:
+      # failure severity defaulted, success pruned (a stop of a oneshot job is
+      # not news). Severity defaults to "failure".
+      services.notify-events.events.fixture-monitored.failure = { };
     };
 }

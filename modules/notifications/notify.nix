@@ -1,7 +1,15 @@
-# Notification dispatch (Telegram + ntfy) and the monitor.units registration
-# namespace. Selection is enablement. The implementation packages are owned
-# here (overridable); chatId, topics, and other dispatch policy are consumer
-# bindings. Secrets follow the two-step sops bootstrap.
+# Notification dispatch capability (Telegram + ntfy) realizing native systemd
+# event notifications. Selection is enablement. The implementation packages are
+# owned here (overridable); chatId, topics, and other dispatch policy are
+# consumer bindings. Secrets follow the two-step sops bootstrap.
+#
+# Registration contract: services.notify-events.events.<unit>.{failure,success}
+# (see notify/_events.nix). The aspect validates each registered unit against
+# the systemd service set, renders /etc/notify/events.json, and attaches the
+# native OnFailure=/OnSuccess= hooks — additive (mkBefore), never replacing
+# hooks an owner already set. Handlers use Wants= + After= on the daemon and
+# fail best-effort: a broken notification pipeline must not affect the health
+# semantics of the observed unit, and cannot recurse onto itself.
 { withSystem, ... }:
 {
   flake.modules.nixos.notification-daemon =
@@ -17,11 +25,16 @@
       packages = withSystem pkgs.stdenv.hostPlatform.system (
         { config, ... }:
         {
-          inherit (config.packages) notification-daemon notify;
+          inherit (config.packages)
+            notification-daemon
+            notify
+            unit-notify
+            ;
         }
       );
 
       cfg = config.services.notification-daemon;
+      eventsCfg = config.services.notify-events;
 
       telegramTokenReady = cfg.secretFiles.host != null && builtins.pathExists cfg.secretFiles.host;
       ntfyTokenReady =
@@ -38,50 +51,45 @@
         };
       };
 
-      # Fail-closed: a monitor contribution may only name a unit with a real
-      # service implementation. The predicate reads only implementation
-      # attributes (serviceConfig.ExecStart or a non-empty script) and never the
-      # hooks this module injects (OnFailure, ExecStartPost, ExecStopPost), so a
-      # monitor-created fragment can never satisfy its own assertion.
-      monitorUnitImplemented =
+      # Registered units with at least one declared event.
+      registeredUnits = lib.filterAttrs (
+        _unit: ev: ev.failure != null || ev.success != null
+      ) eventsCfg.events;
+
+      # Fail-closed: a registration may only name a unit with a real service
+      # implementation. The predicate reads only implementation attributes and
+      # never the hooks this aspect attaches, so a phantom registration whose
+      # only trace is the hook itself is rejected.
+      unitImplemented =
         unit:
         let
           svc = config.systemd.services.${unit} or null;
         in
         svc != null && ((svc.serviceConfig.ExecStart or null) != null || (svc.script or "") != "");
 
-      monitorScript = pkgs.writeScriptBin "svc-monitor" ''
-        #!${pkgs.python3}/bin/python3
-        import json, subprocess, sys, urllib.request
+      # One event's entry in the policy map: defaults resolved here, so the
+      # handler never needs fallback logic and the JSON only carries declared
+      # events.
+      eventEntry =
+        _event: policy:
+        {
+          inherit (policy) severity;
+          inherit (policy) journalLines;
+          inherit (policy) context;
+        }
+        // lib.optionalAttrs (policy.topic != null) { inherit (policy) topic; }
+        // lib.optionalAttrs (policy.title != null) { inherit (policy) title; };
 
-        unit = sys.argv[1] if len(sys.argv) > 1 else sys.exit("Usage: svc-monitor <unit>")
-        event = sys.argv[2] if len(sys.argv) > 2 else "onFailure"
-
-        journal = subprocess.run(
-            ["journalctl", "-u", unit, "--since", "5 minutes ago", "--no-pager", "-n", "50"],
-            capture_output=True, text=True, timeout=15,
-        ).stdout or ""
-
-        title = "[%s] monitor: %s" % (event, unit)
-        body = journal
-        tier = "warning" if event == "onFailure" else "info"
-        ntype = event
-
-        payload = json.dumps({"tier": tier, "title": title, "type": ntype, "message": body}).encode()
-        req = urllib.request.Request(
-            "http://127.0.0.1:${toString cfg.port}/notify",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            urllib.request.urlopen(req, timeout=10)
-        except urllib.error.HTTPError as e:
-            sys.exit("daemon error: %d %s" % (e.code, e.read().decode()))
-        except (urllib.error.URLError, OSError) as e:
-            sys.exit("daemon connection failed: %s" % e)
-      '';
+      # Policy map consumed by unit-notify, keyed by $MONITOR_UNIT.
+      eventsJson = lib.mapAttrs (
+        _unit: ev:
+        lib.optionalAttrs (ev.failure != null) { failure = eventEntry "failure" ev.failure; }
+        // lib.optionalAttrs (ev.success != null) { success = eventEntry "success" ev.success; }
+      ) registeredUnits;
     in
     {
+      imports = [ ./notify/_events.nix ];
+
       options.services.notification-daemon = {
         port = lib.mkOption {
           type = lib.types.port;
@@ -105,6 +113,16 @@
           defaultText = lib.literalExpression "packages.notify";
           description = ''
             Notify CLI implementation providing `bin/notify`. Owned by this
+            repository; override only to swap the implementation.
+          '';
+        };
+
+        unitNotifyPackage = lib.mkOption {
+          type = lib.types.package;
+          default = packages.unit-notify;
+          defaultText = lib.literalExpression "packages.unit-notify";
+          description = ''
+            systemd event handler providing `bin/unit-notify`. Owned by this
             repository; override only to swap the implementation.
           '';
         };
@@ -173,42 +191,6 @@
             description = "Runtime path of the ntfy token; materialized from `secretFiles.hostSystem`.";
           };
         };
-
-        monitor = {
-          enable = lib.mkEnableOption "systemd service notification monitors";
-
-          units = lib.mkOption {
-            type = lib.types.attrsOf (
-              lib.types.submodule {
-                options = {
-                  onFailure = lib.mkOption {
-                    type = lib.types.bool;
-                    default = false;
-                    description = "Activate svc-monitor@<unit>.service when <unit> enters the failed state (OnFailure).";
-                  };
-
-                  onStart = lib.mkOption {
-                    type = lib.types.bool;
-                    default = false;
-                    description = "Report each start attempt of <unit> (ExecStartPost).";
-                  };
-
-                  onStop = lib.mkOption {
-                    type = lib.types.bool;
-                    default = false;
-                    description = "Report each termination of <unit> (ExecStopPost).";
-                  };
-                };
-              }
-            );
-            default = { };
-            description = ''
-              Systemd units to monitor, contributed by the capability that owns
-              them. Only the declared lifecycle events are hooked, and every entry
-              must name a real service implementation.
-            '';
-          };
-        };
       };
 
       config = lib.mkMerge [
@@ -227,96 +209,50 @@
             assertion = false;
             message = "notification-daemon: services.notification-daemon.ntfy.serverUrl must be set when ntfy is enabled.";
           }
-          ++ lib.optionals cfg.monitor.enable (
-            lib.mapAttrsToList (unit: _events: {
-              assertion = monitorUnitImplemented unit;
-              message = "notification-daemon: services.notification-daemon.monitor.units: '${unit}' is contributed for monitoring but has no systemd service implementation (serviceConfig.ExecStart or script); monitor-generated hooks do not count. Contribute monitoring from the capability that owns the unit.";
-            }) cfg.monitor.units
-          );
-        }
+          ++ lib.mapAttrsToList (unit: _ev: {
+            assertion = unitImplemented unit;
+            message = "notify-events: events.${unit} is registered but has no systemd service implementation (serviceConfig.ExecStart or script); hooks attached by this aspect do not count. Register from the capability that owns the unit.";
+          }) registeredUnits;
 
-        {
           environment.etc."notification-daemon/config.json" = {
             mode = "0444";
             text = builtins.toJSON notifyConfig;
           };
 
+          environment.etc."notify/events.json" = lib.mkIf (eventsJson != { }) {
+            mode = "0444";
+            source = pkgs.writers.writeJSON "events.json" eventsJson;
+          };
+
           environment.systemPackages = [
             cfg.package
-            pkgs.apprise
             cfg.notifyPackage
-          ]
-          ++ lib.optionals cfg.monitor.enable [ monitorScript ];
+            pkgs.apprise
+          ];
 
-          systemd.services = {
-            notification-daemon = {
-              description = "HTTP notification dispatch daemon";
-              after = [ "sops-nix.service" ];
-              wants = [ "sops-nix.service" ];
-              wantedBy = [ "multi-user.target" ];
+          systemd.services.notification-daemon = {
+            description = "HTTP notification dispatch daemon";
+            after = [ "sops-nix.service" ];
+            wants = [ "sops-nix.service" ];
+            wantedBy = [ "multi-user.target" ];
 
-              serviceConfig = {
-                Type = "simple";
-                ExecStart = "${cfg.package}/bin/notification-daemon";
-                Restart = "on-failure";
-                RestartSec = "5s";
-                User = "root";
-                NoNewPrivileges = true;
-                PrivateTmp = true;
-                ProtectSystem = "strict";
-                ProtectHome = true;
-                ReadWritePaths = [ "/run" ];
-                ReadOnlyPaths = [
-                  "/etc/notification-daemon"
-                  "/run/secrets"
-                ];
-              };
+            serviceConfig = {
+              Type = "simple";
+              ExecStart = "${cfg.package}/bin/notification-daemon";
+              Restart = "on-failure";
+              RestartSec = "5s";
+              User = "root";
+              NoNewPrivileges = true;
+              PrivateTmp = true;
+              ProtectSystem = "strict";
+              ProtectHome = true;
+              ReadWritePaths = [ "/run" ];
+              ReadOnlyPaths = [
+                "/etc/notification-daemon"
+                "/run/secrets"
+              ];
             };
-          }
-          // lib.optionalAttrs cfg.monitor.enable (
-            let
-              mon = "svc-monitor@";
-            in
-            {
-              "${mon}" = {
-                description = "Notification monitor for %I";
-                serviceConfig = {
-                  Type = "oneshot";
-                  ExecStart = "-${monitorScript}/bin/svc-monitor %I onFailure";
-                  User = "root";
-                  Group = "root";
-                };
-              };
-            }
-            //
-              lib.mapAttrs'
-                (
-                  unit: events:
-                  lib.nameValuePair unit (
-                    # OnFailure activates svc-monitor@<unit>.service when the unit
-                    # enters the failed state; the Exec hooks fire on every run. The
-                    # hooks are merged into (never replaced over) whatever the owning
-                    # capability already defined for the unit.
-                    lib.optionalAttrs events.onFailure {
-                      onFailure = lib.mkBefore [ "${mon}${unit}.service" ];
-                    }
-                    // lib.optionalAttrs (events.onStart || events.onStop) {
-                      serviceConfig =
-                        lib.optionalAttrs events.onStart {
-                          ExecStartPost = lib.mkBefore [
-                            "-${monitorScript}/bin/svc-monitor ${unit} onStart"
-                          ];
-                        }
-                        // lib.optionalAttrs events.onStop {
-                          ExecStopPost = lib.mkAfter [
-                            "-${monitorScript}/bin/svc-monitor ${unit} onSuccess"
-                          ];
-                        };
-                    }
-                  )
-                )
-                (lib.filterAttrs (_: events: events.onFailure || events.onStart || events.onStop) cfg.monitor.units)
-          );
+          };
         }
 
         (lib.mkIf telegramTokenReady {
@@ -339,6 +275,44 @@
             group = "root";
             mode = "0440";
           };
+        })
+
+        # Realization of the registration contract: one generic template
+        # handler preserves $MONITOR_* context for every source unit; policy
+        # is keyed by $MONITOR_UNIT in /etc/notify/events.json. Hooks attach
+        # additively to the owning unit's own definition.
+        (lib.mkIf (eventsJson != { }) {
+          systemd.services = {
+            "notify-event@" = {
+              description = "Notification handler for %i";
+              serviceConfig = {
+                Type = "oneshot";
+                ExecStart = lib.getExe cfg.unitNotifyPackage;
+                User = "root";
+                Group = "root";
+                # Best-effort delivery: a failing handler must not spawn further
+                # event notifications or influence the observed unit.
+                Restart = "no";
+              };
+              environment = {
+                NOTIFY_URL = "http://127.0.0.1:${toString cfg.port}";
+                NOTIFY_EVENTS_FILE = "/etc/notify/events.json";
+              };
+              # The handler targets the daemon over loopback; ordering keeps the
+              # daemon up without making the observed unit depend on it.
+              after = [ "notification-daemon.service" ];
+              wants = [ "notification-daemon.service" ];
+            };
+          }
+          // lib.mapAttrs' (unit: _ev: {
+            name = unit;
+            value = {
+              onFailure = lib.mkBefore [ "notify-event@${unit}.service" ];
+              onSuccess = lib.mkBefore (
+                lib.optional (eventsCfg.events.${unit}.success != null) "notify-event@${unit}.service"
+              );
+            };
+          }) registeredUnits;
         })
       ];
     };
