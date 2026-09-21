@@ -1,8 +1,16 @@
-# Published tooling flakeModule: one treefmt definition for every repository
-# that selects it (consumer: `imports = [ inputs.nix-fleet.flakeModules.tooling ];`).
-# Priorities are pinned because nixfmt, statix and deadnix all claim `*.nix`;
-# unpinned, `nix fmt` does not converge. The module is bound in a `let` and used
-# twice: flake.flakeModules entries are published only, never auto-applied here.
+# Published tooling flakeModule — the base formatting layer for every
+# repository that selects it (`imports = [ inputs.nix-fleet.flakeModules.tooling ];`).
+#
+# Fixed by the base: projectRootFile, the Nix trio (nixfmt + statix + deadnix,
+# priorities pinned — all three claim `*.nix`; unpinned, `nix fmt` does not
+# converge), baseline excludes, and prettier for markdown/YAML/JSON.
+# Consumer extension: treefmt settings merge — consumers add languages
+# (programs.*) and extra excludes via the same `perSystem.treefmt` options;
+# list options concatenate. A repo whose languages are exactly the base set
+# needs no extension.
+#
+# The module is bound in a `let` and used twice: flake.flakeModules entries
+# are published only, never auto-applied to the defining flake.
 _:
 let
   toolingModule =
@@ -26,11 +34,14 @@ let
             nixfmt.enable = true;
             statix.enable = true;
             deadnix.enable = true;
-            mdformat.enable = true;
-            mdformat.plugins = ps: [ ps.mdformat-frontmatter ];
+            prettier.enable = true;
+            prettier.includes = [
+              "*.md"
+              "*.yaml"
+              "*.yml"
+              "*.json"
+            ];
             taplo.enable = true;
-            yamlfmt.enable = true;
-            jsonfmt.enable = true;
           };
 
           settings.formatter = {

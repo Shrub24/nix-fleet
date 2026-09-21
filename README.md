@@ -105,9 +105,10 @@ Consumers keep: host identity, secrets, policy data, provider quirks. nix-fleet 
 ## Working agreements
 
 - jj colocated repo; anonymous mutable changes off `main@origin`; bookmark only on publish.
-- `treefmt` via `nix fmt` (nixfmt + statix + deadnix + mdformat/taplo/yamlfmt/jsonfmt, priorities pinned in `modules/flake/tooling.nix` so the chain converges); `nix flake check` runs the same formatter as a check, so unformatted files fail CI. Same tooling shape as dotfiles' `modules/flake/tooling.nix`.
+- `treefmt` via `nix fmt` (prettier for md/yaml/json, taplo for TOML, plus the pinned Nix trio in `modules/flake/tooling.nix`); `nix flake check` runs the same formatter as a check, so unformatted files fail CI. Same tooling shape as dotfiles' `modules/flake/tooling.nix`.
 - Secrets enter through `/lib/secrets.nix` helpers only: `mkSecretFileOption` for consumer-bound paths, `mkRequiredSecretAssertion` for the named fail-closed gate, `mkSecretsFromMap` for `sops.secrets` registration. Byte-identical to nix-homelab's helper; consumers of these aspects do not need their own copy.
 - Every aspect declares its options; every option has a type; fail closed with named errors, never raw `builtins.head`/null derefs.
+- Input pins: once consumer flakes alias their nixpkgs-family inputs to nix-fleet's (`inputs.<x>.inputs.nixpkgs.follows = "nixpkgs"` via nix-fleet), this repository's `flake.lock` is the fleet's shared-input authority and its `renovate.json` schedule is the fleet's bump cadence — a nixpkgs bump lands here first, consumers inherit it through their follows chains.
 - Provenance discipline: no secrets, no absolute paths, no machine names in this repo.
 
 ## Pointers into nix-homelab (read-only reference)
@@ -118,18 +119,19 @@ Consumers keep: host identity, secrets, policy data, provider quirks. nix-fleet 
 
 ## Tooling contract
 
-`flake.flakeModules.tooling` is the one treefmt definition for every repository
-that selects it. Consumers wire it beside their own flake-parts modules and
-declare `treefmt-nix` as their own input (inputs are not transitive):
+`flake.flakeModules.tooling` is the base formatting layer for every repository
+that selects it. Fixed by the base: `projectRootFile`, the pinned Nix trio
+(deadnix < statix < nixfmt — all three claim `*.nix`; with the default tie the
+rewriters can land after nixfmt and `nix fmt` never reaches a fixed point),
+baseline excludes, and prettier for markdown/YAML/JSON. Consumers wire it
+beside their own flake-parts modules and declare `treefmt-nix` as their own
+input (inputs are not transitive), then extend with their own languages and
+extra excludes via the same `perSystem.treefmt` options — list options
+concatenate:
 
 ```nix
 imports = [ inputs.nix-fleet.flakeModules.tooling ];
 ```
-
-Formatter priorities are pinned (deadnix < statix < nixfmt) because all three
-claim `*.nix`; with the default tie the rewriters can land after nixfmt and
-`nix fmt` never reaches a fixed point. With the pin, two `nix fmt` passes
-report zero changes, and `nix flake check` runs the same definition as a check.
 
 `flake.lib.secrets` (consumed as `inputs.nix-fleet.lib.secrets`) exposes the
 canonical SOPS helpers; consumers import it

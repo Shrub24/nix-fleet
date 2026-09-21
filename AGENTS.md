@@ -30,6 +30,8 @@ Follow the Dendritic Pattern (github.com/mightyiam/dendritic, README + reference
 - `nix flake check` green via the fixture evaluation class.
 - Nix reads this repo through the Git index, so **new or deleted files are invisible to `nix flake check`/`nix fmt` until a jj command snapshots the working copy** (`jj st` is enough). Symptom if skipped: a stale evaluation or "path exists on disk, but not in HEAD".
 - Every new aspect: typed options with defaults, a named fail-closed assertion for missing required bindings, and at least one mutation-style non-vacuity check in the fixture class where practical.
+- Formatting is the published tooling base: prettier for markdown/YAML/JSON, the pinned Nix trio for Nix, taplo for TOML. Consumers extend with their own languages/excludes via `perSystem.treefmt` (list options concatenate) — do not add repo-local md/yaml/json formatters over the base.
+- Input pins: this repo's flake.lock is the fleet's shared-input authority once consumers alias via follows; renovate.json here is the fleet's bump cadence.
 - Secrets use `lib/secrets.nix` helpers (`mkSecretFileOption`, `mkSecretKeyOption`, `mkRequiredSecretAssertion`, `mkSecretsFromMap`) — the same file nix-homelab uses, so an aspect behaves identically in either consumer.
 
 ## Extraction sources

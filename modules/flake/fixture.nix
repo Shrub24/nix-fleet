@@ -1,7 +1,15 @@
-# Fixture evaluation class: exercises every aspect on a throwaway NixOS target,
+# Fixture evaluation class: exercises every aspect on throwaway NixOS targets,
 # consumer-shaped — imports the upstream modules aspects expect and binds
-# obviously-fake placeholders. Never activated, never decrypts anything.
-{ config, inputs, ... }:
+# obviously-fake placeholders. Never activated, never decrypts anything. One
+# fixture per declared system: the wiring module builds each toplevel as a
+# check, so platform-specific packaging (python3, apprise) is exercised for
+# every architecture the fleet actually runs.
+{
+  lib,
+  config,
+  inputs,
+  ...
+}:
 let
   # Stand-in for a consumer's SOPS files: an existing YAML placeholder in the
   # flake source, so the existence gates and sops-nix's manifest validation
@@ -14,9 +22,8 @@ let
   fixtureAgeKeyFile = "/run/secrets/fixture-age-key";
 
   aspects = config.flake.modules.nixos;
-in
-{
-  configurations.nixos.fixture.module =
+
+  fixtureModule =
     { config, ... }:
     {
       imports = [
@@ -32,7 +39,6 @@ in
         tailscale
       ]);
 
-      nixpkgs.hostPlatform = "x86_64-linux";
       boot.loader.grub.enable = false;
       fileSystems."/" = {
         device = "nodev";
@@ -79,7 +85,7 @@ in
         }
       ];
 
-      # A real unit for the monitor namespace to hook.
+      # A real unit for the notification contract to hook.
       systemd.services.fixture-monitored.script = "true";
 
       services = {
@@ -123,7 +129,6 @@ in
               info = "4";
             };
           };
-
         };
 
         tailscale.secretFiles.auth = fixtureSecretFile;
@@ -134,4 +139,17 @@ in
       # not news). Severity defaults to "failure".
       services.notify-events.events.fixture-monitored.failure = { };
     };
+in
+{
+  configurations.nixos = lib.listToAttrs (
+    lib.forEach config.systems (system: {
+      name = "fixture-${builtins.replaceStrings [ "_" ] [ "-" ] system}";
+      value.module.imports = [
+        fixtureModule
+        {
+          nixpkgs.hostPlatform = lib.mkForce system;
+        }
+      ];
+    })
+  );
 }

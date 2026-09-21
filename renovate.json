@@ -1,34 +1,22 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended"
-  ],
-  "labels": [
-    "dependencies"
-  ],
+  "extends": ["config:recommended"],
+  "labels": ["dependencies"],
   "prHourlyLimit": 2,
   "prConcurrentLimit": 5,
   "automerge": false,
-  "schedule": [
-    "before 6am on monday"
-  ],
+  "schedule": ["before 6am on monday"],
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": [
-      "before 6am on monday"
-    ]
+    "schedule": ["before 6am on monday"]
   },
-  "enabledManagers": [
-    "nix"
-  ],
+  "enabledManagers": ["nix"],
   "nix": {
     "enabled": true
   },
   "packageRules": [
     {
-      "matchManagers": [
-        "nix"
-      ],
+      "matchManagers": ["nix"],
       "groupName": "nix flake inputs"
     }
   ]
