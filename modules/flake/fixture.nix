@@ -33,9 +33,11 @@ let
       ++ (with aspects; [
         beszel-agent
         builder-access
+        nh-gc
         niks3-cache
         niks3-publisher
-        notification-daemon
+        notify
+        podman-prune
         tailscale
       ]);
 
@@ -67,12 +69,12 @@ let
           message = "fixture: the builder-access aspect registered no known host.";
         }
         {
-          assertion = config.systemd.services.notification-daemon.serviceConfig.ExecStart != null;
-          message = "fixture: the notification-daemon aspect deployed no daemon unit.";
+          assertion = config.systemd.services.notify.serviceConfig.ExecStart != null;
+          message = "fixture: the notify aspect deployed no daemon unit.";
         }
         {
-          assertion = config.sops.secrets ? "notification-daemon/telegram_bot_token";
-          message = "fixture: the notification-daemon aspect registered no Telegram token secret.";
+          assertion = config.sops.secrets ? "notify/telegram_bot_token";
+          message = "fixture: the notify aspect registered no Telegram token secret.";
         }
         {
           assertion =
@@ -83,10 +85,31 @@ let
           assertion = config.services.niks3-auto-upload.enable && config.nix.settings.post-build-hook != "";
           message = "fixture: the niks3-publisher aspect did not wire the upload client.";
         }
+        {
+          assertion = config.systemd.services ? "nh-clean";
+          message = "fixture: the nh-gc aspect produced no nh-clean unit.";
+        }
+        {
+          assertion = config.systemd.services ? "podman-prune" && config.systemd.timers ? "podman-prune";
+          message = "fixture: the podman-prune aspect produced no unit/timer.";
+        }
+        {
+          assertion = config.systemd.services."nh-clean".onFailure or [ ] != [ ];
+          message = "fixture: the nh-gc aspect registered no failure event for nh-clean.";
+        }
+        {
+          assertion = config.systemd.services."podman-prune".onFailure or [ ] != [ ];
+          message = "fixture: the podman-prune aspect registered no failure event.";
+        }
       ];
 
       # A real unit for the notification contract to hook.
       systemd.services.fixture-monitored.script = "true";
+
+      services = {
+        nh-gc.enable = true;
+        podman-prune.enable = true;
+      };
 
       services = {
         beszel-agent.secretFiles = {
@@ -115,7 +138,7 @@ let
           secretFiles.apiToken = fixtureSecretFile;
         };
 
-        notification-daemon = {
+        notify = {
           secretFiles = {
             host = fixtureSecretFile;
             hostSystem = fixtureSecretFile;
@@ -137,7 +160,7 @@ let
       # A unit owned by this module, registered on the notification contract:
       # failure severity defaulted, success pruned (a stop of a oneshot job is
       # not news). Severity defaults to "failure".
-      services.notify-events.events.fixture-monitored.failure = { };
+      services.notify.events.fixture-monitored.failure = { };
     };
 in
 {

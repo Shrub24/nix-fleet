@@ -6,9 +6,7 @@ _: {
     { pkgs, ... }:
     {
       packages = {
-        notification-daemon = pkgs.callPackage ../../pkgs/notification-daemon { };
         notify = pkgs.callPackage ../../pkgs/notify { };
-        unit-notify = pkgs.callPackage ../../pkgs/unit-notify { };
       };
     };
 }

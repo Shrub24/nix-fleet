@@ -36,8 +36,7 @@ lib/
                      # mkRequiredSecretAssertion, mkSecretsFromMap) — same file shape as
                      # nix-homelab's lib/secrets.nix; aspects import it explicitly
 pkgs/
-  notification-daemon/  # owned implementation: dispatch daemon (FastAPI + apprise)
-  notify/               # owned implementation: notify CLI
+  notify/               # owned implementation: daemon + CLI + systemd handler (one package)
 modules/
   flake/             # flake plumbing, not host features
     flake-parts.nix  # imports inputs.flake-parts.flakeModules.modules (REQUIRED)
@@ -73,7 +72,7 @@ renovate.json        # weekly nix flake input updates
 3. **`builder-access`** — remote-builder SSH trust: known hosts and SSH client tuning. Builder endpoints/keys are consumer options (`services.builder-access.hosts`); substituter policy stays consumer-side.
 4. **`niks3-cache`** — niks3 binary-cache *server*. S3 coordinates, cache URL, secret paths are options; fails closed when unbound.
 5. **`niks3-publisher`** — niks3 closure-upload *client* (upstream post-build-hook module). `serverUrl` required; token via `secretFiles.apiToken`.
-6. **`notification-daemon`** — HTTP dispatch daemon (Telegram + ntfy) realizing native systemd event notifications. The registration contract `services.notify-events.events.<unit>.{failure,success}` is declared inside the aspect; contributors declare policy (severity, topic, journal depth), the aspect validates the unit, renders `/etc/notify/events.json`, and attaches native `OnFailure=`/`OnSuccess=` hooks. Implementation packages are owned (`pkgs/`, overridable); dispatch policy (chatId, topics, ntfy coordinates) is consumer-bound; secrets follow the two-step bootstrap.
+6. **`notify`** — notification dispatch (Telegram + ntfy) realizing native systemd event notifications. One owned package (`pkgs/notify`, overridable): the daemon (`notify serve`, unprivileged system user, unix socket + loopback TCP for app webhooks) owns secrets, the policy map, and journal access; `notify send`/`notify test` and the `unit-notify` handler are thin unprivileged connectors. The registration contract `services.notify.events.<unit>.{failure,success}` is a declaration-only fragment contributors import, so registration is unconditional and realization happens only when notify is co-selected. Per-event policy: severity, topic, journalLines, context, title — explicit only (no hook without a declared event). Dispatch policy (chatId, topics, ntfy coordinates) is consumer-bound; secrets follow the two-step bootstrap.
 
 ## Consumer contract (how nix-homelab / dotfiles will consume)
 
@@ -115,7 +114,7 @@ Consumers keep: host identity, secrets, policy data, provider quirks. nix-fleet 
 
 - Dendritic conventions evolved there: `AGENTS.md` (## Project Policy), `CONVENTIONS.md`.
 - The aspect inventory and ownership rules: `ARCHITECTURE.md` / `STRUCTURE.md` in nix-homelab.
-- The three registration patterns worth copying conceptually: `services.state-backups.services.<name>` (backup registration), `services.notify-events.events.<unit>.{failure,success}` (declaration-only contract inside the notify aspect; realization is native systemd events), `services.postgres.consumers.<name>` (database registration).
+- The three registration patterns worth copying conceptually: `services.state-backups.services.<name>` (backup registration), `services.notify.events.<unit>.{failure,success}` (declaration-only fragment imported by the notify aspect and by contributors; realization is native systemd events), `services.postgres.consumers.<name>` (database registration).
 
 ## Tooling contract
 

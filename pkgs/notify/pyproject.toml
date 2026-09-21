@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "notify"
+version = "1.0"
+
+[project.scripts]
+notify = "notifylib.cli:main"
+unit-notify = "notifylib.unit:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["notifylib"]

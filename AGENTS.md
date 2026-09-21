@@ -42,7 +42,7 @@ Reference implementations live in the sibling repo `/mnt/LinuxData/Projects/dev/
 - builder-access: `modules/flake/builder-access.nix` (nixbuild leaf consolidated inline there)
 - niks3-cache: `modules/cache/niks3-cache.nix`
 - niks3-publisher: `modules/cache/cache-publisher.nix` + `modules/cache/cache-publisher/upload-client.nix` (upstream post-build-hook module; nix-path-filter and post-deploy hooks stay homelab-side)
-- notification-daemon: `modules/notifications/notify.nix` + `notify/_events.nix` contract + `pkgs/{notification-daemon,notify,unit-notify}` (redesigned onto native systemd OnFailure/OnSuccess with per-unit policy; not a mechanical port)
+- notify: `modules/notifications/notify.nix` + `notify/_notify-events.nix` contract + `pkgs/notify` (one package: CLI + systemd handler + loopback daemon on a shared dispatch library; native systemd OnFailure/OnSuccess with per-unit policy)
 - tailscale: `modules/flake/tailscale.nix`
 
 Behaviour parity with those sources is the acceptance bar; repo-local idioms (secret path derivation, policy imports) become typed options.

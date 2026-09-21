@@ -1,7 +1,7 @@
-# Declaration-only registration contract for native systemd event
-# notifications. Contributors write
+# Registration contract for native systemd event notifications. Contributors
+# write
 #
-#   services.notify-events.events.<unit>.failure.severity = "critical";
+#   services.notify.events.<unit>.failure.severity = "critical";
 #
 # on hosts where the notify aspect is co-selected; the aspect validates the
 # target unit, renders the policy map, and attaches the native systemd
@@ -63,7 +63,7 @@ let
   };
 in
 {
-  options.services.notify-events.events = lib.mkOption {
+  options.services.notify.events = lib.mkOption {
     type = lib.types.attrsOf (
       lib.types.submodule {
         options = {

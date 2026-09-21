@@ -3,8 +3,8 @@
 # owned here (overridable); chatId, topics, and other dispatch policy are
 # consumer bindings. Secrets follow the two-step sops bootstrap.
 #
-# Registration contract: services.notify-events.events.<unit>.{failure,success}
-# (see notify/_events.nix). The aspect validates each registered unit against
+# Registration contract: services.notify.events.<unit>.{failure,success}
+# (see notify/_notify-events.nix). The aspect validates each registered unit against
 # the systemd service set, renders /etc/notify/events.json, and attaches the
 # native OnFailure=/OnSuccess= hooks — additive (mkBefore), never replacing
 # hooks an owner already set. Handlers use Wants= + After= on the daemon and
@@ -12,7 +12,7 @@
 # semantics of the observed unit, and cannot recurse onto itself.
 { withSystem, ... }:
 {
-  flake.modules.nixos.notification-daemon =
+  flake.modules.nixos.notify =
     {
       config,
       lib,
@@ -25,25 +25,22 @@
       packages = withSystem pkgs.stdenv.hostPlatform.system (
         { config, ... }:
         {
-          inherit (config.packages)
-            notification-daemon
-            notify
-            unit-notify
-            ;
+          inherit (config.packages) notify;
         }
       );
 
-      cfg = config.services.notification-daemon;
-      eventsCfg = config.services.notify-events;
+      cfg = config.services.notify;
 
       telegramTokenReady = cfg.secretFiles.host != null && builtins.pathExists cfg.secretFiles.host;
       ntfyTokenReady =
         cfg.secretFiles.hostSystem != null && builtins.pathExists cfg.secretFiles.hostSystem;
 
       notifyConfig = {
-        token_file = cfg.telegram.tokenFile;
-        chat_id = cfg.telegram.chatId;
-        topics = cfg.telegram.topics;
+        telegram = {
+          token_file = cfg.telegram.tokenFile;
+          chat_id = cfg.telegram.chatId;
+          topics = cfg.telegram.topics;
+        };
         ntfy = lib.optionalAttrs (cfg.ntfy.enable && cfg.ntfy.serverUrl != "") {
           server_url = cfg.ntfy.serverUrl;
           topics = cfg.ntfy.topics;
@@ -52,9 +49,7 @@
       };
 
       # Registered units with at least one declared event.
-      registeredUnits = lib.filterAttrs (
-        _unit: ev: ev.failure != null || ev.success != null
-      ) eventsCfg.events;
+      registeredUnits = lib.filterAttrs (_unit: ev: ev.failure != null || ev.success != null) cfg.events;
 
       # Fail-closed: a registration may only name a unit with a real service
       # implementation. The predicate reads only implementation attributes and
@@ -88,42 +83,29 @@
       ) registeredUnits;
     in
     {
-      imports = [ ./notify/_events.nix ];
+      imports = [ ./notify/_notify-events.nix ];
 
-      options.services.notification-daemon = {
+      options.services.notify = {
         port = lib.mkOption {
           type = lib.types.port;
           default = 5555;
-          description = "Port on which the notification daemon listens (127.0.0.1 only).";
+          description = "Loopback TCP port for external HTTP callers (webhooks).";
+        };
+
+        cliGroup = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Group whose members may dispatch via the unix socket. Null = root-only local dispatch.";
         };
 
         package = lib.mkOption {
           type = lib.types.package;
-          default = packages.notification-daemon;
-          defaultText = lib.literalExpression "packages.notification-daemon";
-          description = ''
-            Notification daemon implementation providing `bin/notification-daemon`.
-            Owned by this repository; override only to swap the implementation.
-          '';
-        };
-
-        notifyPackage = lib.mkOption {
-          type = lib.types.package;
           default = packages.notify;
           defaultText = lib.literalExpression "packages.notify";
           description = ''
-            Notify CLI implementation providing `bin/notify`. Owned by this
-            repository; override only to swap the implementation.
-          '';
-        };
-
-        unitNotifyPackage = lib.mkOption {
-          type = lib.types.package;
-          default = packages.unit-notify;
-          defaultText = lib.literalExpression "packages.unit-notify";
-          description = ''
-            systemd event handler providing `bin/unit-notify`. Owned by this
-            repository; override only to swap the implementation.
+            Implementation package providing `bin/notify` (CLI) and
+            `bin/unit-notify` (systemd event handler) on one shared dispatch
+            library. Owned by this repository; override only to swap it.
           '';
         };
 
@@ -162,7 +144,7 @@
 
           tokenFile = lib.mkOption {
             type = lib.types.str;
-            default = "/run/secrets/notification-daemon/telegram_bot_token";
+            default = "/run/secrets/notify/telegram_bot_token";
             description = "Runtime path of the Telegram bot token; materialized from `secretFiles.host`.";
           };
         };
@@ -187,7 +169,7 @@
 
           tokenFile = lib.mkOption {
             type = lib.types.str;
-            default = "/run/secrets/notification-daemon/ntfy_token";
+            default = "/run/secrets/notify/ntfy_token";
             description = "Runtime path of the ntfy token; materialized from `secretFiles.hostSystem`.";
           };
         };
@@ -198,23 +180,23 @@
           assertions = [
             {
               assertion = cfg.telegram.chatId != null && cfg.telegram.chatId != "";
-              message = "notification-daemon: services.notification-daemon.telegram.chatId must be set to the Telegram supergroup chat ID.";
+              message = "notify: services.notify.telegram.chatId must be set to the Telegram supergroup chat ID.";
             }
             {
               assertion = cfg.telegram.topics != { };
-              message = "notification-daemon: services.notification-daemon.telegram.topics must be configured with at least one tier.";
+              message = "notify: services.notify.telegram.topics must be configured with at least one tier.";
             }
           ]
           ++ lib.optional (cfg.ntfy.enable && cfg.ntfy.serverUrl == "") {
             assertion = false;
-            message = "notification-daemon: services.notification-daemon.ntfy.serverUrl must be set when ntfy is enabled.";
+            message = "notify: services.notify.ntfy.serverUrl must be set when ntfy is enabled.";
           }
           ++ lib.mapAttrsToList (unit: _ev: {
             assertion = unitImplemented unit;
-            message = "notify-events: events.${unit} is registered but has no systemd service implementation (serviceConfig.ExecStart or script); hooks attached by this aspect do not count. Register from the capability that owns the unit.";
+            message = "notify: events.${unit} is registered but has no systemd service implementation (serviceConfig.ExecStart or script); hooks attached by this aspect do not count. Register from the capability that owns the unit.";
           }) registeredUnits;
 
-          environment.etc."notification-daemon/config.json" = {
+          environment.etc."notify/config.json" = {
             mode = "0444";
             text = builtins.toJSON notifyConfig;
           };
@@ -226,37 +208,51 @@
 
           environment.systemPackages = [
             cfg.package
-            cfg.notifyPackage
             pkgs.apprise
           ];
 
-          systemd.services.notification-daemon = {
-            description = "HTTP notification dispatch daemon";
+          users.users.notify = {
+            isSystemUser = true;
+            group = "notify";
+            extraGroups = [ "systemd-journal" ];
+            description = "Notification daemon";
+          };
+          users.groups.notify = { };
+          # Group membership grants unix-socket dispatch access.
+          users.groups.notify.members = lib.optionals (cfg.cliGroup != null) [ cfg.cliGroup ];
+
+          systemd.services.notify = {
+            description = "Notification dispatch daemon";
             after = [ "sops-nix.service" ];
             wants = [ "sops-nix.service" ];
             wantedBy = [ "multi-user.target" ];
 
+            environment.NOTIFY_SOCKET_PATH = "/run/notify/notify.sock";
+
             serviceConfig = {
               Type = "simple";
-              ExecStart = "${cfg.package}/bin/notification-daemon";
+              ExecStart = "${cfg.package}/bin/notify serve --port ${toString cfg.port} --socket /run/notify/notify.sock";
               Restart = "on-failure";
               RestartSec = "5s";
-              User = "root";
+              User = "notify";
+              Group = "notify";
+              RuntimeDirectory = "notify";
+              RuntimeDirectoryMode = "0750";
               NoNewPrivileges = true;
               PrivateTmp = true;
               ProtectSystem = "strict";
               ProtectHome = true;
-              ReadWritePaths = [ "/run" ];
               ReadOnlyPaths = [
-                "/etc/notification-daemon"
+                "/etc/notify"
                 "/run/secrets"
               ];
             };
           };
+
         }
 
         (lib.mkIf telegramTokenReady {
-          sops.secrets."notification-daemon/telegram_bot_token" = {
+          sops.secrets."notify/telegram_bot_token" = {
             sopsFile = cfg.secretFiles.host;
             key = cfg.secretKeys.telegramBotToken;
             path = cfg.telegram.tokenFile;
@@ -267,7 +263,7 @@
         })
 
         (lib.mkIf (cfg.ntfy.enable && ntfyTokenReady) {
-          sops.secrets."notification-daemon/ntfy_token" = {
+          sops.secrets."notify/ntfy_token" = {
             sopsFile = cfg.secretFiles.hostSystem;
             key = cfg.secretKeys.ntfyToken;
             path = cfg.ntfy.tokenFile;
@@ -287,21 +283,18 @@
               description = "Notification handler for %i";
               serviceConfig = {
                 Type = "oneshot";
-                ExecStart = lib.getExe cfg.unitNotifyPackage;
+                ExecStart = "${cfg.package}/bin/unit-notify";
                 User = "root";
                 Group = "root";
                 # Best-effort delivery: a failing handler must not spawn further
                 # event notifications or influence the observed unit.
                 Restart = "no";
               };
-              environment = {
-                NOTIFY_URL = "http://127.0.0.1:${toString cfg.port}";
-                NOTIFY_EVENTS_FILE = "/etc/notify/events.json";
-              };
-              # The handler targets the daemon over loopback; ordering keeps the
+              environment.NOTIFY_SOCKET_PATH = "/run/notify/notify.sock";
+              # The handler targets the daemon socket; ordering keeps the
               # daemon up without making the observed unit depend on it.
-              after = [ "notification-daemon.service" ];
-              wants = [ "notification-daemon.service" ];
+              after = [ "notify.service" ];
+              wants = [ "notify.service" ];
             };
           }
           // lib.mapAttrs' (unit: _ev: {
@@ -309,7 +302,7 @@
             value = {
               onFailure = lib.mkBefore [ "notify-event@${unit}.service" ];
               onSuccess = lib.mkBefore (
-                lib.optional (eventsCfg.events.${unit}.success != null) "notify-event@${unit}.service"
+                lib.optional (cfg.events.${unit}.success != null) "notify-event@${unit}.service"
               );
             };
           }) registeredUnits;
