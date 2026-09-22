@@ -218,6 +218,48 @@ let
 
         perSystem =
           { pkgs, ... }:
+          let
+            # One CI-builder-set bundle per builderSet: machines file,
+            # known-hosts, ssh client config. The build-push-cache workflow
+            # template installs these instead of holding builder coordinates
+            # itself; the builder set name is the only selection the workflow
+            # makes.
+            ciArtifacts =
+              setName:
+              let
+                names =
+                  config.fleet.builderSets.${setName}
+                    or (throw "registry: builderSet '${setName}' does not exist; declared sets: ${lib.concatStringsSep ", " (builtins.attrNames config.fleet.builderSets)}");
+                selected = lib.genAttrs names (
+                  name:
+                  config.fleet.builders.${name}
+                    or (throw "registry: builderSet '${setName}' names unknown builder '${name}'")
+                );
+                hosts = lib.filterAttrs (
+                  id: _: lib.any (b: (b.host or null) == id) (lib.attrValues selected)
+                ) config.fleet.hosts;
+              in
+              assert assertRegistry config.fleet;
+              pkgs.runCommand "ci-builders-${setName}"
+                {
+                  machines = render.machinesFile hosts selected;
+                  sshConfig = render.sshConfig hosts selected;
+                  knownHosts = builtins.toJSON (render.knownHosts hosts selected);
+                  passAsFile = [
+                    "machines"
+                    "sshConfig"
+                    "knownHosts"
+                  ];
+                }
+                ''
+                  mkdir -p $out
+                  cp "$machinesPath" $out/machines
+                  cp "$sshConfigPath" $out/ssh_config
+                  # JSON entries -> /etc/ssh/ssh_known_hosts line format.
+                  ${pkgs.jq}/bin/jq -r 'to_entries[] | .value.hostNames[] as $n | "\($n) \(.value.publicKey)"' \
+                    "$knownHostsPath" > $out/known_hosts
+                '';
+          in
           {
             # Renderer grammar check on sample data covering both builder
             # variants and every placeholder form; registry validation is
@@ -251,6 +293,10 @@ let
                     || { echo "registry: external builder known-hosts entry missing"; cat "$knownHostsPath"; exit 1; }
                   cat "$machinesPath" > "$out"
                 '';
+
+            packages =
+              builtins.mapAttrs (setName: _: ciArtifacts setName) config.fleet.builderSets
+              // (if config.fleet.builderSets ? ci then { ci-builders = ciArtifacts "ci"; } else { });
           };
       };
     };

@@ -1,31 +1,44 @@
 # Coordinated fleet build + cache push.
 #
 # Model: ONE coordinator runs nix-fast-build, which evaluates locally and
-# distributes builds to nix remote builders (nix's own builders = ssh://...
+# distributes builds to nix remote builders (nix's own builders = ssh-ng://
 # fan-out, multiple hosts, results return to the coordinator's store). The
 # coordinator then pushes what it holds to niks3 once — server-side
 # deduplication makes overlap with anything builders pushed themselves
 # harmless. nix-fast-build's --niks3-server does the same thing via
-# `niks3 push` after the build; auth comes from NIKS3_AUTH_TOKEN_FILE, so the
-# coordinator needs a push token (fleet builder / CI token minted by the
-# consumer), NOT the GitHub OIDC path — nix-fast-build does not read
-# ACTIONS_ID_TOKEN.
+# `niks3 push` after the build; auth is GitHub OIDC — the refresher loop
+# below mints tokens bound to the cache audience into the file niks3
+# re-reads periodically (nix-fast-build itself never sees OIDC).
 #
 # GHA-local builds (capacity permitting) stay on niks3-action, which
 # registers a post-build-hook and streams uploads with GitHub OIDC; both
 # paths converge on the same deduplicating server.
 #
+# BUILDER CONFIGURATION COMES FROM THE FLEET REGISTRY — the workflow holds
+# no builder coordinates. The consumer flake (imports
+# inputs.nix-fleet.flakeModules.registry) renders its selected builder set
+# with `packages.ci-builders-<set>` / `packages.ci-builders` (machines file,
+# known_hosts, ssh_config); this workflow installs those artifacts. The only
+# selection the workflow makes is the builder-set name.
+#
 # Template placeholders (CONSUMER FILLS):
-#   {{BUILDERS}}        nix builders line, e.g.
-#                       "ssh://builder1 aarch64-linux ssh://builder2"
+#   {{BUILDER_SET}}     fleet.builderSets entry rendered for CI
+#                       (default: the "ci" set; produces .#ci-builders)
 #   {{CACHE_URL}}       niks3 server base URL (substituter + keys + audience
 #                       all come from its /api/cache-config, same as the action)
 #   {{TARGETS}}         default flake attrspecs
 #   {{SSH_KEY_SECRET}}  repo secret holding the coordinator's builder key
+#   Tailscale join (fleet-host builders): set repo variable
+#                       FLEET_CI_ON_TAILNET=true and the standard
+#                       TS_OAUTH_CLIENT_ID / TS_OAUTH_CLIENT_SECRET secrets;
+#                       the step skips itself when the variable is unset.
 #
 # Builder prerequisites: nixpkgs revisions aligned (consumers follow
-# nix-fleet's nixpkgs input), coordinator key trusted by builders,
+# nix-fleet's nixpkgs input), coordinator key authorized by the builders,
 # substituter pointing at the cache so --skip-cached is meaningful.
+# Degradation is native: an unreachable builder simply drops out of nix's
+# scheduling and work lands on the remaining builders and the runner's own
+# store — the registry carries no failover logic.
 name: build-push-cache
 on:
   workflow_dispatch:
@@ -56,8 +69,32 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      - name: Join tailnet (fleet-host builders)
+        # MagicDNS names in the registry's machines file resolve only inside
+        # the tailnet. External-only builder sets skip this step; the
+        # registry's ssh_config/known_hosts carry everything else.
+        # Skips itself when TS_OAUTH_CLIENT_ID is unset in the repo.
+        if: ${{ vars.FLEET_CI_ON_TAILNET == 'true' }}
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          tags: tag:ci
+
       - name: Install Nix
         uses: NixOS/nix-installer-action@main
+
+      - name: Install fleet builder artifacts from the registry
+        # Builds the consumer's rendered builder set (nix eval only) and
+        # installs machines/known_hosts/ssh_config. The workflow never
+        # stores builder coordinates; the registry is the SSOT.
+        run: |
+          BUNDLE=$(nix build --no-link --print-out-paths \
+            ".#packages.x86_64-linux.ci-builders{{BUILDER_SET_SUFFIX}}")
+          mkdir -p ~/.ssh
+          sudo cp "$BUNDLE/known_hosts" /etc/ssh/ssh_known_hosts
+          cat "$BUNDLE/ssh_config" >> ~/.ssh/config
+          cp "$BUNDLE/machines" /tmp/nix-builders
 
       - name: Set up coordinator SSH key
         run: |
@@ -99,10 +136,10 @@ jobs:
 
       - name: Evaluate and distribute builds to fleet builders
         # Fan-out via nix's builders mechanism: nix schedules derivations
-        # across the listed ssh builders AND the runner's own local store
+        # across the registry's builders AND the runner's own local store
         # (default max-jobs — the runner is just another builder; GHA local
         # capacity participates, and its aarch64 runners cover arm builds
-        # home-forge cannot). Builders with the niks3 post-build-hook push
+        # fleet hosts cannot). Builders with the niks3 post-build-hook push
         # their work as it lands; results returning to the runner are pushed
         # by --niks3-server. niks3's server-side dedup/queueing makes the
         # overlap a no-op.
@@ -112,7 +149,6 @@ jobs:
             substituters = ${{ steps.cache.outputs.substituter }}
             trusted-public-keys = ${{ steps.cache.outputs.public_keys }}
         run: |
-          printf '%s\n' "${{ vars.NIX_BUILDERS }}" > /tmp/nix-builders
           nix run nixpkgs#nix-fast-build -- \
             --no-nom --skip-cached \
             --flake .# ${{ inputs.targets }}

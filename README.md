@@ -191,6 +191,15 @@ own `.github/workflows/` and fill the placeholders.
   fresh OIDC tokens bound to the cache audience (no long-lived secrets), and
   non-GHA coordinators use a fleet-issued push token in the same env var.
 
+CI builder artifacts come from the registry, not repo variables: a consumer
+flake with `fleet.builderSets.ci` gets `packages.ci-builders` (per-set bundles
+as `packages.ci-builders-<set>`) — a directory with `machines` (nix
+machines-file lines), `known_hosts`, and `ssh_config`, rendered from the
+consumer's own registry. The `build-push-cache` template installs these
+instead of holding builder coordinates; a `FLEET_CI_ON_TAILNET=true` repo
+variable plus `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_CLIENT_SECRET` secrets add the
+Tailscale join for fleet-host builders.
+
 CI-capable cache setup consumer-side:
 
 ```nix

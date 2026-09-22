@@ -110,7 +110,7 @@ let
       # A real unit for the notification contract to hook.
       systemd.services.fixture-monitored.script = "true";
 
-      services.fleet-builders.activeSet = "default";
+      services.fleet-builders.activeSet = "ci";
 
       services = {
         nh-gc.enable = true;
@@ -193,7 +193,7 @@ in
       systems = [ "aarch64-linux" ];
       publicHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureExternal0000000000000000000000 fixture@invalid";
     };
-    builderSets.default = [
+    builderSets.ci = [
       "fixture-builder"
       "fixture-external"
     ];
