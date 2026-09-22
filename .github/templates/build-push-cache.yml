@@ -98,12 +98,14 @@ jobs:
           echo "REFRESHER_PID=$!" >> "$GITHUB_ENV"
 
       - name: Evaluate and distribute builds to fleet builders
-        # nix builders = the fan-out mechanism: nix schedules derivations
-        # across ssh builders itself; results return to the runner's store.
-        # --niks3-server makes nix-fast-build push realised paths with
-        # `niks3 push` afterwards (dedup makes overlap harmless). No
-        # post-build-hook involved: distributed work never fires the
-        # coordinator's hook, the coordinator pushes explicitly.
+        # Fan-out via nix's builders mechanism: nix schedules derivations
+        # across the listed ssh builders AND the runner's own local store
+        # (default max-jobs — the runner is just another builder; GHA local
+        # capacity participates, and its aarch64 runners cover arm builds
+        # home-forge cannot). Builders with the niks3 post-build-hook push
+        # their work as it lands; results returning to the runner are pushed
+        # by --niks3-server. niks3's server-side dedup/queueing makes the
+        # overlap a no-op.
         env:
           NIX_CONFIG: |
             builders = @/tmp/nix-builders
