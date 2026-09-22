@@ -1,24 +1,17 @@
+# DO-NOT-EDIT. This file was auto-generated using github:denful/flake-file.
+# Use `nix run .#write-flake` to regenerate it.
 {
+  description = "Reusable NixOS fleet infrastructure aspects";
+
+  outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } (inputs.import-tree ./modules);
+
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-file.url = "github:denful/flake-file";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
     import-tree.url = "github:denful/import-tree";
-    treefmt-nix = {
-      url = "github:numtide/treefmt-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
-    # Fixture-only inputs. Several aspects register sops secrets and configure
-    # the niks3 cache server, so the fixture class has to import those upstream
-    # modules to evaluate them; consumers import their own copies, exactly as
-    # they do their own nixpkgs.
-    sops-nix = {
-      url = "github:Mic92/sops-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     niks3 = {
       url = "github:Mic92/niks3";
       inputs = {
@@ -26,16 +19,14 @@
         treefmt-nix.follows = "treefmt-nix";
       };
     };
-  };
-
-  outputs =
-    inputs:
-    inputs.flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [ (inputs.import-tree ./modules) ];
-
-      systems = [
-        "x86_64-linux"
-        "aarch64-linux"
-      ];
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 }
