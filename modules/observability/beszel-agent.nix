@@ -1,7 +1,8 @@
 # Beszel agent authentication and enrollment. The hub stays consumer-side.
 # secretFiles.host is the two-step sops bootstrap gate: until the host-scoped
-# file exists, no agent, no secret, and no template is registered. Consumer
-# requirement: sops-nix.nixosModules.sops (credentials arrive via a template).
+# file exists, no agent, no secret, no template, and no notify registration is
+# generated. Consumer requirement: sops-nix.nixosModules.sops (credentials
+# arrive via a template).
 {
   flake.modules.nixos.beszel-agent =
     { config, lib, ... }:
@@ -13,6 +14,12 @@
       enrolled = cfg.secretFiles.host != null && builtins.pathExists cfg.secretFiles.host;
     in
     {
+      # Registration is unconditional in the class: the shared fragment declares
+      # the namespace, and the notify aspect realizes it only when co-selected —
+      # the same idiom nh-gc uses for its own unit. The gate still applies: a
+      # host with no enrollment token generates neither agent nor event.
+      imports = [ ../notifications/notify/_notify-events.nix ];
+
       options.services.beszel-agent = {
         secretFiles = {
           common = secretHelpers.mkSecretFileOption "the fleet-wide Beszel agent key";
@@ -66,6 +73,13 @@
             enable = true;
             environmentFile = config.sops.templates."beszel-agent.env".path;
           };
+        })
+
+        # The aspect owns the unit it creates, so it owns the failure
+        # registration: gated on the same enrollment predicate, because a unit
+        # that does not exist must not be registered.
+        (lib.mkIf enrolled {
+          services.notify.events."beszel-agent".failure = { };
         })
       ];
     };
