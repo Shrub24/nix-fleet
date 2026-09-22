@@ -1,11 +1,12 @@
 # Beszel agent authentication and enrollment. The hub stays consumer-side.
 # secretFiles.host is the two-step sops bootstrap gate: until the host-scoped
 # file exists, no agent, no secret, no template, and no notify registration is
-# generated. The credential is the fleet-wide KEY (hub->agent SSH auth); TOKEN
-# is the outbound WebSocket registration path, only read when HUB_URL is set,
-# so it is rendered into the template only when a host declares one.
-# Consumer requirement: sops-nix.nixosModules.sops (credentials arrive via a
-# template).
+# generated. The credential is the fleet-wide KEY (hub->agent SSH auth). TOKEN
+# (the WebSocket registration path) is deliberately not wired: WebSocket mode
+# needs plain HTTP reachability of the hub URL, but the hub sits behind
+# Cloudflare Access and agents reach it over tailnet SSH — no HUB_URL, no
+# TOKEN. Consumer requirement: sops-nix.nixosModules.sops (credentials arrive
+# via a template).
 {
   flake.modules.nixos.beszel-agent =
     { config, lib, ... }:
@@ -26,18 +27,10 @@
       options.services.beszel-agent = {
         secretFiles = {
           common = secretHelpers.mkSecretFileOption "the fleet-wide Beszel agent key";
-          host = secretHelpers.mkSecretFileOption "a host-scoped secrets file gating enrollment; may carry beszel/token (optional) alongside other host secrets";
+          host = secretHelpers.mkSecretFileOption "a host-scoped secrets file gating enrollment";
         };
 
-        secretKeys = {
-          common = secretHelpers.mkSecretKeyOption "beszel/key";
-          # null disables the TOKEN path entirely (SSH-only agents).
-          host = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = "beszel/token";
-            description = "SOPS YAML key path for the optional host enrollment token; null omits TOKEN from the agent environment.";
-          };
-        };
+        secretKeys.common = secretHelpers.mkSecretKeyOption "beszel/key";
       };
 
       config = lib.mkMerge [
@@ -59,30 +52,15 @@
             mode = "0400";
             content = ''
               KEY=${config.sops.placeholder.beszel_agent_key}
-            ''
-            + lib.optionalString (cfg.secretKeys.host != null) ''
-              TOKEN=${config.sops.placeholder.beszel_agent_token}
             '';
           };
 
-          sops.secrets =
-            secretHelpers.mkSecretsFromMap cfg.secretFiles.common {
-              beszel_agent_key = {
-                key = cfg.secretKeys.common;
-                path = "/run/secrets/beszel.agent.key";
-              };
-            }
-            // (
-              if cfg.secretKeys.host != null then
-                secretHelpers.mkSecretsFromMap cfg.secretFiles.host {
-                  beszel_agent_token = {
-                    key = cfg.secretKeys.host;
-                    path = "/run/secrets/beszel.agent.token";
-                  };
-                }
-              else
-                { }
-            );
+          sops.secrets = secretHelpers.mkSecretsFromMap cfg.secretFiles.common {
+            beszel_agent_key = {
+              key = cfg.secretKeys.common;
+              path = "/run/secrets/beszel.agent.key";
+            };
+          };
 
           services.beszel.agent = {
             enable = true;
