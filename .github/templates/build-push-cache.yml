@@ -22,8 +22,9 @@
 # selection the workflow makes is the builder-set name.
 #
 # Template placeholders (CONSUMER FILLS):
-#   {{BUILDER_SET}}     fleet.builderSets entry rendered for CI
-#                       (default: the "ci" set; produces .#ci-builders)
+#   {{BUILDER_SET}}     fleet.builderSets entry rendered for CI; canonical
+#                       "ci" ships with nix-fleet (bundle: packages.ci);
+#                       consumer-local sets render as packages.<set>
 #   {{CACHE_URL}}       niks3 server base URL (substituter + keys + audience
 #                       all come from its /api/cache-config, same as the action)
 #   {{TARGETS}}         default flake attrspecs
@@ -90,7 +91,7 @@ jobs:
         # stores builder coordinates; the registry is the SSOT.
         run: |
           BUNDLE=$(nix build --no-link --print-out-paths \
-            ".#packages.x86_64-linux.ci-builders{{BUILDER_SET_SUFFIX}}")
+            ".#packages.x86_64-linux.ci{{BUILDER_SET_SUFFIX}}")
           mkdir -p ~/.ssh
           sudo cp "$BUNDLE/known_hosts" /etc/ssh/ssh_known_hosts
           cat "$BUNDLE/ssh_config" >> ~/.ssh/config

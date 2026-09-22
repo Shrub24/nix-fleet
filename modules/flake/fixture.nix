@@ -32,7 +32,6 @@ let
       ]
       ++ (with aspects; [
         beszel-agent
-        fleet-builders
         nh-gc
         niks3-cache
         niks3-publisher
@@ -110,7 +109,7 @@ let
       # A real unit for the notification contract to hook.
       systemd.services.fixture-monitored.script = "true";
 
-      services.fleet-builders.activeSet = "ci";
+      services.fleet-builders.activeSet = "fixture";
 
       services = {
         nh-gc.enable = true;
@@ -194,7 +193,7 @@ in
       systems = [ "aarch64-linux" ];
       publicHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureExternal0000000000000000000000 fixture@invalid";
     };
-    builderSets.ci = [
+    builderSets.fixture = [
       "fixture-builder"
       "fixture-external"
     ];
@@ -205,6 +204,9 @@ in
       name = "fixture-${builtins.replaceStrings [ "_" ] [ "-" ] system}";
       value.module.imports = [
         fixtureModule
+        # The evaluation-local realization built from THIS evaluation's merged
+        # fleet config — the fixture is the first consumer of its own feature.
+        config.fleet.realization
         {
           nixpkgs.hostPlatform = lib.mkForce system;
         }

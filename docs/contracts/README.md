@@ -4,19 +4,23 @@ Quick reference for repositories consuming nix-fleet (nix-homelab, dotfiles,
 future hosts): what each published contract is, who owns what, and the
 minimum wiring to onboard.
 
-The recurring shape across every contract: **nix-fleet owns the mechanism and
-its code; the consumer owns placement, inventory, policy data, and
-secrets.** A consumer binds values through typed options or flake-level
-declarations; nothing host-specific ever lives in nix-fleet.
+The recurring shape: **nix-fleet is the authority for canonical fleet facts
+(identity, participation, cross-fleet sets) and the mechanism code; consumers
+derive from those facts and own everything downstream** — compositions,
+placement, per-relationship policy, local additions, secrets. Fact tiers:
 
-| Contract                 | File                        | Surface                                                                  |
-| ------------------------ | --------------------------- | ------------------------------------------------------------------------ |
-| Machine identity + trust | [hosts.md](hosts.md)        | `flake.hosts.*`, known-hosts, ssh Host blocks                            |
-| Builders + scheduling    | [builders.md](builders.md)  | `flake.builders.*`, `fleet.builderSets.*`, `flakeModules.fleet-builders` |
-| CI builds + cache push   | [ci.md](ci.md)              | `packages.ci-builders*`, `.github/templates/build-push-cache.yml`        |
-| Tooling (treefmt base)   | README, "Tooling contract"  | `flakeModules.tooling`                                                   |
-| Secrets helpers          | README, "Consumer contract" | `lib.secrets`                                                            |
-| Notification events      | README, aspect 6            | `services.notify.events.<unit>`                                          |
+1. **Canonical fact** — declared in nix-fleet; consumers derive, never restate.
+2. **Shared default** — mechanism defaults; overridable normally.
+3. **Consumer-local policy** — belongs downstream, additive only.
+
+| Contract                 | File                        | Surface                                                                    |
+| ------------------------ | --------------------------- | -------------------------------------------------------------------------- |
+| Machine identity + trust | [hosts.md](hosts.md)        | `flake.hosts.*`, known-hosts, ssh Host blocks                              |
+| Builders + scheduling    | [builders.md](builders.md)  | `fleet.builders.*`, `fleet.builderSets.*`, `config.fleet.realization`      |
+| CI builds + cache push   | [ci.md](ci.md)              | `packages.ci` / `packages.<set>`, `.github/templates/build-push-cache.yml` |
+| Tooling (treefmt base)   | README, "Tooling contract"  | `flakeModules.tooling`                                                     |
+| Secrets helpers          | README, "Consumer contract" | `lib.secrets`                                                              |
+| Notification events      | README, aspect 6            | `services.notify.events.<unit>`                                            |
 
 ## Reading order for a new consumer
 

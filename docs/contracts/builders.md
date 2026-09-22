@@ -1,98 +1,99 @@
 # Builders contract — participation, sets, scheduling
 
-How machines (and external services like nixbuild.net) participate as Nix
-builders, and how scheduling policy is expressed. Built on the host identity
-from [hosts.md](hosts.md); consumed by CI via [ci.md](ci.md).
+Canonical builder facts live in nix-fleet; consumers derive and add local
+policy. Built on the host identity from [hosts.md](hosts.md); consumed by CI
+via [ci.md](ci.md).
 
-## Design decisions (why it looks like this)
+## Design decisions
 
-- **One scheduling mechanism: named builder sets.** Roles/tags-as-filters
-  were rejected; `fleet.builderSets.<name>` is an explicit, auditable list.
-  Metered or external resources (nixbuild.net is metered) are spent only by
-  explicit set membership — "which workloads may spend nixbuild money" is a
-  list you can read.
+- **One scheduling mechanism: named builder sets.** `fleet.builderSets.<name>`
+  is an explicit, auditable list. Metered/external resources (nixbuild.net is
+  metered) are spent only by explicit set membership — "which workloads may
+  spend nixbuild money" is a readable list.
 - **Two mutually exclusive builder variants.** A builder is either backed by
-  a fleet host reference (dialled over the tailnet by MagicDNS name, host
-  key inherited from the host record) or externally provided by a full
-  store URI (e.g. `ssh-ng://eu.nixbuild.net`, own host key). Never loosely
-  related nullable fields.
-- **No reachability property.** The variant already encodes it: fleet-host
-  = tailnet, uri = public. An unreachable builder is a workflow bootstrap
-  failure (CI) or an ops problem (hosts), not data.
-- **nixbuild.net auth is plain SSH keys** — added via the dashboard, private
-  keys are per-client consumer secrets. No tokens, no env plumbing; the
-  old `NIXBUILDNET_ACCESS_TOKENS` secret in dotfiles was never needed for
-  builder use and is discardable.
-- **The NixOS aspect is constructed, not imported blindly.** A NixOS module
-  cannot read flake-level config, so `flakeModules.fleet-builders` builds
-  the aspect inside the consumer's evaluation with _that consumer's_
-  registry closed over. Importing a pre-built module from nix-fleet's own
-  evaluation would leak nix-fleet's inventory into the consumer — the
-  legacy `flake.modules.nixos.builder-access` path exists only to fail eval
-  with a named migration error.
+  a fleet host reference (dialled over the tailnet by MagicDNS name, host key
+  inherited from the host record) or externally provided by a full store URI
+  (e.g. `ssh-ng://eu.nixbuild.net`, own host key).
+- **No reachability property.** The variant encodes it: fleet-host = tailnet,
+  uri = public. An unreachable builder is a bootstrap failure (CI) or an ops
+  problem (hosts), not data.
+- **nixbuild.net auth is plain SSH keys** (dashboard-managed, per-client
+  private keys are consumer sops business). No tokens.
+- **The realization is evaluation-local.** A NixOS module cannot read flake
+  config, so nix-fleet publishes the _feature_ (`flakeModules.fleet`), which
+  constructs the NixOS realization inside the consumer's evaluation with the
+  consumer's merged fleet config closed over. It is exposed as
+  `config.fleet.realization` — never as a pre-realized
+  `modules.nixos.*` export, which would silently bind nix-fleet's own
+  inventory (the transitional shim at `modules.nixos.fleet-builders` throws
+  with this exact guidance).
 
-## What the consumer declares
+## Canonical inventory (nix-fleet side)
 
 ```nix
-imports = [
-  inputs.nix-fleet.flakeModules.registry        # fleet.* options
-  inputs.nix-fleet.flakeModules.fleet-builders  # constructs the NixOS aspect
-];
-
+# modules/fleet/inventory.nix
 fleet.builders.home-forge = {
-  host = "home-forge";                  # fleet.hosts key (variant 1)
+  host = "home-forge";
   systems = [ "x86_64-linux" ];
-  maxJobs = 2;
+  maxJobs = 4;                       # shared default, tier 2
   speedFactor = 2;
   supportedFeatures = [ "big-parallel" "kvm" "nixos-test" ];
-  # sshKeyPath = "/root/.ssh/nix-remote";  credential REFERENCE (path),
-  #                                         not a credential; null = agent/
-  #                                         default IdentityFile config
 };
-
 fleet.builders.nixbuild = {
-  uri = "ssh-ng://eu.nixbuild.net";     # variant 2: full store URI
-  systems = [ "aarch64-linux" ];
-  maxJobs = 4;
-  publicHostKey = "ssh-ed25519 AAAA..."; # from nixbuild's docs
+  uri = "ssh-ng://eu.nixbuild.net";
+  systems = [ "x86_64-linux" "aarch64-linux" ];
+  publicHostKey = "ssh-ed25519 AAAA...";   # from nixbuild's docs
 };
+fleet.builderSets.ci = [ "home-forge" "nixbuild" ];
+```
 
-fleet.builderSets.ci = [ "home-forge" "nixbuild" ];  # the scheduling policy
+## Consumer additions (tier 3, additive)
+
+```nix
+# consumer flake level — new builders/sets are fine; never shadow canonical IDs
+fleet.builderSets.deploy = [ "home-forge" ];        # consumer-local set
+fleet.builders.buildbox.uri = "ssh-ng://buildbox";  # consumer-local builder
 ```
 
 Fail-closed validation (named errors): a set naming an unknown builder, a
-builder referencing an unknown host, a builder with both/neither variant
-set — all fail `nix flake check` with the specific problem.
+builder referencing an unknown host, a builder with both/neither variant set,
+a host-backed builder whose host key is unharvested — all fail `nix flake
+check` with the specific problem.
 
 ## The two seams
 
-One aspect, two independently-consumable halves:
-
-1. **Trust** — known-hosts + ssh client Host blocks for registry hosts.
+1. **Trust** — known-hosts + ssh client Host blocks for inventory hosts.
    Always on, additive, no scheduling implied. See hosts.md.
 2. **Scheduling** — on a host composition:
 
    ```nix
-   imports = [ inputs.nix-fleet.modules.nixos.fleet-builders ];
+   imports = [ config.fleet.realization ];
    services.fleet-builders.activeSet = "ci";   # null = trust only
-   services.fleet-builders.sshUser = "root";   # dial-as user
    ```
 
-   `activeSet` selects the builder set → `nix.buildMachines` (comma-joined
-   systems, base64 host-key bodies, per-builder features) → nixpkgs renders
+   `activeSet` selects a builder set -> `nix.buildMachines` (comma-joined
+   systems, base64 host-key bodies, per-builder features) -> nixpkgs renders
    `/etc/nix/machines` and `nix.settings.builders = "@/etc/nix/machines"`,
    with `nix.distributedBuilds` enabled only when a set is selected.
 
-Selecting an activeSet never _reaches_ the builders: the connecting host
-still needs its own SSH credentials (per-host sops business) and the builders
-must authorize its key. nix-fleet carries no credential material.
+## Prerequisites when scheduling is enabled
+
+- **`sshUser`** defaults to `dev` — the fleet convention (homelab
+  administrates via `dev`, which is in `trusted-users` on fleet hosts, so
+  ssh-ng store writes work). Overridable per composition.
+- **The coordinator's key must be authorized on every selected builder**
+  (builder-side `authorized_keys`/sops — consumer policy). Selecting an
+  activeSet never _reaches_ the builders.
+- **Self-scheduling:** nothing excludes the evaluating host from its own set.
+  A host selecting a set containing itself dials itself. Either keep such
+  hosts out of the sets they select, or accept the (wasteful, trust-
+  requiring) self-entry deliberately.
 
 ## What stays consumer-side
 
 - Substituter policy (`nix.settings` substituters/trusted keys, including
-  `ssh-ng://` substituter entries) — endpoint catalog, not builder
-  participation. The registry must not conflate the two uses of a host.
-- SSH server config, peer-alias policy beyond what trust renders, GC,
-  remote-builder _authorization_ (whose keys may log in).
-- Non-fleet personal hosts (dotfiles' arch etc.) — the registry is partial
-  by design.
+  `ssh-ng://` substituter entries) — endpoint catalog, not participation.
+- SSH server config, host key material (private), GC, remote-builder
+  _authorization_.
+- Non-fleet personal hosts (dotfiles' non-fleet machines) — the canonical
+  inventory is partial by design; consumers add only what they configure.

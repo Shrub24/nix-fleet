@@ -75,44 +75,49 @@ renovate.json        # weekly nix flake input updates
 5. **`niks3-publisher`** — niks3 closure-upload *client* (upstream post-build-hook module). `serverUrl` required; token via `secretFiles.apiToken`.
 6. **`notify`** — notification dispatch (Telegram + ntfy) realizing native systemd event notifications. One owned package (`pkgs/notify`, overridable): the daemon (`notify serve`, unprivileged system user, unix socket + loopback TCP for app webhooks) owns secrets, the policy map, and journal access; `notify send`/`notify test` and the `unit-notify` handler are thin unprivileged connectors. The registration contract `services.notify.events.<unit>.{failure,success}` is a declaration-only fragment contributors import, so registration is unconditional and realization happens only when notify is co-selected. Socket access: callers join the always-defined `notify` group from their own module (`users.users.<name>.extraGroups`); root units need nothing. Per-event policy: severity, topic, journalLines, context, title — explicit only (no hook without a declared event). Routing resolves per transport: semantic topic if the consumer's map has it, otherwise the severity. Dispatch policy (chatId, topics, ntfy coordinates) is consumer-bound; secrets follow the two-step bootstrap.
 
-## Consumer contract (how nix-homelab / dotfiles will consume)
+## Consumer contract (how nix-homelab / dotfiles consume)
+
+nix-fleet is the **authority for canonical fleet facts**: machine identity
+(`fleet.hosts`), builder participation (`fleet.builders`), cross-fleet
+builder sets (`fleet.builderSets`), and shared mechanism defaults. Three
+tiers govern who may change what:
+
+1. **Canonical fact** — declared here (inventory + schema). Consumers derive;
+   never restate. Not casually overridable.
+2. **Shared default** — mechanism defaults (ssh tuning, maxJobs). Overridable
+   normally.
+3. **Consumer-local policy** — compositions, sshUser per relationship,
+   extraKnownHosts, local builder sets, substituters, secrets. Downstream.
 
 ```nix
-# consumer flake.nix
-inputs.nix-fleet.url = "git+ssh://.../nix-fleet";  # or path:../nix-fleet during bring-up
-
-# consumer flake adopting the shared treefmt definition
-# (top-level mkFlake imports, beside inputs.flake-parts.flakeModules.modules;
-# the consumer declares its own treefmt-nix input — inputs are not transitive)
+# consumer flake-level: one import — the fleet feature composes schema,
+# canonical inventory, validation, CI artifacts, and the realization.
 imports = [
+  inputs.nix-fleet.flakeModules.fleet
   inputs.nix-fleet.flakeModules.tooling
-  inputs.nix-fleet.flakeModules.registry        # declares fleet.* options
-  inputs.nix-fleet.flakeModules.fleet-builders  # constructs the NixOS aspect from THIS flake's registry
 ];
 
-# consumer inventory at flake level (the SSOT; nix-fleet holds no host data)
-fleet = {
-  hosts.home-forge.system = "x86_64-linux";
-  builders.home-forge = {
-    host = "home-forge";
-    systems = [ "x86_64-linux" ];
-    maxJobs = 2;
-  };
-  builders.nixbuild = {
-    uri = "ssh-ng://eu.nixbuild.net";
-    systems = [ "aarch64-linux" ];
-    publicHostKey = "ssh-ed25519 AAAA...";
-  };
-  builderSets.ci = [ "home-forge" "nixbuild" ];
-};
-
-# CI artifact a build-push-cache workflow installs:
-# inputs.nix-fleet.lib.registry.machinesFile config.fleet.hosts config.fleet.builders
-# (rendered inside the consumer's evaluation, where config.fleet is populated)
-
-# consumer code importing the canonical secrets helpers
-secretHelpers = inputs.nix-fleet.lib.secrets;
+# consumer-local additions (additive, never shadows canonical IDs):
+fleet.builderSets.deploy = [ "home-forge" ];   # consumer-local set
 ```
+
+Host compositions consume the **evaluation-local realization** — built in
+the consumer's own evaluation with the consumer's merged fleet config closed
+over:
+
+```nix
+# consumer host composition (NixOS class)
+imports = [ config.fleet.realization ];
+services.fleet-builders.activeSet = "ci";
+```
+
+The realization is never imported from `inputs.nix-fleet.modules.nixos.*`:
+a module constructed in nix-fleet's evaluation would silently bind
+nix-fleet's inventory. Importing it throws with this exact guidance
+(transitional shim; removed after both consumers migrate).
+
+CI artifacts (`packages.ci` for the canonical set, `packages.<set>` per declared set)
+render from the same inventory; see [docs/contracts/ci.md](docs/contracts/ci.md).
 
 NixOS aspects are host modules, not flake-parts modules: they land in a host
 composition's NixOS module list, never in the consumer's flake-level imports.
@@ -193,7 +198,7 @@ own `.github/workflows/` and fill the placeholders.
   non-GHA coordinators use a fleet-issued push token in the same env var.
 
 CI builder artifacts come from the registry, not repo variables: a consumer
-flake with `fleet.builderSets.ci` gets `packages.ci-builders` (per-set bundles
+flake importing the fleet feature gets `packages.ci` (canonical set; per-set bundles
 as `packages.ci-builders-<set>`) — a directory with `machines` (nix
 machines-file lines), `known_hosts`, and `ssh_config`, rendered from the
 consumer's own registry. The `build-push-cache` template installs these
