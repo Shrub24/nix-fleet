@@ -154,16 +154,15 @@ own `.github/workflows/` and fill the placeholders.
 
 - **`nvfetcher-refresh`** — scheduled source-metadata regeneration, flake
   validation, PR on change.
-- **`build-push-cache`** — coordinated fleet build + cache push. Two
-  complementary mechanisms, no path collection anywhere:
-  fleet builders already run the niks3 post-build-hook (`niks3-publisher`
-  aspect — every realised path pushes as it builds), so the workflow only
-  dispatches `nix-fast-build` to them over SSH; GitHub runners build locally
-  through `niks3-action`, which registers the same post-build-hook and
-  streams uploads via GitHub OIDC. No long-lived tokens: bind
-  `services.niks3-cache.oidc.providers` consumer-side (issuer
-  `https://token.actions.githubusercontent.com`, bound claims on
-  repository/owner, `write` scope).
+- **`build-push-cache`** — coordinated fleet build + cache push. One
+  coordinator runs `nix-fast-build`: it evaluates locally, fans builds out
+  to nix remote builders (the `builders =` mechanism, multiple hosts, results
+  return to the coordinator), and pushes realised paths with `niks3 push`
+  (server-side deduplication makes overlap harmless). GitHub-runner builds
+  run through `niks3-action`, which registers a post-build-hook and streams
+  uploads with GitHub OIDC — bind `services.niks3-cache.oidc.providers`
+  consumer-side for that path. The coordinator push needs a fleet-issued
+  push token (nix-fast-build does not consume GitHub OIDC directly).
 
 CI-capable cache setup consumer-side:
 

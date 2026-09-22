@@ -1,24 +1,30 @@
 # Coordinated fleet build + cache push.
 #
-# Two paths, one cache:
+# Model: ONE coordinator runs nix-fast-build, which evaluates locally and
+# distributes builds to nix remote builders (nix's own builders = ssh://...
+# fan-out, multiple hosts, results return to the coordinator's store). The
+# coordinator then pushes what it holds to niks3 once — server-side
+# deduplication makes overlap with anything builders pushed themselves
+# harmless. nix-fast-build's --niks3-server does the same thing via
+# `niks3 push` after the build; auth comes from NIKS3_AUTH_TOKEN_FILE, so the
+# coordinator needs a push token (fleet builder / CI token minted by the
+# consumer), NOT the GitHub OIDC path — nix-fast-build does not read
+# ACTIONS_ID_TOKEN.
 #
-# - Fleet builders (any host with the niks3-publisher aspect) already run the
-#   niks3 post-build-hook (niks3-auto-upload): every path they realise is
-#   pushed to the cache as it builds. The workflow only DISPATCHES to them
-#   over SSH — no path collection, no push step for their output.
-# - GitHub-hosted runners build directly (capacity permitting) through
-#   niks3-action: it registers a native post-build-hook on the runner, so
-#   uploads stream as derivations finish, and authenticates via GitHub OIDC
-#   (permissions.id-token). No long-lived tokens; the consumer binds the
-#   GitHub provider on services.niks3-cache.oidc.providers (write scope).
+# GHA-local builds (capacity permitting) stay on niks3-action, which
+# registers a post-build-hook and streams uploads with GitHub OIDC; both
+# paths converge on the same deduplicating server.
 #
 # Template placeholders (CONSUMER FILLS):
-#   {{BUILDER_HOSTS}}   JSON array of SSH-reachable builders (may be [])
+#   {{BUILDERS}}        nix builders line, e.g.
+#                       "ssh://builder1 aarch64-linux ssh://builder2"
 #   {{CACHE_URL}}       niks3 server base URL
-#   {{TARGETS}}         default flake attrspecs to build
+#   {{TARGETS}}         default flake attrspecs
+#   {{SSH_KEY_SECRET}}  repo secret holding the coordinator's builder key
 #
-# Builder prerequisites: nix-fast-build available, nixpkgs revisions aligned
-# with the repo under build (consumers follow nix-fleet's nixpkgs input).
+# Builder prerequisites: nixpkgs revisions aligned (consumers follow
+# nix-fleet's nixpkgs input), coordinator key trusted by builders,
+# substituter pointing at the cache so --skip-cached is meaningful.
 name: build-push-cache
 on:
   workflow_dispatch:
@@ -45,28 +51,40 @@ concurrency:
 jobs:
   fleet-build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        builder: { { BUILDER_HOSTS } }
-      fail-fast: false
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Dispatch nix-fast-build on the fleet builder
-        # Builders push their own output through niks3-auto-upload; the
-        # workflow does not collect or push for them.
+      - name: Install Nix
+        uses: NixOS/nix-installer-action@main
+
+      - name: Set up coordinator SSH key
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets[format('SSH_KEY_{0}', matrix.builder)] }}" > ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.{{SSH_KEY_SECRET}} }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan "${{ matrix.builder }}" >> ~/.ssh/known_hosts
-          rsync -az --delete --exclude .jj --exclude .git ./ "${{ matrix.builder }}:/tmp/nix-build-src/"
-          ssh "${{ matrix.builder }}" \
-            "nix-fast-build --no-nom --skip-cached --flake /tmp/nix-build-src# ${{ inputs.targets }}"
+
+      - name: Evaluate and distribute builds to fleet builders
+        # nix builders = the fan-out mechanism: nix schedules derivations
+        # across ssh builders itself; results return to the runner's store.
+        # --niks3-server makes nix-fast-build push realised paths with
+        # `niks3 push` afterwards (dedup makes overlap harmless).
+        env:
+          NIX_CONFIG: |
+            builders = @/tmp/nix-builders
+            substituters = {{CACHE_URL}}
+            trusted-public-keys = {{CACHE_PUBLIC_KEYS}}
+        run: |
+          printf '%s\n' "${{ vars.NIX_BUILDERS }}" > /tmp/nix-builders
+          nix run nixpkgs#nix-fast-build -- \
+            --no-nom --skip-cached \
+            --flake .# ${{ inputs.targets }}
 
   gha-build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        system: [x86_64-linux]
+    runs-on: ${{ matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -79,6 +97,5 @@ jobs:
         with:
           server-url: { { CACHE_URL } }
 
-      - name: Build
-        # Realised paths stream to the cache as each derivation finishes.
-        run: nix-fast-build --no-nom --skip-cached --flake .# ${{ inputs.targets }}
+      - name: Build (locally, streaming uploads)
+        run: nix run nixpkgs#nix-fast-build -- --no-nom --skip-cached --flake .# ${{ inputs.targets }}
