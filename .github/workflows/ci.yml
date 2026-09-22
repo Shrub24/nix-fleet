@@ -1,0 +1,40 @@
+# nix-fleet's own CI: formatting, flake checks, fixture toplevel builds on
+# every declared system. Generated from .github/templates/ — that directory
+# is the consumer contract; this file instantiates it.
+name: ci
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Check formatting (pinned tooling base)
+        run: nix build --no-link .#checks.x86_64-linux.treefmt
+
+      - name: Evaluate all systems
+        run: nix flake check --no-build --no-write-lock-file --all-systems
+
+      - name: Build fixture toplevel (x86_64)
+        # --all-systems evaluates the aarch64 fixture; aarch64 toplevels are
+        # built natively by aarch64 builders/consumers, not here.
+        run: nix build --no-link .#checks.x86_64-linux.fixture-x86-64-linux

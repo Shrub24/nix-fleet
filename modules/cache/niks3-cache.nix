@@ -116,6 +116,17 @@ _: {
           default = "/run/secrets/niks3.api_token";
           description = "Runtime path of the API token file; materialized from `secretFiles.apiToken`.";
         };
+
+        oidc.providers = lib.mkOption {
+          type = lib.types.attrsOf lib.types.unspecified;
+          default = { };
+          description = ''
+            OIDC providers passed through to the upstream `services.niks3.oidc.providers`
+            module option (typed there). CI federation lives here: e.g. a GitHub
+            Actions provider bound to repository_owner, granting the write scope.
+            Policy data — consumer-supplied.
+          '';
+        };
       };
 
       config = {
@@ -168,6 +179,8 @@ _: {
           inherit (cfg) cacheUrl;
           inherit (cfg) signKeyFiles;
           inherit (cfg) apiTokenFile;
+
+          oidc.providers = cfg.oidc.providers;
         };
 
         # Each secret file is optional on its own: the assertions above are the

@@ -145,3 +145,35 @@ The four helpers (`mkSecretFileOption`, `mkSecretKeyOption`,
 nix-homelab's `lib/secrets.nix`, so options declared with either resolve to the
 same types.
 ````
+
+## CI
+
+`.github/templates/` holds reusable workflow templates; `.github/workflows/`
+instantiates them for this repository. Consumers copy a template into their
+own `.github/workflows/` and fill the placeholders.
+
+- **`nvfetcher-refresh`** — scheduled source-metadata regeneration, flake
+  validation, PR on change.
+- **`build-push-cache`** — coordinated fleet build + niks3 push. GHA is the
+  coordinator: it dispatches `nix-fast-build` to SSH-reachable fleet builders
+  (each skips what its store already has), collects realized store paths, and
+  pushes them with the `niks3` CLI. Authentication is GitHub OIDC, not a
+  stored token: bind `services.niks3-cache.oidc.providers` consumer-side
+  (issuer `https://token.actions.githubusercontent.com`, bound claims on
+  repository/owner, `write` scope).
+
+CI-capable cache setup consumer-side:
+
+```nix
+services.niks3-cache = {
+  s3.endpoint = "...";
+  cacheUrl = "https://cache.example.com";
+  secretFiles = { host = ...; apiToken = ...; };
+  oidc.providers.github = {
+    issuer = "https://token.actions.githubusercontent.com";
+    audience = "https://cache.example.com";
+    boundClaims.repository_owner = [ "Shrub24" ];
+    scopes = [ "write" ];
+  };
+};
+```

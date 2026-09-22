@@ -1,0 +1,110 @@
+# Coordinated fleet build + cache push. GHA is the coordinator only: it
+# dispatches builds to fleet builders over SSH (nix-fast-build against each
+# builder's local store), then the coordinator pushes the realized closures
+# to niks3. No long-lived secrets live in GitHub; the workflow's OIDC token
+# authenticates the push (configure `services.niks3-cache.oidc.providers`
+# consumer-side with the GitHub issuer, bound claims, and the write scope).
+#
+# Template placeholders (CONSUMER FILLS THESE):
+#   {{BUILDER_HOSTS}}   JSON array of SSH-reachable builders, e.g.
+#                       '["home-forge.fleet.internal"]'
+#   {{CACHE_URL}}       niks3 server base URL (write endpoint)
+#   {{CACHE_AUDIENCE}}  OIDC audience the cache expects
+#
+# Builder prerequisites (consumer-side, per host):
+#   - SSH key material as repo secret SSH_KEY_<host> (underscores)
+#   - nix-fast-build in the builder's PATH (nixpkgs#nix-fast-build)
+#   - flake input alignment: the builder must share nixpkgs revisions with
+#     the repo under build (consumers follow nix-fleet's nixpkgs input)
+#   - builder's nix trusted to substitute from the fleet cache, or a
+#     pre-push warmup is unnecessary: nix-fast-build --skip-cached already
+#     skips paths its store has.
+name: build-push-cache
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Flake attrspecs to build (space-separated)"
+        required: false
+        default: ".#packages.x86_64-linux"
+  workflow_call:
+    inputs:
+      targets:
+        type: string
+        required: false
+        default: ".#packages.x86_64-linux"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: build-push-cache
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        builder: { { BUILDER_HOSTS } }
+      fail-fast: false
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up SSH to fleet builder
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets[format('SSH_KEY_{0}', matrix.builder)] }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan "${{ matrix.builder }}" >> ~/.ssh/known_hosts
+
+      - name: Dispatch nix-fast-build on the builder
+        # The repo ships to the builder via rsync (jj-colocated repos carry
+        # untracked state a runner cannot reproduce); nix-fast-build then
+        # evaluates remotely and builds there, skipping cached paths.
+        run: |
+          rsync -az --delete --exclude '.jj' --exclude '.git' ./ "${{ matrix.builder }}:/tmp/nix-build-src/"
+          ssh "${{ matrix.builder }}" 'nix-fast-build \
+            --no-nom --skip-cached \
+            --flake /tmp/nix-build-src# ${{ inputs.targets }}'
+
+      - name: Collect realized store paths
+        run: |
+          ssh "${{ matrix.builder }}" "nix path-info --recursive \
+            \$(cd /tmp/nix-build-src && nix eval --json ${{ inputs.targets }} --apply 'v: builtins.attrValues v' | jq -r '.[]' | sed 's|^|.|' | tr '\n' ' ')" \
+            > realized-paths-${{ matrix.builder }}.txt
+
+      - name: Upload path list artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: realized-paths-${{ matrix.builder }}
+          path: realized-paths-${{ matrix.builder }}.txt
+
+  push:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Download realized path lists
+        uses: actions/download-artifact@v4
+        with:
+          pattern: realized-paths-*
+          merge-multiple: true
+          path: paths
+
+      - name: Push closures to niks3 (OIDC-authenticated)
+        env:
+          PATHS_FILE: paths/realized-paths-merged.txt
+        run: |
+          cat paths/realized-paths-*.txt | sort -u > "$PATHS_FILE"
+          TOKEN_SCRIPT='sh -c "curl -sfS -H \"Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN\" \"${ACTIONS_ID_TOKEN_REQUEST_URL}&audience={{CACHE_AUDIENCE}}\" | jq -r .value"'
+          nix run nixpkgs#niks3 -- push \
+            --server-url {{CACHE_URL}} \
+            --auth-token-script "$TOKEN_SCRIPT" \
+            --stdin < "$PATHS_FILE"
