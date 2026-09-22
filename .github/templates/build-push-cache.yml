@@ -18,8 +18,8 @@
 # Template placeholders (CONSUMER FILLS):
 #   {{BUILDERS}}        nix builders line, e.g.
 #                       "ssh://builder1 aarch64-linux ssh://builder2"
-#   {{CACHE_URL}}       niks3 server base URL
-#   {{CACHE_AUDIENCE}}  OIDC audience the cache expects (from cache-config)
+#   {{CACHE_URL}}       niks3 server base URL (substituter + keys + audience
+#                       all come from its /api/cache-config, same as the action)
 #   {{TARGETS}}         default flake attrspecs
 #   {{SSH_KEY_SECRET}}  repo secret holding the coordinator's builder key
 #
@@ -65,6 +65,14 @@ jobs:
           printf '%s\n' "${{ secrets.{{SSH_KEY_SECRET}} }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
+      - name: Fetch cache config
+        # Same endpoint the action uses: substituter, public keys, audience.
+        id: cache
+        run: |
+          curl -sS "{{CACHE_URL}}/api/cache-config?issuer=https://token.actions.githubusercontent.com" \
+            | jq -r '"substituter=" + .substituter_url, "public_keys=" + (.public_keys | join(" ")), "audience=" + .oidc_audience' \
+            >> "$GITHUB_OUTPUT"
+
       - name: Start OIDC token refresher for niks3 push
         # niks3-action's auth-token-script output is daemon-mode-only, so we
         # mint directly: GitHub exposes ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN to
@@ -80,7 +88,7 @@ jobs:
           set -euo pipefail
           while true; do
             token=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience={{CACHE_AUDIENCE}}" | jq -r .value)
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${{ steps.cache.outputs.audience }}" | jq -r .value)
             printf '%s' "$token" > "$HOME/.config/niks3/auth-token"
             sleep 180
           done
@@ -93,12 +101,14 @@ jobs:
         # nix builders = the fan-out mechanism: nix schedules derivations
         # across ssh builders itself; results return to the runner's store.
         # --niks3-server makes nix-fast-build push realised paths with
-        # `niks3 push` afterwards (dedup makes overlap harmless).
+        # `niks3 push` afterwards (dedup makes overlap harmless). No
+        # post-build-hook involved: distributed work never fires the
+        # coordinator's hook, the coordinator pushes explicitly.
         env:
           NIX_CONFIG: |
             builders = @/tmp/nix-builders
-            substituters = {{CACHE_URL}}
-            trusted-public-keys = {{CACHE_PUBLIC_KEYS}}
+            substituters = ${{ steps.cache.outputs.substituter }}
+            trusted-public-keys = ${{ steps.cache.outputs.public_keys }}
         run: |
           printf '%s\n' "${{ vars.NIX_BUILDERS }}" > /tmp/nix-builders
           nix run nixpkgs#nix-fast-build -- \
