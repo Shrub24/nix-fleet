@@ -68,7 +68,7 @@ renovate.json        # weekly nix flake input updates
 ## Aspects (extracted from nix-homelab)
 
 1. **`tailscale`** — Tailscale baseline: enable, Tailscale SSH, systemd restart/ordering pinning, MTU debug option. Auth key via `secretFiles.auth`; unbound or missing file means the two-step sops bootstrap, registering nothing.
-2. **`beszel-agent`** — agent auth/enrollment (the hub stays in nix-homelab). Gated on `secretFiles.host` existing; credentials arrive via a sops template.
+2. **`beszel-agent`** — agent auth/enrollment (the hub stays in nix-homelab). Gated on `secretFiles.host` existing; credentials arrive via a sops template. The credential is the fleet-wide KEY (hub→agent SSH auth); the TOKEN env var belongs to the outbound WebSocket registration path (only read when `HUB_URL` is set) and is optional: `secretKeys.host = null` omits it, so a consumer whose hosts run SSH-only agents can drop `beszel/token` from its host secrets.
 3. **`fleet-builders` + `registry`** — the fleet builder control plane: typed machine identity, builder participation, and named builder sets as the one scheduling mechanism; pure renderers feed hosts and CI alike. Full contract: [docs/contracts/builders.md](docs/contracts/builders.md) (hosts: [hosts.md](docs/contracts/hosts.md), CI: [ci.md](docs/contracts/ci.md)). The old `services.builder-access.hosts` namespace fails eval with a named migration error.
 
 4. **`niks3-cache`** — niks3 binary-cache *server*. S3 coordinates, cache URL, secret paths are options; fails closed when unbound.

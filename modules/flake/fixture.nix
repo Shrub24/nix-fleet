@@ -118,9 +118,14 @@ let
       };
 
       services = {
-        beszel-agent.secretFiles = {
-          common = fixtureSecretFile;
-          host = fixtureSecretFile;
+        # SSH-only agent: no host token declared, TOKEN omitted from the
+        # rendered env (the default host key would point at beszel/token).
+        beszel-agent = {
+          secretFiles = {
+            common = fixtureSecretFile;
+            host = fixtureSecretFile;
+          };
+          secretKeys.host = lib.mkForce null;
         };
 
         niks3-cache = {

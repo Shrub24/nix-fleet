@@ -1,8 +1,11 @@
 # Beszel agent authentication and enrollment. The hub stays consumer-side.
 # secretFiles.host is the two-step sops bootstrap gate: until the host-scoped
 # file exists, no agent, no secret, no template, and no notify registration is
-# generated. Consumer requirement: sops-nix.nixosModules.sops (credentials
-# arrive via a template).
+# generated. The credential is the fleet-wide KEY (hub->agent SSH auth); TOKEN
+# is the outbound WebSocket registration path, only read when HUB_URL is set,
+# so it is rendered into the template only when a host declares one.
+# Consumer requirement: sops-nix.nixosModules.sops (credentials arrive via a
+# template).
 {
   flake.modules.nixos.beszel-agent =
     { config, lib, ... }:
@@ -17,18 +20,23 @@
       # Registration is unconditional in the class: the shared fragment declares
       # the namespace, and the notify aspect realizes it only when co-selected —
       # the same idiom nh-gc uses for its own unit. The gate still applies: a
-      # host with no enrollment token generates neither agent nor event.
+      # host with no host-scoped secret file generates neither agent nor event.
       imports = [ ../notifications/notify/_notify-events.nix ];
 
       options.services.beszel-agent = {
         secretFiles = {
           common = secretHelpers.mkSecretFileOption "the fleet-wide Beszel agent key";
-          host = secretHelpers.mkSecretFileOption "the host-scoped Beszel agent enrollment token";
+          host = secretHelpers.mkSecretFileOption "a host-scoped secrets file gating enrollment; may carry beszel/token (optional) alongside other host secrets";
         };
 
         secretKeys = {
           common = secretHelpers.mkSecretKeyOption "beszel/key";
-          host = secretHelpers.mkSecretKeyOption "beszel/token";
+          # null disables the TOKEN path entirely (SSH-only agents).
+          host = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = "beszel/token";
+            description = "SOPS YAML key path for the optional host enrollment token; null omits TOKEN from the agent environment.";
+          };
         };
       };
 
@@ -51,6 +59,8 @@
             mode = "0400";
             content = ''
               KEY=${config.sops.placeholder.beszel_agent_key}
+            ''
+            + lib.optionalString (cfg.secretKeys.host != null) ''
               TOKEN=${config.sops.placeholder.beszel_agent_token}
             '';
           };
@@ -62,12 +72,17 @@
                 path = "/run/secrets/beszel.agent.key";
               };
             }
-            // secretHelpers.mkSecretsFromMap cfg.secretFiles.host {
-              beszel_agent_token = {
-                key = cfg.secretKeys.host;
-                path = "/run/secrets/beszel.agent.token";
-              };
-            };
+            // (
+              if cfg.secretKeys.host != null then
+                secretHelpers.mkSecretsFromMap cfg.secretFiles.host {
+                  beszel_agent_token = {
+                    key = cfg.secretKeys.host;
+                    path = "/run/secrets/beszel.agent.token";
+                  };
+                }
+              else
+                { }
+            );
 
           services.beszel.agent = {
             enable = true;
