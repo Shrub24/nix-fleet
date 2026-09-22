@@ -56,7 +56,7 @@ modules/
   observability/
     beszel-agent.nix # aspect: Beszel agent auth/enrollment
   access/
-    builder-access.nix # aspect: remote-builder SSH trust
+    builder-access.nix # published flakeModules: fleet registry + fleet-builders realization
 .envrc               # direnv: use flake
 justfile             # fmt / fmt-check / check / lock
 lefthook.yml         # pre-commit fmt+statix+deadnix, pre-push flake check
@@ -69,7 +69,7 @@ renovate.json        # weekly nix flake input updates
 
 1. **`tailscale`** — Tailscale baseline: enable, Tailscale SSH, systemd restart/ordering pinning, MTU debug option. Auth key via `secretFiles.auth`; unbound or missing file means the two-step sops bootstrap, registering nothing.
 2. **`beszel-agent`** — agent auth/enrollment (the hub stays in nix-homelab). Gated on `secretFiles.host` existing; credentials arrive via a sops template.
-3. **`builder-access`** — remote-builder SSH trust: known hosts and SSH client tuning. Builder endpoints/keys are consumer options (`services.builder-access.hosts`); substituter policy stays consumer-side.
+3. **`fleet-builders` + `registry`** — the fleet builder control plane. `flakeModules.registry` declares the typed SSOT at flake level: `fleet.hosts.<id>` (machine identity: system, tailscale hostname, ssh host key), `fleet.builders.<name>` (participation: exactly one of fleet-`host` reference or external `uri`; systems, maxJobs, speedFactor, features, optional key path and ssh options), and `fleet.builderSets.<name>` (the one scheduling-policy mechanism — metered/external resources are spent only by explicit set membership). Published renderers (`lib.registry`) turn the same records into Nix machines-file lines, known-hosts entries, and ssh Host blocks; a per-eval grammar check validates both. `flakeModules.fleet-builders` constructs the NixOS aspect in the consumer's own evaluation with the registry closed over (a NixOS module cannot read flake config). Two seams inside the aspect: **trust** (known hosts + client tuning for registry hosts, additive, `extraKnownHosts` for non-fleet hosts) and **scheduling** (`services.fleet-builders.activeSet` selects a builder set and renders `nix.buildMachines`; nixpkgs then renders `/etc/nix/machines` and `nix.settings.builders`). CI consumes the same records: the consumer flake renders its selected set with `lib.registry.machinesFile` and exposes it as the artifact the `build-push-cache` workflow installs. The old `services.builder-access.hosts` namespace fails eval with a named migration error. Substituter policy (`ssh-ng://` entries in `nix.settings`) stays consumer-side.
 4. **`niks3-cache`** — niks3 binary-cache *server*. S3 coordinates, cache URL, secret paths are options; fails closed when unbound.
 5. **`niks3-publisher`** — niks3 closure-upload *client* (upstream post-build-hook module). `serverUrl` required; token via `secretFiles.apiToken`.
 6. **`notify`** — notification dispatch (Telegram + ntfy) realizing native systemd event notifications. One owned package (`pkgs/notify`, overridable): the daemon (`notify serve`, unprivileged system user, unix socket + loopback TCP for app webhooks) owns secrets, the policy map, and journal access; `notify send`/`notify test` and the `unit-notify` handler are thin unprivileged connectors. The registration contract `services.notify.events.<unit>.{failure,success}` is a declaration-only fragment contributors import, so registration is unconditional and realization happens only when notify is co-selected. Socket access: callers join the always-defined `notify` group from their own module (`users.users.<name>.extraGroups`); root units need nothing. Per-event policy: severity, topic, journalLines, context, title — explicit only (no hook without a declared event). Routing resolves per transport: semantic topic if the consumer's map has it, otherwise the severity. Dispatch policy (chatId, topics, ntfy coordinates) is consumer-bound; secrets follow the two-step bootstrap.
@@ -83,7 +83,31 @@ inputs.nix-fleet.url = "git+ssh://.../nix-fleet";  # or path:../nix-fleet during
 # consumer flake adopting the shared treefmt definition
 # (top-level mkFlake imports, beside inputs.flake-parts.flakeModules.modules;
 # the consumer declares its own treefmt-nix input — inputs are not transitive)
-imports = [ inputs.nix-fleet.flakeModules.tooling ];
+imports = [
+  inputs.nix-fleet.flakeModules.tooling
+  inputs.nix-fleet.flakeModules.registry        # declares fleet.* options
+  inputs.nix-fleet.flakeModules.fleet-builders  # constructs the NixOS aspect from THIS flake's registry
+];
+
+# consumer inventory at flake level (the SSOT; nix-fleet holds no host data)
+fleet = {
+  hosts.home-forge.system = "x86_64-linux";
+  builders.home-forge = {
+    host = "home-forge";
+    systems = [ "x86_64-linux" ];
+    maxJobs = 2;
+  };
+  builders.nixbuild = {
+    uri = "ssh-ng://eu.nixbuild.net";
+    systems = [ "aarch64-linux" ];
+    publicHostKey = "ssh-ed25519 AAAA...";
+  };
+  builderSets.ci = [ "home-forge" "nixbuild" ];
+};
+
+# CI artifact a build-push-cache workflow installs:
+# inputs.nix-fleet.lib.registry.machinesFile config.fleet.hosts config.fleet.builders
+# (rendered inside the consumer's evaluation, where config.fleet is populated)
 
 # consumer code importing the canonical secrets helpers
 secretHelpers = inputs.nix-fleet.lib.secrets;
@@ -96,7 +120,8 @@ nix-homelab, through its host records' `composition.aspects`:
 
 ```nix
 # consumer host composition (a NixOS module evaluation)
-imports = [ inputs.nix-fleet.modules.nixos.tailscale ];
+imports = [ inputs.nix-fleet.modules.nixos.fleet-builders ];
+services.fleet-builders.activeSet = "ci";  # null = trust only, no scheduling
 ```
 
 Consumers keep: host identity, secrets, policy data, provider quirks. nix-fleet owns: the mechanism.
@@ -108,7 +133,7 @@ Consumers keep: host identity, secrets, policy data, provider quirks. nix-fleet 
 - Secrets enter through `/lib/secrets.nix` helpers only: `mkSecretFileOption` for consumer-bound paths, `mkRequiredSecretAssertion` for the named fail-closed gate, `mkSecretsFromMap` for `sops.secrets` registration. Byte-identical to nix-homelab's helper; consumers of these aspects do not need their own copy.
 - Every aspect declares its options; every option has a type; fail closed with named errors, never raw `builtins.head`/null derefs.
 - Input pins: once consumer flakes alias their nixpkgs-family inputs to nix-fleet's (`inputs.<x>.inputs.nixpkgs.follows = "nixpkgs"` via nix-fleet), this repository's `flake.lock` is the fleet's shared-input authority and its `renovate.json` schedule is the fleet's bump cadence — a nixpkgs bump lands here first, consumers inherit it through their follows chains.
-- Provenance discipline: no secrets, no absolute paths, no machine names in this repo.
+- Provenance discipline: no secrets, no absolute paths, no machine names in this repo. The registry module itself carries only the schema, renderers, and inline check samples — consumer inventory is bound in the consumer flake, and the check validates whatever the consumer binds (the fixture binds placeholder records).
 
 ## Pointers into nix-homelab (read-only reference)
 

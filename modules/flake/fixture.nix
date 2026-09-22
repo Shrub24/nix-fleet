@@ -32,7 +32,7 @@ let
       ]
       ++ (with aspects; [
         beszel-agent
-        builder-access
+        fleet-builders
         nh-gc
         niks3-cache
         niks3-publisher
@@ -66,7 +66,11 @@ let
         }
         {
           assertion = config.programs.ssh.knownHosts != { };
-          message = "fixture: the builder-access aspect registered no known host.";
+          message = "fixture: the fleet-builders aspect registered no known host.";
+        }
+        {
+          assertion = config.nix.buildMachines != [ ];
+          message = "fixture: the fleet-builders aspect scheduled no build machine.";
         }
         {
           assertion = config.systemd.services.notify.serviceConfig.ExecStart != null;
@@ -106,6 +110,8 @@ let
       # A real unit for the notification contract to hook.
       systemd.services.fixture-monitored.script = "true";
 
+      services.fleet-builders.activeSet = "default";
+
       services = {
         nh-gc.enable = true;
         podman-prune.enable = true;
@@ -115,13 +121,6 @@ let
         beszel-agent.secretFiles = {
           common = fixtureSecretFile;
           host = fixtureSecretFile;
-        };
-
-        builder-access.hosts.fixture-builder = {
-          hostNames = [ "builder.invalid" ];
-          # Placeholder key material: no real builder endpoint or host key
-          # belongs in this repository.
-          publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFIxTuRe0000000000000000000000000000000000 fixture@invalid";
         };
 
         niks3-cache = {
@@ -174,6 +173,32 @@ let
     };
 in
 {
+  # Fleet registry inventory at flake level: placeholder key material, no
+  # real builder endpoint or host key belongs in this repository. The NixOS
+  # fixture below only selects; a NixOS module cannot read flake-level data,
+  # which is the whole point of the constructed builders aspect.
+  fleet = {
+    hosts.fixture-host = {
+      tailscale.hostname = "fixture-host";
+      hostNames = [ "fixture-host" ];
+      publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFIxTuRe0000000000000000000000000000000000 fixture@invalid";
+    };
+    builders.fixture-builder = {
+      host = "fixture-host";
+      systems = [ "x86_64-linux" ];
+      maxJobs = 2;
+    };
+    builders.fixture-external = {
+      uri = "ssh-ng://builder.invalid";
+      systems = [ "aarch64-linux" ];
+      publicHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureExternal0000000000000000000000 fixture@invalid";
+    };
+    builderSets.default = [
+      "fixture-builder"
+      "fixture-external"
+    ];
+  };
+
   configurations.nixos = lib.listToAttrs (
     lib.forEach config.systems (system: {
       name = "fixture-${builtins.replaceStrings [ "_" ] [ "-" ] system}";

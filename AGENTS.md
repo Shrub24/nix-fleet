@@ -39,7 +39,7 @@ Follow the Dendritic Pattern (github.com/mightyiam/dendritic, README + reference
 Reference implementations live in the sibling repo `/mnt/LinuxData/Projects/dev/nix-homelab` (read-only reference — do not import its code directly; re-express per the pattern above):
 
 - beszel-agent: `modules/flake/observability-agent.nix` (the hub in `modules/admin/beszel.nix` stays in nix-homelab)
-- builder-access: `modules/flake/builder-access.nix` (nixbuild leaf consolidated inline there)
+- builder-access: `modules/access/builder-access.nix` — now the published pair `flakeModules.registry` + `flakeModules.fleet-builders`: typed fleet builder registry (hosts/builders/builderSets, flake-level SSOT), pure renderers (`lib.registry`: machines file, known-hosts, ssh Host blocks), and the registry-constructed NixOS aspect (trust + activeSet scheduling seams). Inventory stays consumer-bound; the old `services.builder-access.hosts` namespace fails eval with a named migration error.
 - niks3-cache: `modules/cache/niks3-cache.nix`
 - niks3-publisher: `modules/cache/cache-publisher.nix` + `modules/cache/cache-publisher/upload-client.nix` (upstream post-build-hook module; nix-path-filter and post-deploy hooks stay homelab-side)
 - notify: `modules/notifications/notify.nix` + `notify/_notify-events.nix` contract + `pkgs/notify` (one package: CLI + systemd handler + loopback daemon on a shared dispatch library; native systemd OnFailure/OnSuccess with per-unit policy)
