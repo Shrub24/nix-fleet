@@ -19,6 +19,7 @@
 #   {{BUILDERS}}        nix builders line, e.g.
 #                       "ssh://builder1 aarch64-linux ssh://builder2"
 #   {{CACHE_URL}}       niks3 server base URL
+#   {{CACHE_AUDIENCE}}  OIDC audience the cache expects (from cache-config)
 #   {{TARGETS}}         default flake attrspecs
 #   {{SSH_KEY_SECRET}}  repo secret holding the coordinator's builder key
 #
@@ -63,6 +64,30 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.{{SSH_KEY_SECRET}} }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
+
+      - name: Start OIDC token refresher for niks3 push
+        # niks3-action's auth-token-script output is daemon-mode-only, so we
+        # mint directly: GitHub exposes ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN to
+        # jobs with id-token: write; a background loop refreshes
+        # $XDG_CONFIG_HOME/niks3/auth-token (niks3 re-reads the file
+        # periodically) so the coordinator's `niks3 push` via
+        # nix-fast-build --niks3-server always carries a current token bound
+        # to the cache audience.
+        run: |
+          mkdir -p ~/.config/niks3
+          cat > /tmp/refresh-oidc.sh <<'REFRESH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          while true; do
+            token=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience={{CACHE_AUDIENCE}}" | jq -r .value)
+            printf '%s' "$token" > "$HOME/.config/niks3/auth-token"
+            sleep 180
+          done
+          REFRESH
+          chmod +x /tmp/refresh-oidc.sh
+          /tmp/refresh-oidc.sh &
+          echo "REFRESHER_PID=$!" >> "$GITHUB_ENV"
 
       - name: Evaluate and distribute builds to fleet builders
         # nix builders = the fan-out mechanism: nix schedules derivations

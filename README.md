@@ -161,8 +161,10 @@ own `.github/workflows/` and fill the placeholders.
   (server-side deduplication makes overlap harmless). GitHub-runner builds
   run through `niks3-action`, which registers a post-build-hook and streams
   uploads with GitHub OIDC — bind `services.niks3-cache.oidc.providers`
-  consumer-side for that path. The coordinator push needs a fleet-issued
-  push token (nix-fast-build does not consume GitHub OIDC directly).
+  consumer-side for that path. The coordinator push reads the token
+  file niks3 re-reads periodically; on GHA an inline refresher loop mints
+  fresh OIDC tokens bound to the cache audience (no long-lived secrets), and
+  non-GHA coordinators use a fleet-issued push token in the same env var.
 
 CI-capable cache setup consumer-side:
 
