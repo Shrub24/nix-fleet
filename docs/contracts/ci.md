@@ -65,6 +65,11 @@ jobs:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
 ```
 
+The calling job must grant `permissions: { contents: read, id-token: write }`
+— GitHub cannot elevate the token for a called workflow, and the call is
+rejected at parse time (a startup_failure with zero jobs) if the caller
+grants less than the workflow needs.
+
 | Input             | Meaning                                                                            |
 | ----------------- | ---------------------------------------------------------------------------------- |
 | `cache_url`       | niks3 server base URL; substituter/keys/audience come from its `/api/cache-config` |
