@@ -31,18 +31,24 @@ rec {
             fleet.hosts.${hostId}
               or (throw "fleet: profile '${profileName}' names fleet host '${hostId}' which does not exist");
           cap = (host.capabilities or { }).nixBuilder or { };
+          protocol = cap.endpoint.protocol or "ssh-ng";
+          sshUser = cap.endpoint.user or "nixbuild";
         in
         if !(cap.enable or false) then
           throw "fleet: profile '${profileName}' schedules host '${hostId}' which has capabilities.nixBuilder.enable = false"
         else
           {
             name = hostId;
-            address = "${cap.endpoint.protocol or "ssh-ng"}://${host.tailscale.hostname}";
+            # Dial address: nix's machines-file format carries the login in the
+            # URI, so `address` is what `machinesFile` emits verbatim. nixpkgs
+            # composes its own first field from protocol/sshUser/hostName, so
+            # `buildMachines` uses those three instead of this.
+            address = "${protocol}://${sshUser}@${host.tailscale.hostname}";
+            inherit protocol sshUser;
             hostName = host.tailscale.hostname;
             hostNames = if (host.hostNames or [ ]) != [ ] then host.hostNames else [ host.tailscale.hostname ];
             inherit (host) publicKey;
             systems = [ host.system ] ++ (cap.extraSystems or [ ]);
-            sshUser = cap.endpoint.user or "nixbuild";
             sshKeyPath = null; # credential reference stays consumer-side
             sshOptions = { };
             maxJobs = if (member.maxJobs or null) != null then member.maxJobs else (cap.maxJobs or 1);
@@ -67,18 +73,20 @@ rec {
           ext =
             fleet.externalBuilders.${extId}
               or (throw "fleet: profile '${profileName}' names external builder '${extId}' which does not exist");
+          protocol = if lib.hasPrefix "ssh://" ext.uri then "ssh" else "ssh-ng";
           bare = lib.last (
             lib.splitString "@" (lib.removePrefix "ssh-ng://" (lib.removePrefix "ssh://" ext.uri))
           );
+          sshUser = if (member.sshUser or null) != null then member.sshUser else (ext.sshUser or null);
         in
         {
           name = extId;
-          address = ext.uri;
+          address = "${protocol}://" + lib.optionalString (sshUser != null) "${sshUser}@" + bare;
+          inherit protocol sshUser;
           hostName = bare;
           hostNames = if (ext.hostNames or [ ]) != [ ] then ext.hostNames else [ bare ];
           publicKey = ext.publicHostKey or null;
           inherit (ext) systems;
-          sshUser = if (member.sshUser or null) != null then member.sshUser else (ext.sshUser or null);
           sshKeyPath = null;
           sshOptions = { };
           maxJobs = if (member.maxJobs or null) != null then member.maxJobs else 1;
@@ -103,19 +111,18 @@ rec {
   # Trust is a projection of the selection, never the whole inventory.
   profileHosts = fleet: specs: filterAttrs (id: _: any (spec: spec.name == id) specs) fleet.hosts;
 
-  # Stage 2a: nix.buildMachines entries (NixOS option form).
-  # Stage 2a: nix.buildMachines entries (NixOS option form). nixpkgs fields:
-  # sshKey (not sshKeyPath), publicHostKey takes the base64 body.
+  # Stage 2a: nix.buildMachines entries (NixOS option form). nixpkgs composes
+  # its machines-file first field as protocol://sshUser@hostName
+  # (nixos/modules/config/nix-remote-build.nix), so the three are passed
+  # separately — handing it a complete URI would prefix it twice.
   buildMachines =
     specs:
     map (
       spec:
       {
-        hostName = spec.address;
+        inherit (spec) protocol hostName sshUser;
         # Comma-joined: nix's machines-file parser accepts a system list.
         system = lib.concatStringsSep "," spec.systems;
-        protocol = "ssh-ng";
-        inherit (spec) sshUser;
         sshKey = spec.sshKeyPath;
         inherit (spec) maxJobs;
         inherit (spec) speedFactor;

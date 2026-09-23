@@ -121,20 +121,32 @@ let
                 machines = resolve.machinesFile specs;
                 sshConfig = resolve.sshConfig specs;
                 knownHosts = builtins.toJSON (resolve.knownHosts specs);
+                optionForm = builtins.toJSON (resolve.buildMachines specs);
                 passAsFile = [
                   "machines"
                   "sshConfig"
                   "knownHosts"
+                  "optionForm"
                 ];
               }
               ''
                 awk 'NF > 0 { if (NF != 7) { print "fleet: machines line has " NF " fields, expected 7"; exit 1 } }' "$machinesPath"
-                grep -qx 'ssh-ng://fleet-host x86_64-linux - 2 1 big-parallel,nixos-test -' "$machinesPath" \
+                grep -qx 'ssh-ng://nixbuild@fleet-host x86_64-linux - 2 1 big-parallel,nixos-test -' "$machinesPath" \
                   || { echo "fleet: fleet-host line wrong (override not applied?)"; cat "$machinesPath"; exit 1; }
-                grep -qx 'ssh-ng://eu.nixbuild.net aarch64-linux - 4 1 - -' "$machinesPath" \
+                grep -qx 'ssh-ng://root@eu.nixbuild.net aarch64-linux - 4 1 - -' "$machinesPath" \
                   || { echo "fleet: external line wrong"; cat "$machinesPath"; exit 1; }
                 grep -qx '  User root' "$sshConfigPath" \
                   || { echo "fleet: external sshUser override missing"; cat "$sshConfigPath"; exit 1; }
+
+                # Nix-module form ≡ machines-file form. nixpkgs composes its
+                # machines-file first field as protocol://sshUser@hostName from
+                # the option form's separate fields; that has to equal the first
+                # field the text renderer emits, or the two disagree about who
+                # gets dialed.
+                ${pkgs.jq}/bin/jq -r '.[] | "\(.protocol)://\(.sshUser)@\(.hostName)"' "$optionFormPath" > option-form
+                awk 'NF > 0 { print $1 }' "$machinesPath" > machines-form
+                paste option-form machines-form | awk '$1 != $2 { print "fleet: option form says " $1 " but machines-file form says " $2; exit 1 }'
+
                 cat "$machinesPath" > "$out"
               '';
 
