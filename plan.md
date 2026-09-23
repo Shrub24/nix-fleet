@@ -33,9 +33,9 @@ only when aspect count makes one necessary.
 - [ ] **Dotfiles adoption**: same shape; drop the stale
       `oci-melb-1.system = "x86_64-linux"` from topology (canonical says
       aarch64); topology loses per-machine `system`.
-- [ ] **Throwing-shim removal**: once both consumers have migrated,
-      delete `modules/access/builder-access.nix` (the transitional shim) and
-      its README mention.
+- [x] **Shim removal**: `modules/access/builder-access.nix` deleted —
+      unknown-option/unknown-import failures are the fail-fast path; no
+      compatibility shims for a brand-new contract.
 
 ## Wave 3 — mechanism extraction (nix baseline + ssh)
 

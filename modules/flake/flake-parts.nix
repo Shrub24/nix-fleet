@@ -10,7 +10,7 @@
     type = lib.types.lazyAttrsOf lib.types.raw;
     default = { };
   };
-  # Published flake modules (tooling, registry, fleet-builders): same merging
+  # Published flake modules (tooling, fleet): same merging
   # declaration requirement as flake.lib.
   options.flake.flakeModules = lib.mkOption {
     type = lib.types.lazyAttrsOf lib.types.raw;

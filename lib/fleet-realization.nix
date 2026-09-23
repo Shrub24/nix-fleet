@@ -82,7 +82,7 @@ in
       assertions = [
         {
           assertion = config.services.builder-access.hosts or { } == { };
-          message = "builder-access: services.builder-access.hosts was replaced by the fleet inventory (fleet.hosts / fleet.builders / fleet.builderSets in nix-fleet) plus services.fleet-builders.activeSet.";
+          message = "services.builder-access.hosts: legacy path, silently dead config. Use the fleet inventory (fleet.hosts capabilities) and select a buildProfile instead.";
         }
       ];
 

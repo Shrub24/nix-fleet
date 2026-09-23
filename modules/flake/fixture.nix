@@ -65,11 +65,11 @@ let
         }
         {
           assertion = config.programs.ssh.knownHosts != { };
-          message = "fixture: the fleet-builders aspect registered no known host.";
+          message = "fixture: the fleet feature registered no known host.";
         }
         {
           assertion = config.nix.buildMachines != [ ];
-          message = "fixture: the fleet-builders aspect scheduled no build machine.";
+          message = "fixture: the fleet feature scheduled no build machine.";
         }
         {
           assertion = config.systemd.services.notify.serviceConfig.ExecStart != null;

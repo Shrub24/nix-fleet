@@ -105,8 +105,7 @@ The pre-consolidation surfaces fail eval with named migration messages:
 | Old surface                                                     | Replacement                                                                      |
 | --------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | `inputs.nix-fleet.modules.nixos.fleet-builders`                 | `flakeModules.fleet` at flake level + `config.fleet.realization` in compositions |
-| `inputs.nix-fleet.modules.nixos.builder-access`                 | same                                                                             |
-| `services.builder-access.hosts`                                 | canonical `fleet.builders.*` (inventory)                                         |
+| `services.builder-access.hosts`                                 | canonical `fleet.hosts.*` capabilities (inventory)                               |
 | `flakeModules.registry` / `flakeModules.fleet-builders` imports | single `flakeModules.fleet` import                                               |
 
 Consumers migrating from consumer-declared inventories: move machine

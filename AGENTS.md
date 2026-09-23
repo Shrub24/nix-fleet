@@ -40,7 +40,7 @@ Follow the Dendritic Pattern (github.com/mightyiam/dendritic, README + reference
 Reference implementations live in the sibling repo `/mnt/LinuxData/Projects/dev/nix-homelab` (read-only reference — do not import its code directly; re-express per the pattern above):
 
 - beszel-agent: `modules/flake/observability-agent.nix` (the hub in `modules/admin/beszel.nix` stays in nix-homelab)
-- fleet feature: `modules/fleet/` (schema.nix + inventory.nix + feature.nix) publishes ONE flakeModule (`flakeModules.fleet`): typed canonical inventory, validation, CI bundles (`packages.ci` canonical + `packages.<set>` per set), and the evaluation-local realization (`config.fleet.realization`). `modules/access/builder-access.nix` is a transitional throwing shim for the old `fleet-builders`/`builder-access` import paths.
+- fleet feature: `modules/fleet/` (schema.nix + inventory.nix + feature.nix) publishes ONE flakeModule (`flakeModules.fleet`): typed canonical inventory, validation, CI bundles (`packages.ci` canonical + `packages.<set>` per set), and the evaluation-local realization (`config.fleet.realization`).
 - niks3-cache: `modules/cache/niks3-cache.nix`
 - niks3-publisher: `modules/cache/cache-publisher.nix` + `modules/cache/cache-publisher/upload-client.nix` (upstream post-build-hook module; nix-path-filter and post-deploy hooks stay homelab-side)
 - notify: `modules/notifications/notify.nix` + `notify/_notify-events.nix` contract + `pkgs/notify` (one package: CLI + systemd handler + loopback daemon on a shared dispatch library; native systemd OnFailure/OnSuccess with per-unit policy)
