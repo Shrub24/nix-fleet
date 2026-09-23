@@ -26,7 +26,7 @@ and fleet topology depend on, functionally self-contained. `fleet.services`
     to mis-import).
 - [ ] **2. Capabilities into hosts; single builder registry**:
       `fleet.hosts.<id>.capabilities.nixBuilder = { enable; maxJobs;
-    supportedFeatures; endpoint.{protocol,user}; }`. Delete host-backed
+supportedFeatures; endpoint.{protocol,user}; }`. Delete host-backed
       `fleet.builders.*`. `system` derives from the host record (capability
       exception only for genuine extra/emulated systems). Keep the
       dedicated `nixbuild` account as the capability endpoint default

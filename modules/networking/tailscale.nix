@@ -2,9 +2,16 @@
 # networking.hostName; tailnet suffix, tags, and routes are consumer policy.
 # secretFiles.auth is a two-step sops bootstrap: unbound or missing registers
 # nothing. Consumer requirement: sops-nix.nixosModules.sops when binding auth.
+# The tailscaled daemon registers a failure event like any other monitored
+# unit (fromPackage: nixpkgs ships the unit file); autoconnect is unregistered
+# — its retry exits are the mechanism working, not news.
 _: {
   flake.modules.nixos.tailscale =
-    { config, lib, ... }:
+    {
+      config,
+      lib,
+      ...
+    }:
     let
       secretHelpers = import ../../lib/secrets.nix { inherit lib; };
 
@@ -29,6 +36,11 @@ _: {
         secretKeys.auth = secretHelpers.mkSecretKeyOption "tailscale/auth_key";
       };
 
+      # Same idiom as the maintenance aspects: the fragment declares the
+      # notify-events namespace unconditionally; the notify aspect realizes
+      # registrations only when co-selected.
+      imports = [ ../notifications/notify/_notify-events.nix ];
+
       config = lib.mkMerge [
         {
           assertions = [
@@ -50,6 +62,15 @@ _: {
               wants = [ "sops-install-secrets.service" ];
               after = [ "sops-install-secrets.service" ];
             };
+          };
+
+          # Same idiom as nh-gc/podman-prune: registration is unconditional
+          # (the fragment declares the namespace); the notify aspect realizes
+          # it only when co-selected. tailscaled comes from systemd.packages,
+          # hence fromPackage.
+          services.notify.events.tailscaled = {
+            fromPackage = true;
+            failure = { };
           };
 
           services.tailscale = {

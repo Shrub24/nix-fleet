@@ -49,5 +49,9 @@
         treefmt-nix.follows = "treefmt-nix";
       };
     };
+    fast-nix-gc = {
+      url = "github:Mic92/fast-nix-gc";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 }

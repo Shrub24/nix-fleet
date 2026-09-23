@@ -32,12 +32,15 @@ let
       ]
       ++ (with aspects; [
         beszel-agent
-        nh-gc
+        nix-baseline
+        nix-gc
         niks3-cache
         niks3-publisher
         notify
         podman-prune
+        ssh
         tailscale
+        mosh
       ]);
 
       boot.loader.grub.enable = false;
@@ -89,16 +92,37 @@ let
           message = "fixture: the niks3-publisher aspect did not wire the upload client.";
         }
         {
-          assertion = config.systemd.services ? "nh-clean";
-          message = "fixture: the nh-gc aspect produced no nh-clean unit.";
+          assertion = config.systemd.services ? "nix-gc" || config.programs.nh.clean.enable;
+          message = "fixture: the nix-gc aspect produced no cleanup unit.";
         }
         {
           assertion = config.systemd.services ? "podman-prune" && config.systemd.timers ? "podman-prune";
           message = "fixture: the podman-prune aspect produced no unit/timer.";
         }
         {
-          assertion = config.systemd.services."nh-clean".onFailure or [ ] != [ ];
-          message = "fixture: the nh-gc aspect registered no failure event for nh-clean.";
+          assertion =
+            (config.systemd.services."nix-gc".onFailure or [ ]) != [ ]
+            || (config.systemd.services."nh-clean".onFailure or [ ]) != [ ];
+          message = "fixture: the nix-gc aspect registered no failure event.";
+        }
+        {
+          assertion =
+            config.nix.settings.substituters or [ ] != [ ]
+            && builtins.elem "https://cache.shrublab.xyz" (config.nix.settings.substituters or [ ]);
+          message = "fixture: the nix-baseline aspect did not render the substitution catalog.";
+        }
+        {
+          assertion =
+            config.services.openssh.enable && !config.services.openssh.settings.PasswordAuthentication;
+          message = "fixture: the ssh aspect did not render the hardened server baseline.";
+        }
+        {
+          assertion = config.environment.etc ? "ssh/ssh_config.d/20-fleet-baseline.conf";
+          message = "fixture: the ssh aspect did not render the client tuning fragment.";
+        }
+        {
+          assertion = config.programs.mosh.enable;
+          message = "fixture: the mosh aspect did not enable programs.mosh.";
         }
         {
           assertion = config.systemd.services."podman-prune".onFailure or [ ] != [ ];
@@ -112,8 +136,11 @@ let
       services.fleet-builders.activeSet = "fixture";
 
       services = {
-        nh-gc.enable = true;
+        nix-gc.enable = true;
         podman-prune.enable = true;
+        nix-baseline.enable = true;
+        ssh-baseline.enable = true;
+        tailscale.enable = true;
       };
 
       services = {
