@@ -75,11 +75,14 @@ lib: rec {
     hostEntries // builderEntries;
 
   # ssh client Host blocks for the given builders: long-build tuning applies to
-  # every connection the registry schedules.
+  # every connection the registry schedules. User is rendered so non-NixOS
+  # callers (a copied CI workflow on a runner) dial the configured user instead
+  # of the local one.
   hostBlock =
     hostRegistry: builder:
     lib.concatStringsSep "\n" (
       [ "Host ${builderHostName hostRegistry builder}" ]
+      ++ lib.optionals (builder.sshUser or null != null) [ "  User ${builder.sshUser}" ]
       ++ lib.mapAttrsToList (key: value: "  ${key} ${value}") (builder.sshOptions or { })
     );
 

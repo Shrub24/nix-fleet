@@ -28,6 +28,7 @@ _: {
 
     builders.home-forge = {
       host = "home-forge";
+      sshUser = "dev";
       systems = [ "x86_64-linux" ];
       maxJobs = 4;
       speedFactor = 2;
@@ -48,6 +49,7 @@ _: {
 
     builders.nixbuild = {
       uri = "ssh-ng://eu.nixbuild.net";
+      sshUser = "root";
       systems = [
         "x86_64-linux"
         "aarch64-linux"

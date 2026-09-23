@@ -42,8 +42,14 @@ in
 
     sshUser = lib.mkOption {
       type = lib.types.str;
-      default = "dev";
-      description = "User builders are dialed as (fleet convention: dev, which is in trusted-users on fleet hosts).";
+      default = "nixbuild";
+      description = "User builders are dialed as when the builder record sets no sshUser. The fleet convention is a dedicated nixbuild account (created by this aspect on hosts that receive builds), isolated from general-purpose users.";
+    };
+
+    createBuildUser = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Create the dedicated nixbuild service account on this host (a builder-side setting: the account remote coordinators dial as). Its authorized keys are consumer policy.";
     };
 
     extraKnownHosts = lib.mkOption {
@@ -65,48 +71,66 @@ in
     };
   };
 
-  config = {
-    assertions = [
-      {
-        assertion = config.services.builder-access.hosts or { } == { };
-        message = "builder-access: services.builder-access.hosts was replaced by the fleet inventory (fleet.hosts / fleet.builders / fleet.builderSets in nix-fleet) plus services.fleet-builders.activeSet.";
-      }
-    ];
+  config = lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = config.services.builder-access.hosts or { } == { };
+          message = "builder-access: services.builder-access.hosts was replaced by the fleet inventory (fleet.hosts / fleet.builders / fleet.builderSets in nix-fleet) plus services.fleet-builders.activeSet.";
+        }
+      ];
 
-    programs.ssh.knownHosts = render.knownHosts registry.hosts registry.builders // cfg.extraKnownHosts;
+      programs.ssh.knownHosts = render.knownHosts registry.hosts registry.builders // cfg.extraKnownHosts;
 
-    programs.ssh.extraConfig = render.sshConfig registry.hosts activeBuilders;
+      programs.ssh.extraConfig = render.sshConfig registry.hosts activeBuilders;
 
-    nix.distributedBuilds = cfg.activeSet != null;
+      nix.distributedBuilds = cfg.activeSet != null;
 
-    nix.buildMachines = lib.mapAttrsToList (
-      _name: builder:
-      let
-        hostKey =
-          if (builder.publicHostKey or null) != null then
-            builder.publicHostKey
-          else if ((registry.hosts.${builder.host} or { }).publicKey or null) != null then
-            registry.hosts.${builder.host}.publicKey
-          else
-            throw "fleet: builder '${_name}' has no host key — its fleet host '${builder.host}' has publicKey = null (not yet harvested) and the builder declares no publicHostKey";
-        # nixpkgs wants the base64 body of the key line, not the full record.
-        keyBody = if hostKey == null then null else lib.elemAt (lib.splitString " " hostKey) 1;
-      in
-      {
-        hostName = render.builderHostName registry.hosts builder;
-        # Comma-joined: nix's machines-file parser accepts a system list.
-        system = lib.concatStringsSep "," builder.systems;
-        inherit (cfg) sshUser;
-        sshKey = builder.sshKeyPath;
-        protocol = "ssh-ng";
-        inherit (builder)
-          maxJobs
-          speedFactor
-          supportedFeatures
-          mandatoryFeatures
-          ;
-        publicHostKey = keyBody;
-      }
-    ) activeBuilders;
-  };
+      nix.buildMachines = lib.mapAttrsToList (
+        _name: builder:
+        let
+          hostKey =
+            if (builder.publicHostKey or null) != null then
+              builder.publicHostKey
+            else if ((registry.hosts.${builder.host} or { }).publicKey or null) != null then
+              registry.hosts.${builder.host}.publicKey
+            else
+              throw "fleet: builder '${_name}' has no host key — its fleet host '${builder.host}' has publicKey = null (not yet harvested) and the builder declares no publicHostKey";
+          # nixpkgs wants the base64 body of the key line, not the full record.
+          keyBody = if hostKey == null then null else lib.elemAt (lib.splitString " " hostKey) 1;
+        in
+        {
+          hostName = render.builderHostName registry.hosts builder;
+          # Comma-joined: nix's machines-file parser accepts a system list.
+          system = lib.concatStringsSep "," builder.systems;
+          sshUser = if (builder.sshUser or null) != null then builder.sshUser else cfg.sshUser;
+          sshKey = builder.sshKeyPath;
+          protocol = "ssh-ng";
+          inherit (builder)
+            maxJobs
+            speedFactor
+            supportedFeatures
+            mandatoryFeatures
+            ;
+          publicHostKey = keyBody;
+        }
+      ) activeBuilders;
+    }
+
+    # The builder-side service account: isolated dial-in identity for remote
+    # build dispatch, no login shell, owned by this aspect so the fleet
+    # convention (dial as nixbuild) has an owner everywhere.
+    (lib.mkIf cfg.createBuildUser {
+      users.users.nixbuild = {
+        isSystemUser = true;
+        group = "nixbuild";
+        description = "Fleet remote-build dispatch account";
+        useDefaultShell = false;
+        home = "/var/lib/nixbuild";
+        createHome = true;
+        openssh.authorizedKeys.keys = [ ];
+      };
+      users.groups.nixbuild = { };
+    })
+  ];
 }

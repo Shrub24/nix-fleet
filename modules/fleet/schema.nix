@@ -112,6 +112,12 @@ in
               description = "Features every derivation sent here must require.";
             };
 
+            sshUser = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "User this builder is dialed as; null falls back to services.fleet-builders.sshUser. Canonical convention: dev (in trusted-users on fleet hosts).";
+            };
+
             sshKeyPath = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
