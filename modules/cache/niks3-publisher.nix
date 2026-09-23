@@ -65,6 +65,8 @@
             key = cfg.secretKeys.apiToken;
             path = cfg.authTokenFile;
             mode = "0400";
+            # A rotated token must not keep being served by a running uploader.
+            restartUnits = [ "niks3-auto-upload.service" ];
           };
         })
       ];
