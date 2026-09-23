@@ -83,7 +83,10 @@ let
   realizationModule = import ../../lib/fleet-realization.nix config.fleet;
 
   fleetModule = {
-    imports = [ ./schema.nix ];
+    imports = [
+      ./schema.nix
+      ./inventory.nix
+    ];
 
     config = {
       _module.args = { };
