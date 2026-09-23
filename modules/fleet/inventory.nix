@@ -1,7 +1,8 @@
 # Canonical fleet inventory: the facts that must agree everywhere. Declared by
 # nix-fleet itself (the authority); consumers derive from these and add only
-# their own local policy. SSH host keys bind after first deploy (null = not yet
-# harvested); eu.nixbuild.net's key is from its official docs.
+# their own local policy. SSH host keys are read from each host's own
+# /etc/ssh/ssh_host_ed25519_key.pub, never from a live scan; eu.nixbuild.net's
+# key is from its official docs.
 _: {
   fleet = {
     hosts = {
@@ -9,16 +10,19 @@ _: {
         system = "x86_64-linux";
         tailscale.hostname = "home-forge";
         hostNames = [ "home-forge" ];
+        publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILre5rGGN4yjhV8XJpREgl+BRdru24t8NZgHTvpgouKf root@home-forge";
       };
       la-admin-1 = {
         system = "x86_64-linux";
         tailscale.hostname = "la-admin-1";
         hostNames = [ "la-admin-1" ];
+        publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINNXbGpZyizRCUVdjz35hFTmoWLgM8TPwGbQjCvrrcER root@nixos";
       };
       oci-melb-1 = {
         system = "aarch64-linux";
         tailscale.hostname = "oci-melb-1";
         hostNames = [ "oci-melb-1" ];
+        publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC8NW1V+x+tvbwzPMEcGRlK2V1XXAuDgdJ2dUQssiWaC root@oci-melb-1";
       };
     };
 
