@@ -38,6 +38,14 @@ _: {
       ];
     };
 
+    builders.la-admin-1 = {
+      host = "la-admin-1";
+      systems = [ "x86_64-linux" ];
+      maxJobs = 2;
+      speedFactor = 1;
+      supportedFeatures = [ ];
+    };
+
     builders.nixbuild = {
       uri = "ssh-ng://eu.nixbuild.net";
       systems = [
@@ -48,9 +56,29 @@ _: {
       publicHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPIQCZc54poJ8vqawd8TraNryQeJnvH1eLpIDgbiqymM";
     };
 
+    builders.oci-melb-1 = {
+      host = "oci-melb-1";
+      systems = [ "aarch64-linux" ];
+      maxJobs = 4;
+      speedFactor = 2;
+      supportedFeatures = [ "big-parallel" ];
+    };
+
     builderSets.ci = [
       "home-forge"
       "nixbuild"
+    ];
+
+    # Every fleet host that can build. A set is a selection, not an
+    # architecture: each builder declares the systems it serves, so one
+    # arch-agnostic set dispatches correctly on its own — a per-architecture
+    # split would only encode a restriction (never fall back to a builder that
+    # emulates), which no record here needs. `ci` stays as nix-fleet's own CI
+    # set; consumers that build on the fleet select this one.
+    builderSets.all-hosts = [
+      "home-forge"
+      "la-admin-1"
+      "oci-melb-1"
     ];
   };
 }
