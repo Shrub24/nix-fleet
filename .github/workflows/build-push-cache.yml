@@ -22,13 +22,6 @@
 # workflow installs those artifacts. The only selection the workflow makes
 # is the builder-set name.
 #
-# Template placeholders (CONSUMER FILLS):
-#   {{BUILDER_SET_SUFFIX}}  bundle attr suffix: empty for the canonical "ci"
-#                           set (packages.ci), "-<set>" for any other declared
-#                           set (packages.<set>)
-#   {{CACHE_URL}}       niks3 server base URL (substituter + keys + audience
-#                       all come from its /api/cache-config, same as the action)
-#
 # REUSABLE WORKFLOW: call it from a ~10-line consumer stub —
 #
 #   jobs:
@@ -72,7 +65,6 @@ on:
         description: "Flake attrspecs to build (space-separated)"
         type: string
         required: false
-        default: ""
       cache_url:
         description: "niks3 server base URL"
         type: string
