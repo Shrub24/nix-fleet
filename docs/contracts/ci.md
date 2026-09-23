@@ -48,15 +48,34 @@ consumer eval time — the workflow never stores addresses, keys, or sets.
 
 ## The workflow
 
-`.github/templates/build-push-cache.yml` is the consumer contract. Copy it
-into your repo's `.github/workflows/` and fill the placeholders:
+`build-push-cache` is a **reusable workflow** — no copying. A consumer adds
+a stub:
 
-| Placeholder              | Meaning                                                                            |
-| ------------------------ | ---------------------------------------------------------------------------------- |
-| `{{BUILDER_SET_SUFFIX}}` | empty for the canonical `ci` set (`packages.ci`); `-<set>` for consumer-local sets |
-| `{{CACHE_URL}}`          | niks3 server base URL; substituter/keys/audience come from its `/api/cache-config` |
-| `{{TARGETS}}`            | default flake attrspecs for nix-fast-build                                         |
-| `{{SSH_KEY_SECRET}}`     | repo secret holding the coordinator's builder SSH key                              |
+```yaml
+jobs:
+  build-push-cache:
+    uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v1
+    with:
+      cache_url: https://cache.example.com
+      targets: .#nixosConfigurations.myhost.config.system.build.toplevel
+      # optional:
+      # builder_attr: ci           (any fleet.builderSets entry; ci default)
+      # gha_systems: x86_64-linux  (space-separated; add aarch64-linux for arm)
+    secrets:
+      BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
+```
+
+| Input             | Meaning                                                                            |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| `cache_url`       | niks3 server base URL; substituter/keys/audience come from its `/api/cache-config` |
+| `targets`         | flake attrspecs for nix-fast-build                                                 |
+| `builder_attr`    | which `packages.<attr>` bundle to schedule against (canonical `ci` by default)     |
+| `gha_systems`     | systems the GHA-local build job matrixes over (arm via `aarch64-linux`)            |
+| `BUILDER_SSH_KEY` | secret: the coordinator's builder SSH key                                          |
+
+**Versioning:** pin to a tag (`@v1`), never `@main`. nix-fleet cuts tagged
+releases; renovate proposes tag bumps with changelogs and a PR acceptance
+gate, so consumers opt into changes deliberately.
 
 Two jobs:
 

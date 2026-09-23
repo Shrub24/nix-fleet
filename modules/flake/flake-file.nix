@@ -13,6 +13,12 @@
 
   flake-file.description = "Reusable NixOS fleet infrastructure aspects";
 
+  # docs/contracts/flake-inputs.md: auto-follow renders flake.nix as a
+  # function of the previous generated file (declared follows are deleted
+  # and read back from flake.nix), which silently breaks check-flake-file
+  # and can move locks during write-flake. Declared follows only.
+  flake-file.auto-follow.enable = false;
+
   systems = [
     "x86_64-linux"
     "aarch64-linux"

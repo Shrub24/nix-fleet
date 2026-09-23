@@ -181,9 +181,11 @@ same types.
 
 ## CI
 
-`.github/templates/` holds reusable workflow templates; `.github/workflows/`
-instantiates them for this repository. Consumers copy a template into their
-own `.github/workflows/` and fill the placeholders.
+``.github/workflows/build-push-cache.yml` is a **reusable workflow**
+(`workflow_call`) — consumers call it with `uses:`and pin a version tag;
+renovate proposes tag bumps behind a PR gate with changelogs.`.github/templates/`keeps the readable source of the workflows (the
+consumer contract detail lives in [docs/contracts/ci.md](docs/contracts/ci.md));`.github/workflows/ci.yml` instantiates them for this repository —
+nix-fleet is its own first consumer.
 
 - **`nvfetcher-refresh`** — scheduled source-metadata regeneration, flake
   validation, PR on change.

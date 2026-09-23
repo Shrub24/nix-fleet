@@ -114,3 +114,30 @@ identity to the canonical inventory is already done (nix-fleet extracted
 it); consumers only delete their duplicate records and derive. The shims
 are removed once both consumers have migrated — do not treat them as a
 supported path.
+
+## The builder-side dispatch account
+
+Hosts realizing the fleet feature (default) create a dedicated `nixbuild`
+service account — the identity remote coordinators dial as. `isSystemUser`,
+no shell, no home login; its `authorizedKeys` are consumer policy (sops or
+declarative, per host). It exists so remote build dispatch never borrows a
+general-purpose account like `dev`.
+
+**Renaming semantics** (`services.fleet-builders.buildUserName`): the option
+changes what the aspect _declares_ going forward. systemd user records are
+declarative, so on the next `nixos-rebuild` switch the new user exists and
+the old one is **dropped from the users.users tree — but an existing
+account lingers on disk** (passwd entry removed by users-groups module
+cleanup; `/var/lib/<name>`, its home, is NOT deleted). Renaming therefore
+needs one manual step per host:
+
+```sh
+# after switching to the new name
+userdel nixbuild || true        # if the passwd entry lingered
+rm -rf /var/lib/nixbuild        # home was only a state dir
+```
+
+Also update anything that referenced the old name: builders' authorized
+keys (consumer sops/declarative), and any `sshUser` bindings pointing at
+it (builder records set `sshUser = "dev"`/`"root"` today; the fallback
+default follows the rename automatically).

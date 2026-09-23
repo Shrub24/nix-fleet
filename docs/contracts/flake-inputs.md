@@ -67,6 +67,25 @@ combined with a `follows`, so it cannot be used to freeze one.
   the auto-follow branch. Regenerating the file can no longer move an input
   revision as a side effect.
 
+## Applying a follows
+
+With auto-follow off, declaring a follows no longer updates the lock for you.
+The sequence is:
+
+```sh
+nix run .#write-flake   # render flake.nix
+nix flake lock          # resolve the new follows into flake.lock
+```
+
+Nothing enforces the second step, though any subsequent `nix` command that
+writes the lock will do it implicitly — a build that needs an unresolvable
+input will fail rather than silently diverge.
+
+Check the nested input exists before declaring a follows. `ipetkov/crane`, for
+instance, declares `inputs = { }` and has no nested `nixpkgs` at all; a follows
+on it renders fine but every subsequent `write-flake` prints
+`input 'crane' has an override for a non-existent input 'nixpkgs'`.
+
 ## What it costs
 
 One line per input that redirects a nested input. The check does **not** catch

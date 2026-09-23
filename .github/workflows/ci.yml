@@ -1,6 +1,7 @@
 # nix-fleet's own CI: formatting, flake checks, fixture toplevel builds on
-# every declared system. Generated from .github/templates/ — that directory
-# is the consumer contract; this file instantiates it.
+# every declared system, plus the fleet build pipeline via the reusable
+# workflow (this repo is its own first consumer — the ci builder set is the
+# canonical inventory).
 name: ci
 on:
   pull_request:
@@ -38,3 +39,16 @@ jobs:
         # --all-systems evaluates the aarch64 fixture; aarch64 toplevels are
         # built natively by aarch64 builders/consumers, not here.
         run: nix build --no-link .#checks.x86_64-linux.fixture-x86-64-linux
+
+  fleet-build:
+    # Dogfood: nix-fleet schedules against its own canonical ci set. The
+    # cache coordinates are the fixture's — first live run needs the real
+    # secret (docs/contracts/ci.md caveats apply).
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    uses: ./.github/workflows/build-push-cache.yml
+    with:
+      cache_url: ${{ vars.FLEET_CACHE_URL }}
+      builder_attr: ci
+    secrets:
+      BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
