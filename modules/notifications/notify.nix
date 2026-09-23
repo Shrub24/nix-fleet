@@ -36,7 +36,7 @@
         cfg.secretFiles.hostSystem != null && builtins.pathExists cfg.secretFiles.hostSystem;
 
       notifyConfig = {
-        telegram = {
+        telegram = lib.optionalAttrs cfg.telegram.enable {
           token_file = cfg.telegram.tokenFile;
           chat_id = cfg.telegram.chatId;
           topics = cfg.telegram.topics;
@@ -124,6 +124,10 @@
         };
 
         telegram = {
+          enable = lib.mkEnableOption "Telegram dispatch" // {
+            default = true;
+          };
+
           chatId = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
@@ -144,7 +148,7 @@
         };
 
         ntfy = {
-          enable = lib.mkEnableOption "ntfy dispatch alongside Telegram";
+          enable = lib.mkEnableOption "ntfy dispatch in addition to the configured channels";
 
           serverUrl = lib.mkOption {
             type = lib.types.str;
@@ -171,24 +175,25 @@
 
       config = lib.mkMerge [
         {
-          assertions = [
-            {
-              assertion = cfg.telegram.chatId != null && cfg.telegram.chatId != "";
-              message = "notify: services.notify.telegram.chatId must be set to the Telegram supergroup chat ID.";
+          assertions =
+            lib.optionals cfg.telegram.enable [
+              {
+                assertion = cfg.telegram.chatId != null && cfg.telegram.chatId != "";
+                message = "notify: services.notify.telegram.chatId must be set to the Telegram supergroup chat ID.";
+              }
+              {
+                assertion = cfg.telegram.topics != { };
+                message = "notify: services.notify.telegram.topics must be configured with at least one tier.";
+              }
+            ]
+            ++ lib.optional (cfg.ntfy.enable && cfg.ntfy.serverUrl == "") {
+              assertion = false;
+              message = "notify: services.notify.ntfy.serverUrl must be set when ntfy is enabled.";
             }
-            {
-              assertion = cfg.telegram.topics != { };
-              message = "notify: services.notify.telegram.topics must be configured with at least one tier.";
-            }
-          ]
-          ++ lib.optional (cfg.ntfy.enable && cfg.ntfy.serverUrl == "") {
-            assertion = false;
-            message = "notify: services.notify.ntfy.serverUrl must be set when ntfy is enabled.";
-          }
-          ++ lib.mapAttrsToList (unit: ev: {
-            assertion = ev.fromPackage || unitImplemented unit;
-            message = "notify: events.${unit} is registered but has no systemd service implementation (serviceConfig.ExecStart or script; set fromPackage for units provided by systemd.packages); hooks attached by this aspect do not count. Register from the capability that owns the unit.";
-          }) registeredUnits;
+            ++ lib.mapAttrsToList (unit: ev: {
+              assertion = ev.fromPackage || unitImplemented unit;
+              message = "notify: events.${unit} is registered but has no systemd service implementation (serviceConfig.ExecStart or script; set fromPackage for units provided by systemd.packages); hooks attached by this aspect do not count. Register from the capability that owns the unit.";
+            }) registeredUnits;
 
           environment.etc."notify/config.json" = {
             mode = "0444";
@@ -246,7 +251,7 @@
 
         }
 
-        (lib.mkIf telegramTokenReady {
+        (lib.mkIf (cfg.telegram.enable && telegramTokenReady) {
           sops.secrets."notify/telegram_bot_token" = {
             sopsFile = cfg.secretFiles.host;
             key = cfg.secretKeys.telegramBotToken;
