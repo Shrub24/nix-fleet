@@ -46,6 +46,9 @@ jobs:
     # secret (docs/contracts/ci.md caveats apply).
     if: github.event_name == 'workflow_dispatch'
     needs: validate
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/build-push-cache.yml
     with:
       cache_url: ${{ vars.FLEET_CACHE_URL }}
