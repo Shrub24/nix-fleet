@@ -89,10 +89,6 @@ permissions:
   contents: read
   id-token: write
 
-concurrency:
-  group: build-push-cache
-  cancel-in-progress: false
-
 jobs:
   prepare:
     runs-on: ubuntu-latest
