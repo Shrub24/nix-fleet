@@ -49,6 +49,16 @@
 # runner's own store — the inventory carries no failover logic.
 name: build-push-cache
 on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Flake attrspecs to build (space-separated)"
+        required: false
+        default: ""
+      cache_url:
+        description: "niks3 server base URL"
+        required: true
+        default: ""
   workflow_call:
     inputs:
       targets:
@@ -75,9 +85,6 @@ on:
         description: "Coordinator's builder SSH key (authorized by builders' nixbuild account)"
         required: false
 
-permissions:
-  contents: read
-  id-token: write
 
 concurrency:
   group: build-push-cache
