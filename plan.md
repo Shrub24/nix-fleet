@@ -46,6 +46,26 @@ AGENTS.md, and docs/contracts/.
 - [ ] **`nix-baseline` adoption in both consumers** so the substituter
       catalog has one owner.
 
+- [ ] **fast-nix-gc adoption** (Mic92/fast-nix-gc): Rust GC, CSR-graph
+      liveness — dry-run ~20s -> ~1s on 30K dead paths; parallel deletion;
+      serves the GC-roots socket so concurrent builds register temp roots
+      without blocking on gc.lock. Upstream `nixosModules.default` replaces
+      `nix.gc` entirely (its own `services.fast-nix-gc` service + timer,
+      profile-generation handling included via `--delete-older-than`).
+      Strategy: extend the `nh-gc` maintenance aspect into a `nix-gc`
+      aspect with an `implementation` switch (nh | fast-nix-gc):
+  - nh path stays `nh clean` (os-profile orchestration UX).
+  - fast-nix-gc path: `nh clean --no-gc`-style flow — nh keeps profile
+    deletion, fast-nix-gc does store collection — OR pure upstream
+    module (`deleteOlderThan` covers generations itself). Decide on
+    live timings; keep ONE notify failure registration either way.
+  - Builder hosts: `noVacuum = true` (never-idle stores; Nix disabled
+    GC vacuuming for the same WAL reason).
+  - fast-nix-optimise as an optional second service on builders.
+  - Upstream first: import `fast-nix-gc.nixosModules.default` (a new
+    flake input, follows nixpkgs), wrap with typed options + the notify
+    registration — same shape as the niks3-publisher adapter.
+
 ## Deferred / future waves
 
 - [ ] **`fleet.services.<name>`** (wave-4): cross-fleet service endpoint

@@ -52,6 +52,12 @@ in
       description = "Create the dedicated nixbuild service account on this host (a builder-side setting: the account remote coordinators dial as). Its authorized keys are consumer policy.";
     };
 
+    buildUserName = lib.mkOption {
+      type = lib.types.str;
+      default = "nixbuild";
+      description = "Name of the builder-side dispatch account. Rename only when a consumer needs a differently-scoped identity; the default is the fleet convention.";
+    };
+
     extraKnownHosts = lib.mkOption {
       type = lib.types.attrsOf (
         lib.types.submodule {
@@ -121,16 +127,16 @@ in
     # build dispatch, no login shell, owned by this aspect so the fleet
     # convention (dial as nixbuild) has an owner everywhere.
     (lib.mkIf cfg.createBuildUser {
-      users.users.nixbuild = {
+      users.users.${cfg.buildUserName} = {
         isSystemUser = true;
-        group = "nixbuild";
+        group = cfg.buildUserName;
         description = "Fleet remote-build dispatch account";
         useDefaultShell = false;
-        home = "/var/lib/nixbuild";
+        home = "/var/lib/${cfg.buildUserName}";
         createHome = true;
         openssh.authorizedKeys.keys = [ ];
       };
-      users.groups.nixbuild = { };
+      users.groups.${cfg.buildUserName} = { };
     })
   ];
 }
