@@ -25,16 +25,76 @@
 # REUSABLE WORKFLOW: call it from a ~10-line consumer stub —
 #
 #   jobs:
+#     build-push-cache:
+#       uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v1
+#       with:
+#         cache_url: https://cache.example.com
+#         targets: .#nixosConfigurations.myhost.config.system.build.toplevel
+#         builder_attr: ci            # optional, canonical set by default
+#         gha_systems: x86_64-linux   # optional, add aarch64-linux for arm
+#       secrets:
+#         BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_KEY }}
+#
+# Pin to a VERSION TAG, not @main: nix-fleet cuts tagged releases and
+# renovate proposes tag bumps (PR gate + changelog), so consumers opt into
+# changes deliberately. Nothing else is configured per-consumer: builder
+# coordinates render from the fleet inventory, cache substituter/keys/
+# audience from the cache's /api/cache-config.
+#
+# Builder prerequisites: nixpkgs revisions aligned (consumers follow
+# nix-fleet's nixpkgs input), coordinator key authorized by the builders'
+# nixbuild account, substituter pointing at the cache so --skip-cached is
+# meaningful. Degradation is native: an unreachable builder simply drops
+# out of nix's scheduling and work lands on the remaining builders and the
+# runner's own store — the inventory carries no failover logic.
+name: build-push-cache
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Flake attrspecs to build (space-separated)"
+        required: false
+        default: ""
+      cache_url:
+        description: "niks3 server base URL"
+        required: true
+        default: ""
+  workflow_call:
+    inputs:
+      targets:
+        description: "Flake attrspecs to build (space-separated)"
+        type: string
+        required: false
+      cache_url:
+        description: "niks3 server base URL (must be reachable; empty fails the fetch-cache-config step loudly)"
+        type: string
+        required: false
+        default: ""
+      builder_attr:
+        description: "fleet.builderSets entry to schedule against (attr of packages.<attr>)"
+        type: string
+        required: false
+        default: "ci"
+      gha_systems:
+        description: "Systems the GHA-local build job matrixes over"
+        type: string
+        required: false
+        default: "x86_64-linux"
+    secrets:
+      BUILDER_SSH_KEY:
+        description: "Coordinator's builder SSH key (authorized by builders' nixbuild account)"
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: build-push-cache
+  cancel-in-progress: false
+
+jobs:
   prepare:
     runs-on: ubuntu-latest
     steps:
       - run: echo ok
-
-  fleet-build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Install Nix
-        uses: NixOS/nix-installer-action@main
