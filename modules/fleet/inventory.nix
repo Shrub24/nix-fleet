@@ -7,6 +7,7 @@ _: {
   fleet = {
     hosts = {
       home-forge = {
+        ssh.user = "dev";
         system = "x86_64-linux";
         tailscale.hostname = "home-forge";
         hostNames = [ "home-forge" ];
@@ -25,6 +26,7 @@ _: {
       };
 
       la-admin-1 = {
+        ssh.user = "dev";
         system = "x86_64-linux";
         tailscale.hostname = "la-admin-1";
         hostNames = [ "la-admin-1" ];
@@ -37,6 +39,7 @@ _: {
       };
 
       oci-melb-1 = {
+        ssh.user = "dev";
         system = "aarch64-linux";
         tailscale.hostname = "oci-melb-1";
         hostNames = [ "oci-melb-1" ];

@@ -29,17 +29,24 @@ wanting breadth writes the explicit profile.
 ## The two-stage public API
 
 ```
-fleet.hosts + fleet.externalBuilders + fleet.buildProfiles.<name>
-        ↓  resolveBuildProfile      (stage 1: normalize)
-              BuilderSpec[]
+fleet.hosts (+ fleet.externalBuilders + fleet.buildProfiles.<name>)
+        ↓  resolveBuildProfile      (stage 1: normalize; builders only)
+              BuilderSpec[]          = HostSpec + scheduling fields
         ↓  renderers                (stage 2: project)
    nix.buildMachines | machinesFile | knownHosts | sshConfig
+
+fleet.hosts (any selection, no capability required)
+        ↓  resolveHosts             (stage 1: trust; HostSpec[])
+        ↓  knownHosts | sshConfig   (same stage-2 renderers)
 ```
 
-`flake.lib.buildProfile` (nix-fleet) exposes `resolveBuildProfile`,
-`buildMachines`, `machinesFile`, `knownHosts`, `sshConfig`. Consumers never
-rebuild builder records by hand; normalized specs carry every field a
-renderer needs (address, systems, sshUser, features, key bodies).
+`flake.lib.buildProfile` (nix-fleet) exposes `resolveHosts`,
+`resolveBuildProfile`, `buildMachines`, `machinesFile`, `knownHosts`,
+`sshConfig`. Consumers never rebuild records by hand. The spec split is the
+contract: `HostSpec` is the trust subset (name, hostName, hostNames,
+publicKey, sshUser, sshOptions); `BuilderSpec` extends it with the
+scheduling fields — trust renderers accept either kind, the scheduling
+renderers only BuilderSpec.
 
 Fail-closed, by name: unknown profile, profile member without
 `nixBuilder.enable`, host member that doesn't exist, external member that
@@ -123,6 +130,9 @@ unchanged.
 - **Self-scheduling**: nothing excludes the evaluating host from its own
   profile. A host scheduling a profile containing itself dials itself —
   keep such hosts out or accept the self-entry deliberately.
+- **Dispatch vs reach identity**: `endpoint.user` (what nix dials as) and
+  `ssh.user` (what a human/client logs in as) are separate facts; never
+  collapse them, or the trust/scheduling conflation returns one level down.
 
 ## What stays consumer-side
 

@@ -1,15 +1,23 @@
-# resolveBuildProfile: the one public scheduling API. Stage 1 turns
-# canonical hosts/external builders plus a named profile into normalized
-# BuilderSpec[]; stage 2 renders those specs into target forms
-# (machines file, ssh config, known hosts, nix.buildMachines). Consumers
-# never rebuild builder records by hand.
+# The fleet projection API. Two stage-1 producers over the canonical
+# inventory, one per question — trust and scheduling are separate
+# projections and must not constrain each other:
+#
+#   HostSpec     = { name; hostName; hostNames; publicKey; sshUser; sshOptions; }
+#   BuilderSpec  = HostSpec // { protocol; address; systems; sshKeyPath;
+#                               maxJobs; speedFactor; supported/mandatoryFeatures }
+#
+#   resolveHosts         : fleet -> selection -> HostSpec[]      (trust; any host)
+#   resolveBuildProfile  : fleet -> profileName -> BuilderSpec[] (builders only)
+#
+# Stage-2 renderers accept HostSpec[]; BuilderSpec extends HostSpec, so the
+# scheduling path can render trust too, never the reverse — buildMachines on
+# a HostSpec fails on the missing scheduling fields. Consumers never rebuild
+# records by hand.
 lib:
 let
   inherit (lib)
     mapAttrsToList
     nameValuePair
-    filterAttrs
-    any
     filter
     ;
 in
@@ -65,7 +73,7 @@ rec {
               else
                 (cap.mandatoryFeatures or [ ]);
           }
-      ) profile.hosts;
+      ) (profile.hosts or { });
 
       externalSpecs = mapAttrsToList (
         extId: member:
@@ -95,7 +103,7 @@ rec {
           supportedFeatures = [ ];
           mandatoryFeatures = [ ];
         }
-      ) profile.external;
+      ) (profile.external or { });
     in
     hostSpecs ++ externalSpecs;
 
@@ -107,9 +115,31 @@ rec {
     else
       true;
 
-  # Host entries for known-hosts: exactly the fleet hosts a profile requires.
-  # Trust is a projection of the selection, never the whole inventory.
-  profileHosts = fleet: specs: filterAttrs (id: _: any (spec: spec.name == id) specs) fleet.hosts;
+  # Stage 1a — trust: any inventory entry, no build capability required.
+  # Trust is its own projection over its own selection; it must never be a
+  # by-product of scheduling (and vice versa). Selection is an attrset keyed
+  # by fleet host id, mirroring buildProfiles.<n>.hosts so per-selection
+  # overrides have a home without inventing a second convention; unknown ids
+  # fail closed by name. Yields HostSpec[] — the subset the trust renderers
+  # read; BuilderSpec (scheduling) extends it.
+  resolveHosts =
+    fleet: selection:
+    mapAttrsToList (
+      hostId: member:
+      let
+        host =
+          fleet.hosts.${hostId}
+            or (throw "fleet: host selection names fleet host '${hostId}' which does not exist");
+      in
+      {
+        name = hostId;
+        hostName = host.tailscale.hostname;
+        hostNames = if (host.hostNames or [ ]) != [ ] then host.hostNames else [ host.tailscale.hostname ];
+        publicKey = host.publicKey or null;
+        sshUser = if (member.sshUser or null) != null then member.sshUser else (host.ssh.user or null);
+        sshOptions = { };
+      }
+    ) selection;
 
   # Stage 2a: nix.buildMachines entries (NixOS option form). nixpkgs composes
   # its machines-file first field as protocol://sshUser@hostName

@@ -18,8 +18,11 @@ let
     fleet:
     lib.concatMap (
       hostId:
+      let
+        host = fleet.hosts.${hostId};
+      in
       lib.optionals
-        (fleet.hosts.${hostId}.capabilities.nixBuilder.enable && fleet.hosts.${hostId}.system == null)
+        (((host.capabilities or { }).nixBuilder or { }).enable or false && (host.system or null) == null)
         [
           "fleet: host '${hostId}' has capabilities.nixBuilder.enable but no system — a builder must declare what it builds natively"
         ]
@@ -42,6 +45,13 @@ let
   # per-profile overrides; the real consumer-bound inventory is validated by
   # the same check.
   sample = {
+    hosts.sample-nonbuilder = {
+      system = null;
+      tailscale.hostname = "fleet-peer";
+      hostNames = [ "fleet-peer" ];
+      publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE1AAAAI-sample-peer";
+      ssh.user = null; # reach identity unset: sshConfig must omit User
+    };
     hosts.sample-host = {
       system = "x86_64-linux";
       tailscale.hostname = "fleet-host";
@@ -72,6 +82,20 @@ let
   };
 
   sampleSpecs = resolve.resolveBuildProfile sample "sample";
+
+  # The separation is load-bearing: the non-builder that resolveHosts accepts
+  # must stay unreachable through the scheduling door. Forced by the render
+  # check below (deepSeq in its attrset), so relaxing the capability check
+  # fails `nix flake check` here instead of silently widening scheduling.
+  schedulingRejection =
+    let
+      leak = {
+        inherit (sample) hosts;
+        externalBuilders = { };
+        buildProfiles.trust-leak.hosts.sample-nonbuilder = { };
+      };
+    in
+    !(builtins.tryEval (builtins.deepSeq (resolve.resolveBuildProfile leak "trust-leak") true)).success;
 
   ciArtifacts =
     { pkgs }:
@@ -113,8 +137,17 @@ let
           checks.fleet-render =
             assert assertRegistry sample;
             assert assertRegistry config.fleet;
+            assert schedulingRejection;
+            # Scheduling path (sampleSpecs) and trust path (trustSpecs) both
+            # render here; the trust selection includes a NON-builder. The
+            # separation itself is pinned by the schedulingRejection binding
+            # below — if the capability check ever relaxes, eval fails there.
             let
               specs = sampleSpecs;
+              trustSpecs = resolve.resolveHosts sample {
+                sample-nonbuilder = { };
+                sample-host = { }; # a BuilderSpec's host renders trust too
+              };
             in
             pkgs.runCommand "fleet-render-check"
               rec {
@@ -122,11 +155,15 @@ let
                 sshConfig = resolve.sshConfig specs;
                 knownHosts = builtins.toJSON (resolve.knownHosts specs);
                 optionForm = builtins.toJSON (resolve.buildMachines specs);
+                trustKnownHosts = builtins.toJSON (resolve.knownHosts trustSpecs);
+                trustSshConfig = resolve.sshConfig trustSpecs;
                 passAsFile = [
                   "machines"
                   "sshConfig"
                   "knownHosts"
                   "optionForm"
+                  "trustKnownHosts"
+                  "trustSshConfig"
                 ];
               }
               ''
@@ -146,6 +183,17 @@ let
                 ${pkgs.jq}/bin/jq -r '.[] | "\(.protocol)://\(.sshUser)@\(.hostName)"' "$optionFormPath" > option-form
                 awk 'NF > 0 { print $1 }' "$machinesPath" > machines-form
                 paste option-form machines-form | awk '$1 != $2 { print "fleet: option form says " $1 " but machines-file form says " $2; exit 1 }'
+
+                # Trust path: both selected hosts land, the non-builder included.
+                grep -q '"host-sample-nonbuilder"' "$trustKnownHostsPath" \
+                  || { echo "fleet: resolveHosts omitted the non-builder"; cat "$trustKnownHostsPath"; exit 1; }
+                grep -q '"host-sample-host"' "$trustKnownHostsPath" \
+                  || { echo "fleet: resolveHosts omitted the builder host"; cat "$trustKnownHostsPath"; exit 1; }
+                # ssh.user = null: no User line, and never the dispatch default.
+                grep -q 'User' "$trustSshConfigPath" \
+                  && { echo "fleet: sshConfig emitted a User line for ssh.user = null"; cat "$trustSshConfigPath"; exit 1; }
+                grep -qx 'Host fleet-peer' "$trustSshConfigPath" \
+                  || { echo "fleet: trust sshConfig missing the peer Host block"; cat "$trustSshConfigPath"; exit 1; }
 
                 cat "$machinesPath" > "$out"
               '';

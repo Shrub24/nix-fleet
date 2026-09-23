@@ -39,6 +39,17 @@
               description = "SSH host public key; null until the host's key is bound (deploy -> harvest -> bind). Canonical fact.";
             };
 
+            ssh.user = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = ''
+                Account a human or client logs in as on this host — the reach
+                identity, distinct from a builder capability's endpoint.user
+                (what nix dials as). Canonical fact; null omits the User line
+                in rendered ssh config.
+              '';
+            };
+
             capabilities.nixBuilder = {
               enable = lib.mkOption {
                 type = lib.types.bool;

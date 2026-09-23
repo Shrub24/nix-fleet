@@ -50,14 +50,27 @@ nixos.hosts.oci-melb-1 = {
 
 ## What the consumer gets: trust
 
-Trust is a **projection of a selection**, never the whole inventory. A
-consumer resolves a build profile (or names the hosts it interacts with) and
-renders:
+Trust is a **projection of a selection**, never the whole inventory, and it
+has its own door: `resolveHosts` takes any fleet hosts — no build capability
+required — so a host you merely talk to can be pinned without becoming
+schedulable.
 
 ```nix
+# trust: name the hosts you interact with (attrset keyed by fleet host id,
+# per-host overrides like sshUser mirror the buildProfiles member shape)
+specs = resolve.resolveHosts config.fleet {
+  home-forge = { };
+  spectre = { sshUser = "saurabhj"; };
+};
 programs.ssh.knownHosts = resolve.knownHosts specs;   # exactly the selection
-programs.ssh.extraConfig = resolve.sshConfig specs;
+programs.ssh.extraConfig = resolve.sshConfig specs;   # User from ssh.user
 ```
+
+`scheduling` uses the other door (`resolveBuildProfile`); the two never
+constrain each other — naming a host for trust never makes it schedulable,
+and the scheduling door still rejects non-builders (pinned by a render
+check). Host records carry `ssh.user` — the reach identity a human or client
+logs in as, distinct from a builder's `endpoint.user` (what nix dials as).
 
 A host with a bound key in the canonical inventory is trusted only where a
 selection includes it — inventory membership never implies fleet-wide trust,
