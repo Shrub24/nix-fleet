@@ -4,6 +4,24 @@ Living checklist of work known at the time of writing. Done items are
 removed, not struck through; decisions and rationale live in README,
 AGENTS.md, and docs/contracts/.
 
+## Adopted policy
+
+- [x] **flake-inputs policy** (docs/contracts/flake-inputs.md): auto-follow
+      disabled — declared follows only; resolution verified unchanged, two
+      write-flake runs idempotent, lock stable.
+
+## Module organization (decided)
+
+Keep the semantic tree (`modules/<domain>/<feature>.nix`). A `modules/nix/`
+folder grouping nix.nix + maintenance + builders was considered and
+declined: the domain folders already encode this (mechanism aspects live by
+what they do — cache/, maintenance/, fleet/), and a "nix" domain would
+re-cut the tree by implementation detail (everything here is nix) rather
+than by feature. The maintenance aspects remain under `maintenance/`; the
+upcoming nix-baseline lands as `modules/nixos/nix-baseline.nix`... actually
+`modules/system/nix-baseline.nix` if a system/ domain emerges — revisit
+only when aspect count makes one necessary.
+
 ## Immediate (consumer-blocking)
 
 - [ ] **Homelab adoption of the fleet feature** (TD-31): import
