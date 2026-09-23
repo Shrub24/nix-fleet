@@ -66,9 +66,10 @@ on:
         type: string
         required: false
       cache_url:
-        description: "niks3 server base URL"
+        description: "niks3 server base URL (must be reachable; empty fails the fetch-cache-config step loudly)"
         type: string
-        required: true
+        required: false
+        default: ""
       builder_attr:
         description: "fleet.builderSets entry to schedule against (attr of packages.<attr>)"
         type: string
@@ -82,7 +83,7 @@ on:
     secrets:
       BUILDER_SSH_KEY:
         description: "Coordinator's builder SSH key (authorized by builders' nixbuild account)"
-        required: true
+        required: false
 
 permissions:
   contents: read
