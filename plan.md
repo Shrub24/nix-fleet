@@ -54,7 +54,7 @@ only when aspect count makes one necessary.
 
 - [ ] **Reusable-workflow conversion** (decided direction): promote
       `.github/templates/build-push-cache.yml` to `workflow_call` with
-      inputs (`builder_set`, `cache_url`, `targets`, `ssh_key_secret`);
+      inputs (`cache_api_url`, `targets`, `builder_attr`, `gha_systems`);
       consumers keep a stub. Keep templates as the readable contract.
       (~45 min; first live run will still need adjustment — see caveats in
       docs/contracts/ci.md)

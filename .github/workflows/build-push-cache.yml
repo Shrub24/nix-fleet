@@ -28,7 +28,7 @@
 #     build-push-cache:
 #       uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v1
 #       with:
-#         cache_url: https://cache.example.com
+#         cache_api_url: https://niks3.tailnet.example.com
 #         targets: .#nixosConfigurations.myhost.config.system.build.toplevel
 #         builder_attr: ci            # optional, canonical set by default
 #         gha_systems: x86_64-linux   # optional, add aarch64-linux for arm
@@ -59,7 +59,7 @@ on:
         description: "Flake attrspecs to build (space-separated)"
         required: false
         default: ""
-      cache_url:
+      cache_api_url:
         description: "niks3 server base URL"
         required: true
         default: ""
@@ -69,7 +69,7 @@ on:
         description: "Flake attrspecs to build (space-separated)"
         type: string
         required: false
-      cache_url:
+      cache_api_url:
         description: "niks3 server base URL (must be reachable; empty fails the fetch-cache-config step loudly)"
         type: string
         required: false
@@ -147,7 +147,7 @@ jobs:
         # Same endpoint the action uses: substituter, public keys, audience.
         id: cache
         run: |
-          curl -sS "${{ inputs.cache_url }}/api/cache-config?issuer=https://token.actions.githubusercontent.com" \
+          curl -sS "${{ inputs.cache_api_url }}/api/cache-config?issuer=https://token.actions.githubusercontent.com" \
             | jq -r '"substituter=" + .substituter_url, "public_keys=" + (.public_keys | join(" ")), "audience=" + .oidc_audience' \
             >> "$GITHUB_OUTPUT"
 
@@ -204,13 +204,24 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      - name: Join tailnet (cache API is tailnet-only)
+        # gha-build fetches /api/cache-config and streams uploads to the
+        # API host — both unreachable without the tailnet. Same gate as
+        # fleet-build; skipped for public-reachable API deployments.
+        if: ${{ vars.FLEET_CI_ON_TAILNET == 'true' }}
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          tags: tag:ci
+
       - name: Install Nix
         uses: NixOS/nix-installer-action@main
 
       - name: Configure cache (substituter + OIDC post-build-hook)
         uses: Mic92/niks3-action@v1
         with:
-          server-url: ${{ inputs.cache_url }}
+          server-url: ${{ inputs.cache_api_url }}
 
       - name: Build (locally, streaming uploads)
         run: nix run nixpkgs#nix-fast-build -- --no-nom --skip-cached --flake .# ${{ inputs.targets }}

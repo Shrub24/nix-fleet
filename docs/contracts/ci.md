@@ -56,7 +56,7 @@ jobs:
   build-push-cache:
     uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v1
     with:
-      cache_url: https://cache.example.com
+      cache_api_url: https://niks3.tailnet.example.com
       targets: .#nixosConfigurations.myhost.config.system.build.toplevel
       # optional:
       # builder_attr: ci           (any fleet.builderSets entry; ci default)
@@ -70,13 +70,13 @@ The calling job must grant `permissions: { contents: read, id-token: write }`
 rejected at parse time (a startup_failure with zero jobs) if the caller
 grants less than the workflow needs.
 
-| Input             | Meaning                                                                            |
-| ----------------- | ---------------------------------------------------------------------------------- |
-| `cache_url`       | niks3 server base URL; substituter/keys/audience come from its `/api/cache-config` |
-| `targets`         | flake attrspecs for nix-fast-build                                                 |
-| `builder_attr`    | which `packages.<attr>` bundle to schedule against (canonical `ci` by default)     |
-| `gha_systems`     | systems the GHA-local build job matrixes over (arm via `aarch64-linux`)            |
-| `BUILDER_SSH_KEY` | secret: the coordinator's builder SSH key                                          |
+| Input             | Meaning                                                                                                                                                                                                  |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cache_api_url`   | niks3 **API** base URL — serves `/api/cache-config`, requires auth/tailnet. Distinct from the public read domain (which the API returns as `substituter_url`); never point this input at the read domain |
+| `targets`         | flake attrspecs for nix-fast-build                                                                                                                                                                       |
+| `builder_attr`    | which `packages.<attr>` bundle to schedule against (canonical `ci` by default)                                                                                                                           |
+| `gha_systems`     | systems the GHA-local build job matrixes over (arm via `aarch64-linux`)                                                                                                                                  |
+| `BUILDER_SSH_KEY` | secret: the coordinator's builder SSH key                                                                                                                                                                |
 
 **Versioning:** pin to a tag (`@v1`), never `@main`. nix-fleet cuts tagged
 releases; renovate proposes tag bumps with changelogs and a PR acceptance
@@ -92,17 +92,22 @@ Two jobs:
 - **gha-build** — runner-local builds streaming through niks3-action's
   post-build-hook with GitHub OIDC. Same dedup server.
 
-### Tailscale join (fleet-host builders)
+### Tailscale join (both jobs)
 
-MagicDNS names in the machines file resolve only inside the tailnet. Joining
-is cheap enough to be normal CI bootstrap:
+MagicDNS names in the machines file resolve only inside the tailnet, and
+the niks3 **API** host is tailnet-only — so both jobs join, not just
+fleet-build: gha-build must reach `/api/cache-config` and stream uploads
+to the API host. The step is `tailscale/github-action` with a Tailscale
+OAuth client (the action exchanges the OAuth client for an ephemeral node
+key; GitHub OIDC is not part of it):
 
 1. Repo **variable**: `FLEET_CI_ON_TAILNET=true`
 2. Repo **secrets**: `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_CLIENT_SECRET`
    (Tailscale OAuth client with tag `tag:ci` authorized in your tailnet ACL)
 
-The join step skips itself when the variable is unset — external-only
-builder sets (nixbuild-only CI) need no Tailscale at all.
+The join steps skip themselves when the variable is unset — external-only
+builder sets with a public-reachable API (nixbuild-only CI) need no
+Tailscale at all.
 
 ## First-live-run caveats (honest state)
 

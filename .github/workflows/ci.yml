@@ -51,7 +51,7 @@ jobs:
       id-token: write
     uses: ./.github/workflows/build-push-cache.yml
     with:
-      cache_url: ${{ vars.FLEET_CACHE_URL }}
+      cache_api_url: ${{ vars.FLEET_NIKS3_API_URL }}
       builder_attr: ci
     secrets:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
