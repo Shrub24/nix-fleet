@@ -49,7 +49,6 @@ let
         niks3-cache
         niks3-publisher
         notify
-        podman-prune
         ssh
         tailscale
         mosh
@@ -108,10 +107,6 @@ let
           message = "fixture: the nix-gc aspect produced no cleanup unit.";
         }
         {
-          assertion = config.systemd.services ? "podman-prune" && config.systemd.timers ? "podman-prune";
-          message = "fixture: the podman-prune aspect produced no unit/timer.";
-        }
-        {
           assertion =
             (config.systemd.services."nix-gc".onFailure or [ ]) != [ ]
             || (config.systemd.services."nh-clean".onFailure or [ ]) != [ ];
@@ -140,10 +135,6 @@ let
           assertion = config.users.users ? "nixbuild" && config.users.users.nixbuild.isSystemUser;
           message = "fixture: the build-account aspect created no dispatch account.";
         }
-        {
-          assertion = config.systemd.services."podman-prune".onFailure or [ ] != [ ];
-          message = "fixture: the podman-prune aspect registered no failure event.";
-        }
       ];
 
       # A real unit for the notification contract to hook.
@@ -160,7 +151,6 @@ let
       services = {
         build-account.enable = true;
         nix-gc.enable = true;
-        podman-prune.enable = true;
         nix-baseline.enable = true;
         ssh-baseline.enable = true;
         tailscale.enable = true;

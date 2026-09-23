@@ -64,7 +64,7 @@ _: {
             };
           };
 
-          # Same idiom as nh-gc/podman-prune: registration is unconditional
+          # Same idiom as the maintenance aspects: registration is unconditional
           # (the fragment declares the namespace); the notify aspect realizes
           # it only when co-selected. tailscaled comes from systemd.packages,
           # hence fromPackage.
