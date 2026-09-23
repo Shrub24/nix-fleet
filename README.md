@@ -1,20 +1,21 @@
-# nix-fleet — shared fleet infrastructure modules
+# nix-fleet — fleet control plane
 
-A dendritic flake-parts repository of **reusable, host-agnostic NixOS aspects** shared across saurabhj's machines (nix-homelab fleet, dotfiles, future hosts). Consumers import this flake as a flake input and select its aspects by name.
+A dendritic flake-parts repository that is the **shared fleet control-plane contract + mechanisms** for saurabhj's machines (nix-homelab fleet, dotfiles, future hosts): canonical cross-fleet facts, shared policy, pure projections, and the implementation packages of the mechanisms it owns. Consumers import this flake as a flake input and select its aspects and projections by name.
 
 ## Mission
 
-- Host **one authoritative copy** of infrastructure capabilities that more than one repository needs, so fixes land once — including the implementation code specific to each mechanism (`pkgs/`), so a shared mechanism is never split across repositories.
-- Publish **aspects and owned implementation packages**, not configurations: modules contribute `flake.modules.nixos.<aspect>`; packages contribute `packages.<system>.<name>`. No hosts, no secrets, no policy data.
-- Stay **provider-agnostic**: no cloud-specific defaults, no tailnet suffixes, no literal hostnames.
+- Host **one authoritative copy** of cross-fleet facts (machine identity + capabilities, external build resources, scheduling profiles) and of infrastructure capabilities more than one repository needs, so fixes land once — including the implementation code specific to each mechanism (`pkgs/`), so a shared mechanism is never split across repositories.
+- Publish **facts, pure projections, aspects, and owned implementation packages**, not configurations: canonical facts + `fleet.buildProfiles` are tier-1 data; `lib.buildProfile` projects them; modules contribute `flake.modules.nixos.<aspect>`; packages contribute `packages.<system>.<name>`.
+- Keep **canonical facts/policy distinct from consumer-local placement**: placement, recipients/topics, endpoint policy, and secrets stay downstream.
+- Stay **provider-agnostic** in mechanisms: no cloud-specific defaults in aspect code; provider coordinates enter through typed options or the tier-1 inventory, where nix-fleet is deliberately the authority.
 
 ## Non-goals
 
-- No host records, no `nixosConfigurations` beyond the fixture evaluation class, no deploy topology — consumers own those.
+- No `nixosConfigurations` beyond the fixture evaluation class, no deploy topology — consumers own those.
 - No secrets or `.sops.yaml` — consumers bind secret paths through typed option contracts.
-- No service policy data (recipients, topics, endpoint catalogs, publisher lists) — those are consumer concerns.
+- No service policy data (recipients, topics, publisher lists) — those are consumer concerns. Cross-fleet service endpoints (`fleet.services.*`) are a future tier-1 namespace, added only when a fact genuinely crosses repositories.
 
-The boundary in one line: **nix-fleet owns the mechanism and its code; consumers own placement, recipients/topics, endpoint policy, and secrets.** Per-contract reference docs for onboarding other repos live in [docs/contracts/](docs/contracts/README.md) — hosts (identity + trust), builders (registry + scheduling), ci (builder artifacts + workflow template).
+The boundary in one line: **nix-fleet owns the canonical facts, the shared policy, the projection API, the mechanism, and its code; consumers own placement, recipients/topics, consumer-local endpoint policy, and secrets.** Per-contract reference docs for onboarding other repos live in [docs/contracts/](docs/contracts/README.md) — hosts (identity + trust), builders (capabilities + profiles + scheduling), ci (builder artifacts + workflow template).
 
 ## Pattern (dendritic, non-negotiable)
 
@@ -68,7 +69,7 @@ renovate.json        # weekly nix flake input updates
 
 1. **`tailscale`** — Tailscale baseline: enable, Tailscale SSH, systemd restart/ordering pinning, MTU debug option. Auth key via `secretFiles.auth`; unbound or missing file means the two-step sops bootstrap, registering nothing.
 2. **`beszel-agent`** — agent auth/enrollment (the hub stays in nix-homelab). Gated on `secretFiles.host` existing; credentials arrive via a sops template. The credential is the fleet-wide KEY (hub→agent SSH auth); TOKEN is deliberately not wired — WebSocket registration needs plain-HTTP reachability of the hub URL, but the hub sits behind Cloudflare Access and agents reach it over tailnet SSH, so the hub-issued token path can never work here. Consumers can drop `beszel/token` from host secrets entirely.
-3. **`fleet`** — the fleet authority feature: canonical machine identity, builder participation, and named builder sets as the one scheduling mechanism; the evaluation-local realization (`config.fleet.realization`) and CI bundles (`packages.ci`, `packages.<set>`) render from the same inventory. Full contract: [docs/contracts/builders.md](docs/contracts/builders.md) (hosts: [hosts.md](docs/contracts/hosts.md), CI: [ci.md](docs/contracts/ci.md)).
+3. **`fleet`** — the fleet authority feature: canonical machine identity with build capabilities (`fleet.hosts.*.capabilities`), external build resources (`fleet.externalBuilders`), named scheduling profiles (`fleet.buildProfiles`), and the pure projection API `lib.buildProfile` (`resolveBuildProfile` → renderers). No NixOS realization is published; the consumer's own flake-level module resolves a profile and wires trust + scheduling. Includes the `build-account` dispatch-account aspect. Full contract: [docs/contracts/builders.md](docs/contracts/builders.md) (hosts: [hosts.md](docs/contracts/hosts.md), CI: [ci.md](docs/contracts/ci.md)).
 4. **`niks3-cache`** — niks3 binary-cache *server*. S3 coordinates, cache URL, secret paths are options; fails closed when unbound.
 5. **`niks3-publisher`** — niks3 closure-upload *client* (upstream post-build-hook module). `serverUrl` required; token via `secretFiles.apiToken`.
 6. **`notify`** — notification dispatch (Telegram + ntfy) realizing native systemd event notifications. One owned package (`pkgs/notify`, overridable): the daemon (`notify serve`, unprivileged system user, unix socket + loopback TCP for app webhooks) owns secrets, the policy map, and journal access; `notify send`/`notify test` and the `unit-notify` handler are thin unprivileged connectors. The registration contract `services.notify.events.<unit>.{failure,success}` is a declaration-only fragment contributors import, so registration is unconditional and realization happens only when notify is co-selected. Socket access: callers join the always-defined `notify` group from their own module (`users.users.<name>.extraGroups`); root units need nothing. Per-event policy: severity, topic, journalLines, context, title — explicit only (no hook without a declared event). Routing resolves per transport: semantic topic if the consumer's map has it, otherwise the severity. Dispatch policy (chatId, topics, ntfy coordinates) is consumer-bound; secrets follow the two-step bootstrap.
@@ -76,62 +77,55 @@ renovate.json        # weekly nix flake input updates
 ## Consumer contract (how nix-homelab / dotfiles consume)
 
 nix-fleet is the **authority for canonical fleet facts**: machine identity
-(`fleet.hosts`), builder participation (`fleet.builders`), cross-fleet
-builder sets (`fleet.builderSets`), and shared mechanism defaults. Three
-tiers govern who may change what:
+and build capabilities (`fleet.hosts`), external build resources
+(`fleet.externalBuilders`), cross-fleet scheduling profiles
+(`fleet.buildProfiles`), and shared mechanism defaults. Three tiers govern
+who may change what:
 
 1. **Canonical fact** — declared here (inventory + schema). Consumers derive;
    never restate. Not casually overridable.
 2. **Shared default** — mechanism defaults (ssh tuning, maxJobs). Overridable
    normally.
-3. **Consumer-local policy** — compositions, sshUser per relationship,
-   extraKnownHosts, local builder sets, substituters, secrets. Downstream.
+3. **Consumer-local policy** — compositions, per-relationship overrides,
+   extra trust, local profiles, substituters, secrets. Downstream.
 
 ```nix
 # consumer flake-level: one import — the fleet feature composes schema,
-# canonical inventory, validation, CI artifacts, and the realization.
+# canonical inventory, validation, CI artifacts; lib.buildProfile is the
+# pure projection API.
 imports = [
   inputs.nix-fleet.flakeModules.fleet
   inputs.nix-fleet.flakeModules.tooling
 ];
 
 # consumer-local additions (additive, never shadows canonical IDs):
-fleet.builderSets.deploy = [ "home-forge" ];   # consumer-local set
+fleet.hosts.mybox.capabilities.nixBuilder.enable = true;
+fleet.buildProfiles.mybox = { hosts.mybox = { }; };
 ```
 
-Host compositions consume the **evaluation-local realization** — built in
-the consumer's own evaluation with the consumer's merged fleet config closed
-over:
+There is **no NixOS realization module**. The consumer's own flake-level
+module closes over its `config.fleet` and calls the pure API:
 
 ```nix
-# consumer host composition (NixOS class)
-imports = [ config.fleet.realization ];
-services.fleet-builders.activeSet = "ci";
+let
+  resolve = inputs.nix-fleet.lib.buildProfile;
+  specs = resolve.resolveBuildProfile config.fleet "ci";
+in {
+  programs.ssh.knownHosts = resolve.knownHosts specs;  # trust by projection
+  nix.buildMachines = resolve.buildMachines specs;     # scheduling
+}
 ```
 
-The realization is never imported from `inputs.nix-fleet.modules.nixos.*`:
-a module constructed in nix-fleet's evaluation would silently bind
-nix-fleet's inventory. Importing it throws with this exact guidance
-(transitional shim; removed after both consumers migrate).
+CI artifacts (`packages.<profile>`, e.g. `packages.ci`) render from the same
+inventory; see [docs/contracts/ci.md](docs/contracts/ci.md).
 
-CI artifacts (`packages.ci` for the canonical set, `packages.<set>` per declared set)
-render from the same inventory; see [docs/contracts/ci.md](docs/contracts/ci.md).
-
-NixOS aspects are host modules, not flake-parts modules: they land in a host
-composition's NixOS module list, never in the consumer's flake-level imports.
-The fleet realization is the one exception in shape — it is not imported from
-`inputs.nix-fleet.modules.nixos.*` at all, but from the consumer's own eval
-(`config.fleet.realization`), because a module constructed in nix-fleet's
-evaluation would silently bind nix-fleet's inventory:
-
-```nix
-# consumer host composition (a NixOS module evaluation)
-imports = [ config.fleet.realization ];
-services.fleet-builders.activeSet = "ci";  # null = trust only, no scheduling
-```
+NixOS aspects (including `build-account`) are host modules: they land in a
+host composition's NixOS module list, never in the consumer's flake-level
+imports.
 
 Consumers keep: compositions, placement, secrets, per-relationship policy,
-provider quirks. nix-fleet owns: canonical facts, the mechanism, its code.
+provider quirks. nix-fleet owns: canonical facts, the projection API, the
+mechanism, its code.
 
 ## Working agreements
 

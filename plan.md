@@ -10,7 +10,7 @@ and fleet topology depend on, functionally self-contained. `fleet.services`
 / omniroute land LATER; host-data harvest lands after the contract settles
 (nix-dotfiles' agent can input its own records then).
 
-- [ ] **1. Realization decomposition** (PRIORITY — strong smell today):
+- [x] **1. Realization decomposition** (PRIORITY — strong smell today):
       delete `config.fleet.realization` as an architectural API entirely.
       nix-fleet exposes facts + pure renderers; consumers close over their
       own `config.fleet` in their own flake evaluation.
@@ -24,33 +24,33 @@ and fleet topology depend on, functionally self-contained. `fleet.services`
   - No cross-class realization bridge remains. This also structurally
     kills the wrong-import footgun class (no pre-realized module exists
     to mis-import).
-- [ ] **2. Capabilities into hosts; single builder registry**:
+- [x] **2. Capabilities into hosts; single builder registry**:
       `fleet.hosts.<id>.capabilities.nixBuilder = { enable; maxJobs;
 supportedFeatures; endpoint.{protocol,user}; }`. Delete host-backed
       `fleet.builders.*`. `system` derives from the host record (capability
       exception only for genuine extra/emulated systems). Keep the
       dedicated `nixbuild` account as the capability endpoint default
       (least-privilege dispatch — NOT `dev`; consumer override possible).
-- [ ] **3. `fleet.externalBuilders.<name>`** (narrow, no entity framework):
+- [x] **3. `fleet.externalBuilders.<name>`** (narrow, no entity framework):
       uri, systems, publicHostKey, metered. nixbuild moves here.
-- [ ] **4. `fleet.buildProfiles.<name>`** replaces builderSets:
+- [x] **4. `fleet.buildProfiles.<name>`** replaces builderSets:
       explicit `hosts` + `external` membership, small per-member override
       axis (maxJobs, features) allowed on BOTH variants uniformly
       (nixbuild's maxJobs is the metered-cost knob — profiles exist for
       exactly this). No weights/predicates/inheritance/tags/all-hosts.
-- [ ] **5. Two-stage pure resolution API**: hosts/externals + profile →
+- [x] **5. Two-stage pure resolution API**: hosts/externals + profile →
       normalized `BuilderSpec[]` (`resolveBuildProfile`), then renderers
       (`renderMachinesFile`, `renderSshConfig`, `renderKnownHosts`,
       nix.buildMachines form). Single public API; `packages.<profile>`
       CI bundles keep the same artifact shape (workflow contract
       unchanged: `builder_attr` input, v1+).
-- [ ] **6. Trust by projection**: `renderKnownHosts` renders exactly the
+- [x] **6. Trust by projection**: `renderKnownHosts` renders exactly the
       selected hosts/resources — kills the current "inventory membership ⇒
       trusted everywhere" flaw (fixture renders all entries today).
       Pinned keys stay pinned.
-- [ ] **7. Mission/README rewrite**: "shared fleet control-plane contract + mechanisms"; remove the stale "no hosts, no policy data" language.
+- [x] **7. Mission/README rewrite**: "shared fleet control-plane contract + mechanisms"; remove the stale "no hosts, no policy data" language.
       Keep the canonical-facts vs consumer-local-placement distinction.
-- [ ] **8. Contract tests**: profile references exist; members have
+- [x] **8. Contract tests**: profile references exist; members have
       nixBuilder.enable; systems derive correctly; externals have
       URI+key; duplicate canonical/local IDs fail; Nix-module form ≡
       machines-file form.

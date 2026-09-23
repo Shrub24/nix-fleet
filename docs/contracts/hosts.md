@@ -50,18 +50,21 @@ nixos.hosts.oci-melb-1 = {
 
 ## What the consumer gets: trust
 
-Any host composition importing `config.fleet.realization` gets, for every
-inventory host with a bound key:
+Trust is a **projection of a selection**, never the whole inventory. A
+consumer resolves a build profile (or names the hosts it interacts with) and
+renders:
 
-- `programs.ssh.knownHosts` entries (additive; `extraKnownHosts` for
-  non-fleet hosts)
-- `programs.ssh.extraConfig` Host blocks with conventional long-build
-  tuning (per-builder overridable via `fleet.builders.<name>.sshOptions`)
+```nix
+programs.ssh.knownHosts = resolve.knownHosts specs;   # exactly the selection
+programs.ssh.extraConfig = resolve.sshConfig specs;
+```
 
-Trust is correct by construction — a host in the canonical inventory is a
-host the fleet declared it controls — and **trust never implies use**: being
-in the inventory does not make a host a builder that gets scheduled, a
-substituter, or a deploy target.
+A host with a bound key in the canonical inventory is trusted only where a
+selection includes it — inventory membership never implies fleet-wide trust,
+and **trust never implies use**: being in the inventory does not make a host
+a builder that gets scheduled, a substituter, or a deploy target. Extra
+non-fleet trust stays consumer-side (plain `programs.ssh.knownHosts`
+entries).
 
 ## Host key bootstrap
 

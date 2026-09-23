@@ -1,142 +1,147 @@
-# Builders contract — participation, sets, scheduling
+# Builders contract — capabilities, profiles, scheduling
 
-Canonical builder facts live in nix-fleet; consumers derive and add local
-policy. Built on the host identity from [hosts.md](hosts.md); consumed by CI
-via [ci.md](ci.md).
+Canonical build capability and scheduling policy live in nix-fleet; consumers
+derive and add local policy. Built on the host identity from
+[hosts.md](hosts.md); consumed by CI via [ci.md](ci.md).
 
-## Design decisions
+## Model
 
-- **One scheduling mechanism: named builder sets.** `fleet.builderSets.<name>`
-  is an explicit, auditable list. Metered/external resources (nixbuild.net is
-  metered) are spent only by explicit set membership — "which workloads may
-  spend nixbuild money" is a readable list.
-- **Two mutually exclusive builder variants.** A builder is either backed by
-  a fleet host reference (dialled over the tailnet by MagicDNS name, host key
-  inherited from the host record) or externally provided by a full store URI
-  (e.g. `ssh-ng://eu.nixbuild.net`, own host key).
-- **No reachability property.** The variant encodes it: fleet-host = tailnet,
-  uri = public. An unreachable builder is a bootstrap failure (CI) or an ops
-  problem (hosts), not data.
-- **nixbuild.net auth is plain SSH keys** (dashboard-managed, per-client
-  private keys are consumer sops business). No tokens.
-- **The realization is evaluation-local.** A NixOS module cannot read flake
-  config, so nix-fleet publishes the _feature_ (`flakeModules.fleet`), which
-  constructs the NixOS realization inside the consumer's evaluation with the
-  consumer's merged fleet config closed over. It is exposed as
-  `config.fleet.realization` — never as a pre-realized
-  `modules.nixos.*` export, which would silently bind nix-fleet's own
-  inventory (the transitional shim at `modules.nixos.fleet-builders` throws
-  with this exact guidance).
+"Builder" is not a second identity registry. A machine's ability to build is
+a **capability** on its host record; a **profile** is the scheduling policy
+binding a workload class to specific builders; **external resources** (no
+host record) are their own small namespace.
+
+- `fleet.hosts.<id>.capabilities.nixBuilder` — the machine can build. The
+  host's `system` is what it builds natively; `extraSystems` is the explicit
+  exception (emulation).
+- `fleet.externalBuilders.<name>` — externally provided build resources
+  (nixbuild.net). Narrow on purpose: uri, systems, publicHostKey, metered.
+- `fleet.buildProfiles.<name>` — explicit membership (`hosts` + `external`)
+  with per-member overrides. Scheduling parameters belong to the
+  relationship between workload and builder, hence overrides live on the
+  member, not the resource: `maxJobs` for nixbuild is the metered-cost knob.
+
+Deliberately absent: weights, predicates, inheritance, tags-as-selectors,
+availability schedulers, an all-hosts profile. "Every machine capable of
+building" is a discoverable fact, not a safe scheduling policy — a consumer
+wanting breadth writes the explicit profile.
+
+## The two-stage public API
+
+```
+fleet.hosts + fleet.externalBuilders + fleet.buildProfiles.<name>
+        ↓  resolveBuildProfile      (stage 1: normalize)
+              BuilderSpec[]
+        ↓  renderers                (stage 2: project)
+   nix.buildMachines | machinesFile | knownHosts | sshConfig
+```
+
+`flake.lib.buildProfile` (nix-fleet) exposes `resolveBuildProfile`,
+`buildMachines`, `machinesFile`, `knownHosts`, `sshConfig`. Consumers never
+rebuild builder records by hand; normalized specs carry every field a
+renderer needs (address, systems, sshUser, features, key bodies).
+
+Fail-closed, by name: unknown profile, profile member without
+`nixBuilder.enable`, host member that doesn't exist, external member that
+doesn't exist, empty profile resolution.
 
 ## Canonical inventory (nix-fleet side)
 
 ```nix
 # modules/fleet/inventory.nix
-fleet.builders.home-forge = {
-  host = "home-forge";
-  systems = [ "x86_64-linux" ];
-  maxJobs = 4;                       # shared default, tier 2
+fleet.hosts.home-forge.capabilities.nixBuilder = {
+  enable = true;
+  maxJobs = 4;
   speedFactor = 2;
   supportedFeatures = [ "big-parallel" "kvm" "nixos-test" ];
+  # endpoint.user defaults "nixbuild" (the dispatch account), protocol ssh-ng
 };
-fleet.builders.nixbuild = {
+fleet.externalBuilders.nixbuild = {
   uri = "ssh-ng://eu.nixbuild.net";
+  sshUser = "root";
   systems = [ "x86_64-linux" "aarch64-linux" ];
   publicHostKey = "ssh-ed25519 AAAA...";   # from nixbuild's docs
+  metered = true;
 };
-fleet.builderSets.ci = [ "home-forge" "nixbuild" ];
+fleet.buildProfiles.ci = {
+  hosts.home-forge = { };
+  external.nixbuild.maxJobs = 4;   # metered-cost knob, per-relationship
+};
 ```
 
-## Consumer additions (tier 3, additive)
+## Consumer adoption (tier 3)
+
+Select the capability aspect on builder hosts (creates the dispatch account):
 
 ```nix
-# consumer flake level — new builders/sets are fine; never shadow canonical IDs
-fleet.builderSets.deploy = [ "home-forge" ];        # consumer-local set
-fleet.builders.buildbox.uri = "ssh-ng://buildbox";  # consumer-local builder
+# host composition
+services.build-account.enable = true;   # modules.nixos.build-account
 ```
 
-Fail-closed validation (named errors): a set naming an unknown builder, a
-builder referencing an unknown host, a builder with both/neither variant set,
-a host-backed builder whose host key is unharvested — all fail `nix flake
-check` with the specific problem.
+Wire scheduling in your own flake-level module — this replaces
+`config.fleet.realization` entirely:
 
-## The two seams
+```nix
+# consumer flake-parts module (perSystem or configurations wiring)
+let
+  resolve = inputs.nix-fleet.lib.buildProfile;
+  specs = resolve.resolveBuildProfile config.fleet "ci";
+in {
+  fleet.hosts.mybox.capabilities.nixBuilder.enable = true;  # additive host
+  fleet.buildProfiles.mybox = { hosts.mybox = { }; };        # local profile
 
-1. **Trust** — known-hosts + ssh client Host blocks for inventory hosts.
-   Always on, additive, no scheduling implied. See hosts.md.
-2. **Scheduling** — on a host composition:
+  configurations.nixos.mybox.module = {
+    programs.ssh.knownHosts = resolve.knownHosts specs;   # trust projection
+    programs.ssh.extraConfig = resolve.sshConfig specs;
+    nix.distributedBuilds = true;
+    nix.buildMachines = resolve.buildMachines specs;      # nixpkgs renders
+                                                          # /etc/nix/machines
+    _module.args.fleetSpecs = specs;   # if a NixOS module needs the specs
+  };
+}
+```
 
-   ```nix
-   imports = [ config.fleet.realization ];
-   services.fleet-builders.activeSet = "ci";   # null = trust only
-   ```
+There is no cross-class realization: nix-fleet publishes facts + pure
+functions; the consumer's module closes over its own `config.fleet`.
 
-   `activeSet` selects a builder set -> `nix.buildMachines` (comma-joined
-   systems, base64 host-key bodies, per-builder features) -> nixpkgs renders
-   `/etc/nix/machines` and `nix.settings.builders = "@/etc/nix/machines"`,
-   with `nix.distributedBuilds` enabled only when a set is selected.
+## Trust by projection
+
+`renderKnownHosts` (the `knownHosts` renderer) renders **exactly the
+selection** — a profile contributes the host keys it requires, nothing more.
+Inventory membership never implies fleet-wide trust. Strict pinned keys are
+unchanged.
 
 ## Prerequisites when scheduling is enabled
 
-- **`sshUser`** defaults to `dev` — the fleet convention (homelab
-  administrates via `dev`, which is in `trusted-users` on fleet hosts, so
-  ssh-ng store writes work). Overridable per composition.
+- **Dial account**: `endpoint.user` defaults to `nixbuild` — the dedicated
+  dispatch account from the build-account aspect (no shell, revocable,
+  isolated from general-purpose users). Not `dev`: dispatch does not need a
+  human account.
 - **The coordinator's key must be authorized on every selected builder**
-  (builder-side `authorized_keys`/sops — consumer policy). Selecting an
-  activeSet never _reaches_ the builders.
-- **Self-scheduling:** nothing excludes the evaluating host from its own set.
-  A host selecting a set containing itself dials itself. Either keep such
-  hosts out of the sets they select, or accept the (wasteful, trust-
-  requiring) self-entry deliberately.
+  (`users.users.nixbuild.openssh.authorizedKeys` — consumer policy).
+  Selecting a profile never _reaches_ the builders.
+- **Self-scheduling**: nothing excludes the evaluating host from its own
+  profile. A host scheduling a profile containing itself dials itself —
+  keep such hosts out or accept the self-entry deliberately.
 
 ## What stays consumer-side
 
 - Substituter policy (`nix.settings` substituters/trusted keys, including
   `ssh-ng://` substituter entries) — endpoint catalog, not participation.
-- SSH server config, host key material (private), GC, remote-builder
-  _authorization_.
-- Non-fleet personal hosts (dotfiles' non-fleet machines) — the canonical
-  inventory is partial by design; consumers add only what they configure.
+- Private key material and its path (`sshKeyPath` is a credential
+  _reference_; the resolver leaves it null for fleet hosts — the consumer
+  adapter fills it from its own secrets).
+- SSH server config, GC, remote-builder authorization.
+- Non-fleet personal hosts — the canonical inventory is partial by design.
 
-## Migration (transitional)
+## Migration from the v1 fleet feature
 
-The pre-consolidation surfaces fail eval with named migration messages:
-
-| Old surface                                                     | Replacement                                                                      |
-| --------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `inputs.nix-fleet.modules.nixos.fleet-builders`                 | `flakeModules.fleet` at flake level + `config.fleet.realization` in compositions |
-| `services.builder-access.hosts`                                 | canonical `fleet.hosts.*` capabilities (inventory)                               |
-| `flakeModules.registry` / `flakeModules.fleet-builders` imports | single `flakeModules.fleet` import                                               |
-
-Consumers migrating from consumer-declared inventories: move machine
-identity to the canonical inventory is already done (nix-fleet extracted
-it); consumers only delete their duplicate records and derive. The shims
-are removed once both consumers have migrated — do not treat them as a
-supported path.
-
-## The builder-side dispatch account
-
-Hosts realizing the fleet feature (default) create a dedicated `nixbuild`
-service account — the identity remote coordinators dial as. `isSystemUser`,
-no shell, no home login; its `authorizedKeys` are consumer policy (sops or
-declarative, per host). It exists so remote build dispatch never borrows a
-general-purpose account like `dev`.
-
-**Renaming semantics** (`services.fleet-builders.buildUserName`): the option
-changes what the aspect _declares_ going forward. systemd user records are
-declarative, so on the next `nixos-rebuild` switch the new user exists and
-the old one is **dropped from the users.users tree — but an existing
-account lingers on disk** (passwd entry removed by users-groups module
-cleanup; `/var/lib/<name>`, its home, is NOT deleted). Renaming therefore
-needs one manual step per host:
-
-```sh
-# after switching to the new name
-userdel nixbuild || true        # if the passwd entry lingered
-rm -rf /var/lib/nixbuild        # home was only a state dir
-```
-
-Also update anything that referenced the old name: builders' authorized
-keys (consumer sops/declarative), and any `sshUser` bindings pointing at
-it (builder records set `sshUser = "dev"`/`"root"` today; the fallback
-default follows the rename automatically).
+| v1 surface                                 | v2 replacement                                                |
+| ------------------------------------------ | ------------------------------------------------------------- |
+| `fleet.builders.<name>` (host-backed)      | `fleet.hosts.<id>.capabilities.nixBuilder`                    |
+| `fleet.builders.nixbuild` (external)       | `fleet.externalBuilders.nixbuild`                             |
+| `fleet.builderSets.<name>` (list of names) | `fleet.buildProfiles.<name>` (members + per-member overrides) |
+| `config.fleet.realization` import          | consumer wiring via `flake.lib.buildProfile` (above)          |
+| `services.fleet-builders.activeSet`        | the consumer's own resolve → `nix.buildMachines` wiring       |
+| `packages.<set>` CI bundles                | `packages.<profile>` (same artifact shape, profile-driven)    |
+| `services.fleet-builders.createBuildUser`  | `modules.nixos.build-account` aspect                          |

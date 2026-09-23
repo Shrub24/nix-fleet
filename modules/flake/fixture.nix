@@ -23,8 +23,19 @@ let
 
   aspects = config.flake.modules.nixos;
 
+  # The v2 consumer wiring, exercised for real: a flake-level module closes
+  # over this evaluation's merged config.fleet, resolves the profile through
+  # the public API, and passes the projection into the NixOS module as args.
+  # This is exactly the ~15-line pattern docs/contracts/builders.md prescribes.
+  resolve = import ../../lib/build-profile.nix lib;
+  resolvedProfile = resolve.resolveBuildProfile config.fleet "fixture";
+
   fixtureModule =
-    { config, ... }:
+    {
+      config,
+      resolvedProfile,
+      ...
+    }:
     {
       imports = [
         inputs.sops-nix.nixosModules.sops
@@ -32,6 +43,7 @@ let
       ]
       ++ (with aspects; [
         beszel-agent
+        build-account
         nix-baseline
         nix-gc
         niks3-cache
@@ -125,6 +137,10 @@ let
           message = "fixture: the mosh aspect did not enable programs.mosh.";
         }
         {
+          assertion = config.users.users ? "nixbuild" && config.users.users.nixbuild.isSystemUser;
+          message = "fixture: the build-account aspect created no dispatch account.";
+        }
+        {
           assertion = config.systemd.services."podman-prune".onFailure or [ ] != [ ];
           message = "fixture: the podman-prune aspect registered no failure event.";
         }
@@ -133,9 +149,16 @@ let
       # A real unit for the notification contract to hook.
       systemd.services.fixture-monitored.script = "true";
 
-      services.fleet-builders.activeSet = "fixture";
+      # The v2 consumer wiring, verbatim from docs/contracts/builders.md:
+      # trust projection (exactly the profile's hosts) + scheduling from the
+      # resolved specs. nixpkgs renders /etc/nix/machines from buildMachines.
+      programs.ssh.knownHosts = resolve.knownHosts resolvedProfile;
+      programs.ssh.extraConfig = resolve.sshConfig resolvedProfile;
+      nix.distributedBuilds = true;
+      nix.buildMachines = resolve.buildMachines resolvedProfile;
 
       services = {
+        build-account.enable = true;
         nix-gc.enable = true;
         podman-prune.enable = true;
         nix-baseline.enable = true;
@@ -200,44 +223,51 @@ let
     };
 in
 {
-  # Fleet registry inventory at flake level: placeholder key material, no
+  # Fleet inventory additions at flake level: placeholder key material, no
   # real builder endpoint or host key belongs in this repository. The NixOS
-  # fixture below only selects; a NixOS module cannot read flake-level data,
-  # which is the whole point of the constructed builders aspect.
+  # fixture below consumes the fleet facts through the documented consumer
+  # wiring (resolveBuildProfile -> nix.settings), exercising the same path
+  # an external consumer runs.
   fleet = {
     hosts.fixture-host = {
+      system = "x86_64-linux";
       tailscale.hostname = "fixture-host";
       hostNames = [ "fixture-host" ];
       publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFIxTuRe0000000000000000000000000000000000 fixture@invalid";
+
+      capabilities.nixBuilder = {
+        enable = true;
+        maxJobs = 2;
+      };
     };
-    builders.fixture-builder = {
-      host = "fixture-host";
-      systems = [ "x86_64-linux" ];
-      maxJobs = 2;
-    };
-    builders.fixture-external = {
+
+    externalBuilders.fixture-external = {
       uri = "ssh-ng://builder.invalid";
       systems = [ "aarch64-linux" ];
       publicHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureExternal0000000000000000000000 fixture@invalid";
     };
-    builderSets.fixture = [
-      "fixture-builder"
-      "fixture-external"
-    ];
+
+    buildProfiles.fixture = {
+      hosts.fixture-host = { };
+      external.fixture-external = { };
+    };
   };
 
   configurations.nixos = lib.listToAttrs (
     lib.forEach config.systems (system: {
       name = "fixture-${builtins.replaceStrings [ "_" ] [ "-" ] system}";
-      value.module.imports = [
-        fixtureModule
-        # The evaluation-local realization built from THIS evaluation's merged
-        # fleet config — the fixture is the first consumer of its own feature.
-        config.fleet.realization
-        {
-          nixpkgs.hostPlatform = lib.mkForce system;
-        }
-      ];
+      value.module = {
+        imports = [
+          fixtureModule
+          {
+            nixpkgs.hostPlatform = lib.mkForce system;
+          }
+        ];
+        # Module arg wiring: the consumer's flake-level closure over its fleet
+        # config, handed to the NixOS module (a NixOS module cannot read flake
+        # config itself — that constraint shaped the whole v2 API).
+        _module.args.resolvedProfile = resolvedProfile;
+      };
     })
   );
 }

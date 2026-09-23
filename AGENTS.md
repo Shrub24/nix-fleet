@@ -20,7 +20,7 @@ Follow the Dendritic Pattern (github.com/mightyiam/dendritic, README + reference
 
 - **No secrets, no `.sops.yaml`, no encrypted material** in this repo. Every secret enters through a typed `secretFiles.*`-style option the consumer binds.
 - **No hostnames, tailnet suffixes, provider endpoints, or cloud defaults.** Provider quirks live in consumer repos. Policy data (endpoint catalogs, publisher lists, builder URLs, S3 coordinates) is consumer-supplied through options.
-- **No host records, no `nixosConfigurations`, no deploy tooling.** A single fixture evaluation class for `nix flake check` is allowed and encouraged.
+- **No `nixosConfigurations`, no deploy tooling.** Canonical cross-fleet facts (`fleet.hosts`, `fleet.externalBuilders`, `fleet.buildProfiles`) are nix-fleet's tier-1 data — that is the control-plane mission, not a violation of it. A single fixture evaluation class for `nix flake check` is allowed and encouraged.
 - Fail closed with named errors (`"<aspect>: <specific problem>"`), never raw `builtins.head []`/null derefs.
 - jj colocated workflow: anonymous mutable changes off `main@origin`; Git-facing bookmark only at publish time. Never run `git reset`/`git checkout`/`git stash` (destroys the colocated index).
 
@@ -31,7 +31,7 @@ Follow the Dendritic Pattern (github.com/mightyiam/dendritic, README + reference
 - Nix reads this repo through the Git index, so **new or deleted files are invisible to `nix flake check`/`nix fmt` until a jj command snapshots the working copy** (`jj st` is enough). Symptom if skipped: a stale evaluation or "path exists on disk, but not in HEAD".
 - Every new aspect: typed options with defaults, a named fail-closed assertion for missing required bindings, and at least one mutation-style non-vacuity check in the fixture class where practical.
 - Formatting is the published tooling base: prettier for markdown/YAML/JSON, the pinned Nix trio for Nix, taplo for TOML. Consumers extend with their own languages/excludes via `perSystem.treefmt` (list options concatenate) — do not add repo-local md/yaml/json formatters over the base.
-- Fleet authority model: nix-fleet is canonical for cross-fleet facts (machine identity, builder participation, cross-fleet builder sets). Tiered facts — canonical (declared here, consumers derive, never restate), shared defaults (overridable normally), consumer-local policy (downstream, additive only). `flakeModules.fleet` is the single public feature (schema + inventory + validation + CI artifacts + realization); the NixOS realization is evaluation-local (`config.fleet.realization`), never published pre-realized — `modules.nixos.fleet-builders` is a transitional throwing shim.
+- Fleet authority model: nix-fleet is canonical for cross-fleet facts (machine identity + build capabilities, external build resources, cross-fleet scheduling profiles). Tiered facts — canonical (declared here, consumers derive, never restate), shared defaults (overridable normally), consumer-local policy (downstream, additive only). `flakeModules.fleet` is the single public feature (schema + inventory + validation + CI artifacts); the scheduling/trust projection is the pure API `lib.buildProfile` (`resolveBuildProfile` → renderers), applied by the consumer's own flake-level module — there is NO NixOS realization module and no cross-class bridge.
 - Input pins: this repo's flake.lock is the fleet's shared-input authority once consumers alias via follows; renovate.json here is the fleet's bump cadence.
 - Secrets use `lib/secrets.nix` helpers (`mkSecretFileOption`, `mkSecretKeyOption`, `mkRequiredSecretAssertion`, `mkSecretsFromMap`) — the same file nix-homelab uses, so an aspect behaves identically in either consumer.
 
@@ -40,7 +40,7 @@ Follow the Dendritic Pattern (github.com/mightyiam/dendritic, README + reference
 Reference implementations live in the sibling repo `/mnt/LinuxData/Projects/dev/nix-homelab` (read-only reference — do not import its code directly; re-express per the pattern above):
 
 - beszel-agent: `modules/flake/observability-agent.nix` (the hub in `modules/admin/beszel.nix` stays in nix-homelab)
-- fleet feature: `modules/fleet/` (schema.nix + inventory.nix + feature.nix) publishes ONE flakeModule (`flakeModules.fleet`): typed canonical inventory, validation, CI bundles (`packages.ci` canonical + `packages.<set>` per set), and the evaluation-local realization (`config.fleet.realization`).
+- fleet feature: `modules/fleet/` (schema.nix + inventory.nix + feature.nix) publishes ONE flakeModule (`flakeModules.fleet`): typed canonical inventory, validation, CI bundles (`packages.<profile>`, profile-driven), plus `lib/build-profile.nix` (`lib.buildProfile`) as the two-stage resolve → render API and `modules/fleet/build-account.nix` (dispatch-account aspect).
 - niks3-cache: `modules/cache/niks3-cache.nix`
 - niks3-publisher: `modules/cache/cache-publisher.nix` + `modules/cache/cache-publisher/upload-client.nix` (upstream post-build-hook module; nix-path-filter and post-deploy hooks stay homelab-side)
 - notify: `modules/notifications/notify.nix` + `notify/_notify-events.nix` contract + `pkgs/notify` (one package: CLI + systemd handler + loopback daemon on a shared dispatch library; native systemd OnFailure/OnSuccess with per-unit policy)

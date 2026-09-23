@@ -17,7 +17,7 @@
 # BUILDER CONFIGURATION COMES FROM THE FLEET INVENTORY — the workflow holds
 # no builder coordinates. nix-fleet (inputs.nix-fleet.flakeModules.fleet)
 # is the canonical authority; the consumer flake renders its selected
-# builder set as `packages.ci` (canonical set) or `packages.<set>`
+# builder profile as `packages.ci` (canonical) or `packages.<profile>`
 # (consumer-local sets) — machines file, known_hosts, ssh_config — and this
 # workflow installs those artifacts. The only selection the workflow makes
 # is the builder-set name.
@@ -112,7 +112,7 @@ jobs:
 
       - name: Join tailnet (fleet-host builders)
         # MagicDNS names in the registry's machines file resolve only inside
-        # the tailnet. External-only builder sets skip this step; the
+        # the tailnet. External-only profiles skip this step; the
         # registry's ssh_config/known_hosts carry everything else.
         # Skips itself when TS_OAUTH_CLIENT_ID is unset in the repo.
         if: ${{ vars.FLEET_CI_ON_TAILNET == 'true' }}
@@ -126,7 +126,7 @@ jobs:
         uses: NixOS/nix-installer-action@main
 
       - name: Install fleet builder artifacts from the registry
-        # Builds the consumer's rendered builder set (nix eval only) and
+        # Builds the consumer's rendered profile bundle (nix eval only) and
         # installs machines/known_hosts/ssh_config. The workflow never
         # stores builder coordinates; the registry is the SSOT.
         run: |

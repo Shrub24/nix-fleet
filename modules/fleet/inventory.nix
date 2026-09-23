@@ -11,43 +11,47 @@ _: {
         tailscale.hostname = "home-forge";
         hostNames = [ "home-forge" ];
         publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILre5rGGN4yjhV8XJpREgl+BRdru24t8NZgHTvpgouKf root@home-forge";
+
+        capabilities.nixBuilder = {
+          enable = true;
+          maxJobs = 4;
+          speedFactor = 2;
+          supportedFeatures = [
+            "big-parallel"
+            "kvm"
+            "nixos-test"
+          ];
+        };
       };
+
       la-admin-1 = {
         system = "x86_64-linux";
         tailscale.hostname = "la-admin-1";
         hostNames = [ "la-admin-1" ];
         publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINNXbGpZyizRCUVdjz35hFTmoWLgM8TPwGbQjCvrrcER root@nixos";
+
+        capabilities.nixBuilder = {
+          enable = true;
+          maxJobs = 2;
+        };
       };
+
       oci-melb-1 = {
         system = "aarch64-linux";
         tailscale.hostname = "oci-melb-1";
         hostNames = [ "oci-melb-1" ];
         publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC8NW1V+x+tvbwzPMEcGRlK2V1XXAuDgdJ2dUQssiWaC root@oci-melb-1";
+
+        capabilities.nixBuilder = {
+          enable = true;
+          maxJobs = 4;
+          speedFactor = 2;
+          supportedFeatures = [ "big-parallel" ];
+        };
       };
     };
 
-    builders.home-forge = {
-      host = "home-forge";
-      sshUser = "dev";
-      systems = [ "x86_64-linux" ];
-      maxJobs = 4;
-      speedFactor = 2;
-      supportedFeatures = [
-        "big-parallel"
-        "kvm"
-        "nixos-test"
-      ];
-    };
-
-    builders.la-admin-1 = {
-      host = "la-admin-1";
-      systems = [ "x86_64-linux" ];
-      maxJobs = 2;
-      speedFactor = 1;
-      supportedFeatures = [ ];
-    };
-
-    builders.nixbuild = {
+    externalBuilders.nixbuild = {
       uri = "ssh-ng://eu.nixbuild.net";
       sshUser = "root";
       systems = [
@@ -56,31 +60,18 @@ _: {
       ];
       hostNames = [ "eu.nixbuild.net" ];
       publicHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPIQCZc54poJ8vqawd8TraNryQeJnvH1eLpIDgbiqymM";
+      metered = true;
     };
 
-    builders.oci-melb-1 = {
-      host = "oci-melb-1";
-      systems = [ "aarch64-linux" ];
-      maxJobs = 4;
-      speedFactor = 2;
-      supportedFeatures = [ "big-parallel" ];
+    # Canonical cross-fleet profile. A profile is a scheduling policy: which
+    # builders a workload class may use, and the per-relationship parameters.
+    # nixbuild is metered — scheduling it is always an explicit member here.
+    # No all-hosts profile on purpose: "every machine capable of building" is
+    # a discoverable fact, not a safe scheduling policy; a consumer that
+    # genuinely wants breadth writes the explicit profile itself.
+    buildProfiles.ci = {
+      hosts.home-forge = { };
+      external.nixbuild.maxJobs = 4;
     };
-
-    builderSets.ci = [
-      "home-forge"
-      "nixbuild"
-    ];
-
-    # Every fleet host that can build. A set is a selection, not an
-    # architecture: each builder declares the systems it serves, so one
-    # arch-agnostic set dispatches correctly on its own — a per-architecture
-    # split would only encode a restriction (never fall back to a builder that
-    # emulates), which no record here needs. `ci` stays as nix-fleet's own CI
-    # set; consumers that build on the fleet select this one.
-    builderSets.all-hosts = [
-      "home-forge"
-      "la-admin-1"
-      "oci-melb-1"
-    ];
   };
 }

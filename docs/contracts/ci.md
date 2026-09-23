@@ -7,7 +7,7 @@ hosts use. No builder coordinates live in workflow files or repo variables.
 
 ```
 fleet inventory (nix-fleet, canonical)   GHA runner
-├─ fleet.builderSets.ci ──────────────►  .#packages.ci
+├─ fleet.buildProfiles.ci ────────────►  .#packages.ci
 │    rendered at consumer eval            ├─ machines       ─► builders = @/tmp/nix-builders
 │                                         ├─ known_hosts    ─► /etc/ssh/ssh_known_hosts
 │                                         └─ ssh_config     ─► ~/.ssh/config
@@ -31,7 +31,7 @@ _and_ consumer-local — a set is not free: declaring it publishes a bundle):
 
 ```nix
 # imports = [ inputs.nix-fleet.flakeModules.fleet ];
-packages.ci                    # the canonical "ci" set (declared in nix-fleet)
+packages.ci                    # the canonical "ci" profile (declared in nix-fleet)
 packages.<set>                 # every other declared set (consumer-local too)
 ```
 
@@ -106,7 +106,7 @@ key; GitHub OIDC is not part of it):
    (Tailscale OAuth client with tag `tag:ci` authorized in your tailnet ACL)
 
 The join steps skip themselves when the variable is unset — external-only
-builder sets with a public-reachable API (nixbuild-only CI) need no
+profiles with a public-reachable API (nixbuild-only CI) need no
 Tailscale at all.
 
 ## First-live-run caveats (honest state)
