@@ -81,12 +81,18 @@ declares under `fleet.*` is cycle-free (option merging precedes realization)
 
 ## Canonical inventory reference (what ships today)
 
-| ID           | System        | Tailscale hostname | publicKey          |
-| ------------ | ------------- | ------------------ | ------------------ |
-| `home-forge` | x86_64-linux  | home-forge         | bound (2026-09-22) |
-| `la-admin-1` | x86_64-linux  | la-admin-1         | bound (2026-09-22) |
-| `oci-melb-1` | aarch64-linux | oci-melb-1         | bound (2026-09-22) |
+| ID           | System        | Tailscale hostname | publicKey               |
+| ------------ | ------------- | ------------------ | ----------------------- |
+| `home-forge` | x86_64-linux  | home-forge         | bound (2026-09-22)      |
+| `la-admin-1` | x86_64-linux  | la-admin-1         | bound (2026-09-22)      |
+| `oci-melb-1` | aarch64-linux | oci-melb-1         | bound (2026-09-22)      |
+| `legion`     | x86_64-linux  | legion             | bound (2026-09-24)      |
+| `spectre`    | x86_64-linux  | spectre            | unbound (not installed) |
 
-All keys harvested and bound; trust renders fleet-wide. This table is
-documentation of the inventory, not a second copy of it —
+All three server keys are harvested and bound. `legion` and `spectre` are the
+workstation pair: identity and trust only, neither carrying
+`capabilities.nixBuilder`. `spectre`'s key is unbound until the laptop is
+installed — its `tailscale.hostname` is the name it will register under.
+
+This table is documentation of the inventory, not a second copy of it —
 `modules/fleet/inventory.nix` is the authority.

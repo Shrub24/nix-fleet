@@ -49,6 +49,23 @@ _: {
           supportedFeatures = [ "big-parallel" ];
         };
       };
+
+      # Workstations: identity and trust only. Neither offers build capacity,
+      # so neither carries capabilities.nixBuilder.
+      legion = {
+        system = "x86_64-linux";
+        tailscale.hostname = "legion";
+        hostNames = [ "legion" ];
+        publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFsK69xOk2uqJ1njVF/Bc60NVnbptb9A3wxDZs5qfPqQ root@arch";
+      };
+
+      spectre = {
+        system = "x86_64-linux";
+        tailscale.hostname = "spectre";
+        hostNames = [ "spectre" ];
+        # publicKey unbound: the laptop is not installed yet. Bind after first
+        # deploy, per the hosts contract's deploy -> harvest -> bind flow.
+      };
     };
 
     externalBuilders.nixbuild = {
