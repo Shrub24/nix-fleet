@@ -65,20 +65,20 @@ Den/repo-merge/policy-engine (explicitly out).
 Ship some of these before v2 so consumers get value that does NOT depend
 on the contract change; none conflict with it.
 
-- [ ] **`nix-baseline` aspect** (~1h): substitution catalog + tuning from
+- [x] **`nix-baseline` aspect**: substitution catalog + tuning from
       dotfiles' `nix.nix` (duplicated in homelab's foundation.nix):
       cache.shrublab.xyz substituter + keys, connect-timeouts,
       builders-use-substitutes. Tier-2 shared default; consumers extend
       via the same options. Adoption independent of v2.
-- [ ] **`ssh` + `mosh` aspects** (~45 min): openssh baseline (password-auth
-      off, openFirewall) + dotfiles' `ssh_config.d` client tuning + mosh.
-      Per-host server policy stays consumer-side; peer aliases die on
-      fleet adoption.
-- [ ] **`nix-gc` aspect generalization** (fast-nix-gc): `implementation`
-      switch (nh | fast-nix-gc), upstream-first module import, ONE notify
-      failure registration either way, `noVacuum` on builders,
-      fast-nix-optimise optional. Decide nh-vs-pure-upstream from live
-      timings.
+- [x] **`ssh` + `mosh` aspects**: openssh baseline (password-auth off,
+      openFirewall default) + client multiplexing fragment;
+      `clientTuning` toggle. Per-host server policy stays consumer-side.
+- [x] **tailscale notify**: tailscaled registers failure (fromPackage);
+      autoconnect deliberately unregistered (retry exits are normal).
+- [x] **`nix-gc` aspect generalization**: `implementation` switch
+      (nh | fast-nix-gc), upstream-first import, ONE notify failure
+      registration either way, `noVacuum` option (builders). Remaining:
+      live-timing decision + fast-nix-optimise optional service.
 - [ ] **Reusable-workflow adoption notes**: consumers call
       `build-push-cache.yml@v1` (tag cut at 0180d5ec) — stub + inputs in
       docs/contracts/ci.md; renovate bumps via tags.
