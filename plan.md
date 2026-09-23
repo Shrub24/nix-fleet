@@ -1,98 +1,114 @@
 # nix-fleet plan — remaining and upcoming
 
-Living checklist of work known at the time of writing. Done items are
-removed, not struck through; decisions and rationale live in README,
-AGENTS.md, and docs/contracts/.
+Living checklist. Done items are removed, not struck through; decisions and
+rationale live in README, AGENTS.md, and docs/contracts/.
 
-## Adopted policy
+## Fleet Contract v2 (decided direction — next major work unit)
 
-- [x] **flake-inputs policy** (docs/contracts/flake-inputs.md): auto-follow
-      disabled — declared follows only; resolution verified unchanged, two
-      write-flake runs idempotent, lock stable.
+Scope per owner decision: the parts of the v2 contract that the CI contract
+and fleet topology depend on, functionally self-contained. `fleet.services`
+/ omniroute land LATER; host-data harvest lands after the contract settles
+(nix-dotfiles' agent can input its own records then).
 
-## Module organization (decided)
+- [ ] **1. Realization decomposition** (PRIORITY — strong smell today):
+      delete `config.fleet.realization` as an architectural API entirely.
+      nix-fleet exposes facts + pure renderers; consumers close over their
+      own `config.fleet` in their own flake evaluation.
+  - `modules/fleet/build-account.nix` — ordinary optional NixOS aspect
+    (the `nixbuild` dispatch account is MECHANISM, not policy; keep it
+    shared, do not let it become consumer copy-paste). Selected like any
+    aspect; `buildUserName` option unchanged.
+  - activeSet/machines wiring → consumer's own ~15-line flake-level
+    module (resolveBuildProfile → render → nix.settings), documented once
+    in docs/contracts/builders.md. That wiring is policy, consumer-owned.
+  - No cross-class realization bridge remains. This also structurally
+    kills the wrong-import footgun class (no pre-realized module exists
+    to mis-import).
+- [ ] **2. Capabilities into hosts; single builder registry**:
+      `fleet.hosts.<id>.capabilities.nixBuilder = { enable; maxJobs;
+    supportedFeatures; endpoint.{protocol,user}; }`. Delete host-backed
+      `fleet.builders.*`. `system` derives from the host record (capability
+      exception only for genuine extra/emulated systems). Keep the
+      dedicated `nixbuild` account as the capability endpoint default
+      (least-privilege dispatch — NOT `dev`; consumer override possible).
+- [ ] **3. `fleet.externalBuilders.<name>`** (narrow, no entity framework):
+      uri, systems, publicHostKey, metered. nixbuild moves here.
+- [ ] **4. `fleet.buildProfiles.<name>`** replaces builderSets:
+      explicit `hosts` + `external` membership, small per-member override
+      axis (maxJobs, features) allowed on BOTH variants uniformly
+      (nixbuild's maxJobs is the metered-cost knob — profiles exist for
+      exactly this). No weights/predicates/inheritance/tags/all-hosts.
+- [ ] **5. Two-stage pure resolution API**: hosts/externals + profile →
+      normalized `BuilderSpec[]` (`resolveBuildProfile`), then renderers
+      (`renderMachinesFile`, `renderSshConfig`, `renderKnownHosts`,
+      nix.buildMachines form). Single public API; `packages.<profile>`
+      CI bundles keep the same artifact shape (workflow contract
+      unchanged: `builder_attr` input, v1+).
+- [ ] **6. Trust by projection**: `renderKnownHosts` renders exactly the
+      selected hosts/resources — kills the current "inventory membership ⇒
+      trusted everywhere" flaw (fixture renders all entries today).
+      Pinned keys stay pinned.
+- [ ] **7. Mission/README rewrite**: "shared fleet control-plane contract + mechanisms"; remove the stale "no hosts, no policy data" language.
+      Keep the canonical-facts vs consumer-local-placement distinction.
+- [ ] **8. Contract tests**: profile references exist; members have
+      nixBuilder.enable; systems derive correctly; externals have
+      URI+key; duplicate canonical/local IDs fail; Nix-module form ≡
+      machines-file form.
 
-Keep the semantic tree (`modules/<domain>/<feature>.nix`). A `modules/nix/`
-folder grouping nix.nix + maintenance + builders was considered and
-declined: the domain folders already encode this (mechanism aspects live by
-what they do — cache/, maintenance/, fleet/), and a "nix" domain would
-re-cut the tree by implementation detail (everything here is nix) rather
-than by feature. The maintenance aspects remain under `maintenance/`; the
-upcoming nix-baseline lands as `modules/nixos/nix-baseline.nix`... actually
-`modules/system/nix-baseline.nix` if a system/ domain emerges — revisit
-only when aspect count makes one necessary.
+Not in v2 scope: `fleet.services.*` (omniroute etc. — later wave, only
+cross-repo facts qualify); shrub/spectre inventory records (data harvest
+after the contract settles; nix-dotfiles' agent can input them itself);
+Den/repo-merge/policy-engine (explicitly out).
 
-## Immediate (consumer-blocking)
+## Quick wins (pre-v2 value, consumer-adoptable independently)
 
-- [ ] **Homelab adoption of the fleet feature** (TD-31): import
-      `flakeModules.fleet` at flake level, host records derive
-      system/tailscale hostname from `fleet.hosts.<id>` (join key = hostId),
-      compositions import `config.fleet.realization`, `activeSet` selects a
-      set; delete the hand-rolled builder machinery and nixbuild token
-      secret. Homelab agent is on it.
-- [ ] **Dotfiles adoption**: same shape; drop the stale
-      `oci-melb-1.system = "x86_64-linux"` from topology (canonical says
-      aarch64); topology loses per-machine `system`.
-- [x] **Shim removal**: `modules/access/builder-access.nix` deleted —
-      unknown-option/unknown-import failures are the fail-fast path; no
-      compatibility shims for a brand-new contract.
+Ship some of these before v2 so consumers get value that does NOT depend
+on the contract change; none conflict with it.
 
-## Wave 3 — mechanism extraction (nix baseline + ssh)
-
-- [ ] **`nix-baseline` aspect**: substitution catalog + tuning from
-      dotfiles' `nix.nix` `substitutionSettings` (duplicated identically in
-      homelab's foundation.nix): `cache.shrublab.xyz`, nix-community/numtide
-      keys, connect-timeouts, `builders-use-substitutes`. Tier-2 shared
-      default; consumers add extras via the same options. (~1h incl. parity)
-- [ ] **`ssh` server aspect**: openssh baseline (password-auth off,
-      openFirewall) + the `ssh_config.d` client tuning block from
-      dotfiles' `ssh.nix`. Peer-alias rendering is redundant with the trust
-      seam; per-host server policy stays consumer-side.
-- [ ] **`mosh`**: 17 lines; extract bundled with the ssh work.
-
-## CI / fleet tooling
-
-- [ ] **Reusable-workflow conversion** (decided direction): promote
-      `.github/templates/build-push-cache.yml` to `workflow_call` with
-      inputs (`cache_api_url`, `targets`, `builder_attr`, `gha_systems`);
-      consumers keep a stub. Keep templates as the readable contract.
-      (~45 min; first live run will still need adjustment — see caveats in
-      docs/contracts/ci.md)
-- [ ] **First live run of build-push-cache**: x86_64 coordinator
-      assumption, trusted-user path, SSH key naming/authorization — all
-      listed in docs/contracts/ci.md "First-live-run caveats".
+- [ ] **`nix-baseline` aspect** (~1h): substitution catalog + tuning from
+      dotfiles' `nix.nix` (duplicated in homelab's foundation.nix):
+      cache.shrublab.xyz substituter + keys, connect-timeouts,
+      builders-use-substitutes. Tier-2 shared default; consumers extend
+      via the same options. Adoption independent of v2.
+- [ ] **`ssh` + `mosh` aspects** (~45 min): openssh baseline (password-auth
+      off, openFirewall) + dotfiles' `ssh_config.d` client tuning + mosh.
+      Per-host server policy stays consumer-side; peer aliases die on
+      fleet adoption.
+- [ ] **`nix-gc` aspect generalization** (fast-nix-gc): `implementation`
+      switch (nh | fast-nix-gc), upstream-first module import, ONE notify
+      failure registration either way, `noVacuum` on builders,
+      fast-nix-optimise optional. Decide nh-vs-pure-upstream from live
+      timings.
+- [ ] **Reusable-workflow adoption notes**: consumers call
+      `build-push-cache.yml@v1` (tag cut at 0180d5ec) — stub + inputs in
+      docs/contracts/ci.md; renovate bumps via tags.
 - [ ] **`nix-baseline` adoption in both consumers** so the substituter
       catalog has one owner.
 
-- [ ] **fast-nix-gc adoption** (Mic92/fast-nix-gc): Rust GC, CSR-graph
-      liveness — dry-run ~20s -> ~1s on 30K dead paths; parallel deletion;
-      serves the GC-roots socket so concurrent builds register temp roots
-      without blocking on gc.lock. Upstream `nixosModules.default` replaces
-      `nix.gc` entirely (its own `services.fast-nix-gc` service + timer,
-      profile-generation handling included via `--delete-older-than`).
-      Strategy: extend the `nh-gc` maintenance aspect into a `nix-gc`
-      aspect with an `implementation` switch (nh | fast-nix-gc):
-  - nh path stays `nh clean` (os-profile orchestration UX).
-  - fast-nix-gc path: `nh clean --no-gc`-style flow — nh keeps profile
-    deletion, fast-nix-gc does store collection — OR pure upstream
-    module (`deleteOlderThan` covers generations itself). Decide on
-    live timings; keep ONE notify failure registration either way.
-  - Builder hosts: `noVacuum = true` (never-idle stores; Nix disabled
-    GC vacuuming for the same WAL reason).
-  - fast-nix-optimise as an optional second service on builders.
-  - Upstream first: import `fast-nix-gc.nixosModules.default` (a new
-    flake input, follows nixpkgs), wrap with typed options + the notify
-    registration — same shape as the niks3-publisher adapter.
+## Adoption (consumers — after v2 lands)
+
+- [ ] **Homelab TD-31**: rebase onto v2 (capabilities-in-hosts + profiles +
+      consumer-side wiring; build-account aspect). Paused until v2 core is
+      green — avoid adopt-then-migrate.
+- [ ] **Dotfiles adoption**: same shape; drop the stale
+      `oci-melb-1.system = "x86_64-linux"` from topology (canonical says
+      aarch64); topology loses per-machine `system`.
+
+## CI live-run prerequisites (user-side)
+
+- [ ] Set repo variable `FLEET_NIKS3_API_URL` (tailnet API host) + secret
+      `FLEET_BUILDER_SSH_KEY`; authorize the key for the `nixbuild`
+      account on builders; `FLEET_CI_ON_TAILNET=true` +
+      `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_CLIENT_SECRET` (OAuth client with
+      writable auth_keys, tag `tag:ci` — or GitHub OIDC audience instead).
 
 ## Deferred / future waves
 
-- [ ] **`fleet.services.<name>`** (wave-4): cross-fleet service endpoint
-      map — today dotfiles' `topology.services` (omniroute, database, niks3,
-      ntfy hosts). Only when a second consumer needs one of them.
-- [ ] **syncthing device IDs**: stays consumer-side (service
-      credentials, not identity); revisit if a second sync consumer appears.
-- [ ] **`nh-gc` retention**: dotfiles' HM user-timer (genericLinux) is
-      the only remaining separate GC owner; fine as is.
-- [ ] **aarch64 CI coordinator**: template assumes x86_64 for the
-      `nix build .#packages.x86_64-linux.ci` step; parameterize when an arm
-      coordinator is actually used.
+- [ ] **`fleet.services.<name>`**: cross-fleet endpoint facts — omniroute
+      first candidate (dotfiles consumes it today). Only facts used across
+      the repo boundary; homelab-only services stay in homelab.
+- [ ] **shrub/spectre canonical records**: sparse host records + host keys;
+      input by the nix-dotfiles agent once the v2 contract settles.
+- [ ] **syncthing device IDs**: stays consumer-side (service credentials).
+- [ ] **fast-nix-optimise**: optional second service on builders (bundled
+      with nix-gc work).
