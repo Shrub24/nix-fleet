@@ -75,3 +75,16 @@ error rather than silently rendering keyless trust.
 Reading `config.fleet.hosts.<id>` inside a consumer module that also
 declares under `fleet.*` is cycle-free (option merging precedes realization)
 — homelab's host records may derive directly.
+
+## Canonical inventory reference (what ships today)
+
+| ID           | System        | Tailscale hostname | publicKey       |
+| ------------ | ------------- | ------------------ | --------------- |
+| `home-forge` | x86_64-linux  | home-forge         | pending harvest |
+| `la-admin-1` | x86_64-linux  | la-admin-1         | pending harvest |
+| `oci-melb-1` | aarch64-linux | oci-melb-1         | pending harvest |
+
+Keys bind in `modules/fleet/inventory.nix` once harvested; builders backed by
+a keyless host fail closed until then. This table is documentation of the
+inventory, not a second copy of it — `modules/fleet/inventory.nix` is the
+authority.

@@ -8,12 +8,12 @@ hosts use. No builder coordinates live in workflow files or repo variables.
 ```
 fleet inventory (nix-fleet, canonical)   GHA runner
 ├─ fleet.builderSets.ci ──────────────►  .#packages.ci
-│    rendered by lib.registry             ├─ machines       ─► builders = @/tmp/nix-builders
+│    rendered at consumer eval            ├─ machines       ─► builders = @/tmp/nix-builders
 │                                         ├─ known_hosts    ─► /etc/ssh/ssh_known_hosts
 │                                         └─ ssh_config     ─► ~/.ssh/config
 └─ join tailnet (fleet-host builders) ─►  MagicDNS resolves hostnames
 
-nix-fast-build: evaluates locally, fans out across registry builders AND the
+nix-fast-build: evaluates locally, fans out across inventory builders AND the
 runner's own store (default max-jobs — the runner is just another builder;
 its aarch64 runners cover arm builds fleet hosts can't). Cache publication:
 builders push via their own niks3 post-build-hook; the coordinator pushes
@@ -21,7 +21,7 @@ fetched-back paths via niks3 push; server-side dedup makes overlap a no-op.
 ```
 
 Degradation is native nix: an unreachable builder drops out of scheduling and
-work lands on remaining builders plus the runner's local store. The registry
+work lands on remaining builders plus the runner's local store. The inventory
 and the workflow carry no failover logic.
 
 ## The artifacts output
@@ -32,7 +32,7 @@ _and_ consumer-local — a set is not free: declaring it publishes a bundle):
 ```nix
 # imports = [ inputs.nix-fleet.flakeModules.fleet ];
 packages.ci                    # the canonical "ci" set (declared in nix-fleet)
-packages.ci-builders-<set>      # every other declared set
+packages.<set>                 # every other declared set (consumer-local too)
 ```
 
 Each bundle is a directory:
@@ -99,3 +99,12 @@ builder sets (nixbuild-only CI) need no Tailscale at all.
    (`services.niks3-cache.oidc.providers`, see README)
 4. Coordinator SSH key authorized on fleet builders (builder-side policy)
 5. Optionally: the two Tailscale secrets + variable
+
+## Intent (why CI reads the inventory)
+
+The workflow holds no builder coordinates so that a builder change (new set,
+retired host, key rotation) is a one-repo change in nix-fleet's inventory,
+picked up by every consuming workflow on the next flake bump. Repo variables
+like the old `NIX_BUILDERS` were a hand-copied second registry — the exact
+duplication class this contract exists to eliminate. Consumers never
+reconcile builder facts by hand again.

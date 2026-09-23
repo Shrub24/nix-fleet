@@ -14,12 +14,13 @@
 # registers a post-build-hook and streams uploads with GitHub OIDC; both
 # paths converge on the same deduplicating server.
 #
-# BUILDER CONFIGURATION COMES FROM THE FLEET REGISTRY — the workflow holds
-# no builder coordinates. The consumer flake (imports
-# inputs.nix-fleet.flakeModules.registry) renders its selected builder set
-# with `packages.ci-builders-<set>` / `packages.ci-builders` (machines file,
-# known_hosts, ssh_config); this workflow installs those artifacts. The only
-# selection the workflow makes is the builder-set name.
+# BUILDER CONFIGURATION COMES FROM THE FLEET INVENTORY — the workflow holds
+# no builder coordinates. nix-fleet (inputs.nix-fleet.flakeModules.fleet)
+# is the canonical authority; the consumer flake renders its selected
+# builder set as `packages.ci` (canonical set) or `packages.<set>`
+# (consumer-local sets) — machines file, known_hosts, ssh_config — and this
+# workflow installs those artifacts. The only selection the workflow makes
+# is the builder-set name.
 #
 # Template placeholders (CONSUMER FILLS):
 #   {{BUILDER_SET}}     fleet.builderSets entry rendered for CI; canonical

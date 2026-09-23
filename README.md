@@ -69,8 +69,7 @@ renovate.json        # weekly nix flake input updates
 
 1. **`tailscale`** — Tailscale baseline: enable, Tailscale SSH, systemd restart/ordering pinning, MTU debug option. Auth key via `secretFiles.auth`; unbound or missing file means the two-step sops bootstrap, registering nothing.
 2. **`beszel-agent`** — agent auth/enrollment (the hub stays in nix-homelab). Gated on `secretFiles.host` existing; credentials arrive via a sops template. The credential is the fleet-wide KEY (hub→agent SSH auth); TOKEN is deliberately not wired — WebSocket registration needs plain-HTTP reachability of the hub URL, but the hub sits behind Cloudflare Access and agents reach it over tailnet SSH, so the hub-issued token path can never work here. Consumers can drop `beszel/token` from host secrets entirely.
-3. **`fleet-builders` + `registry`** — the fleet builder control plane: typed machine identity, builder participation, and named builder sets as the one scheduling mechanism; pure renderers feed hosts and CI alike. Full contract: [docs/contracts/builders.md](docs/contracts/builders.md) (hosts: [hosts.md](docs/contracts/hosts.md), CI: [ci.md](docs/contracts/ci.md)). The old `services.builder-access.hosts` namespace fails eval with a named migration error.
-
+3. **`fleet`** — the fleet authority feature: canonical machine identity, builder participation, and named builder sets as the one scheduling mechanism; the evaluation-local realization (`config.fleet.realization`) and CI bundles (`packages.ci`, `packages.<set>`) render from the same inventory. Full contract: [docs/contracts/builders.md](docs/contracts/builders.md) (hosts: [hosts.md](docs/contracts/hosts.md), CI: [ci.md](docs/contracts/ci.md)). The old `modules.nixos.fleet-builders` / `services.builder-access.hosts` paths fail eval with named migration errors (transitional shims).
 4. **`niks3-cache`** — niks3 binary-cache *server*. S3 coordinates, cache URL, secret paths are options; fails closed when unbound.
 5. **`niks3-publisher`** — niks3 closure-upload *client* (upstream post-build-hook module). `serverUrl` required; token via `secretFiles.apiToken`.
 6. **`notify`** — notification dispatch (Telegram + ntfy) realizing native systemd event notifications. One owned package (`pkgs/notify`, overridable): the daemon (`notify serve`, unprivileged system user, unix socket + loopback TCP for app webhooks) owns secrets, the policy map, and journal access; `notify send`/`notify test` and the `unit-notify` handler are thin unprivileged connectors. The registration contract `services.notify.events.<unit>.{failure,success}` is a declaration-only fragment contributors import, so registration is unconditional and realization happens only when notify is co-selected. Socket access: callers join the always-defined `notify` group from their own module (`users.users.<name>.extraGroups`); root units need nothing. Per-event policy: severity, topic, journalLines, context, title — explicit only (no hook without a declared event). Routing resolves per transport: semantic topic if the consumer's map has it, otherwise the severity. Dispatch policy (chatId, topics, ntfy coordinates) is consumer-bound; secrets follow the two-step bootstrap.
@@ -121,16 +120,19 @@ render from the same inventory; see [docs/contracts/ci.md](docs/contracts/ci.md)
 
 NixOS aspects are host modules, not flake-parts modules: they land in a host
 composition's NixOS module list, never in the consumer's flake-level imports.
-The consumer composes them the way it composes any other NixOS module — in
-nix-homelab, through its host records' `composition.aspects`:
+The fleet realization is the one exception in shape — it is not imported from
+`inputs.nix-fleet.modules.nixos.*` at all, but from the consumer's own eval
+(`config.fleet.realization`), because a module constructed in nix-fleet's
+evaluation would silently bind nix-fleet's inventory:
 
 ```nix
 # consumer host composition (a NixOS module evaluation)
-imports = [ inputs.nix-fleet.modules.nixos.fleet-builders ];
+imports = [ config.fleet.realization ];
 services.fleet-builders.activeSet = "ci";  # null = trust only, no scheduling
 ```
 
-Consumers keep: host identity, secrets, policy data, provider quirks. nix-fleet owns: the mechanism.
+Consumers keep: compositions, placement, secrets, per-relationship policy,
+provider quirks. nix-fleet owns: canonical facts, the mechanism, its code.
 
 ## Working agreements
 
@@ -139,7 +141,7 @@ Consumers keep: host identity, secrets, policy data, provider quirks. nix-fleet 
 - Secrets enter through `/lib/secrets.nix` helpers only: `mkSecretFileOption` for consumer-bound paths, `mkRequiredSecretAssertion` for the named fail-closed gate, `mkSecretsFromMap` for `sops.secrets` registration. Byte-identical to nix-homelab's helper; consumers of these aspects do not need their own copy.
 - Every aspect declares its options; every option has a type; fail closed with named errors, never raw `builtins.head`/null derefs.
 - Input pins: once consumer flakes alias their nixpkgs-family inputs to nix-fleet's (`inputs.<x>.inputs.nixpkgs.follows = "nixpkgs"` via nix-fleet), this repository's `flake.lock` is the fleet's shared-input authority and its `renovate.json` schedule is the fleet's bump cadence — a nixpkgs bump lands here first, consumers inherit it through their follows chains.
-- Provenance discipline: no secrets, no absolute paths, no machine names in this repo. The registry module itself carries only the schema, renderers, and inline check samples — consumer inventory is bound in the consumer flake, and the check validates whatever the consumer binds (the fixture binds placeholder records).
+- Provenance discipline: no secrets, no private keys, no absolute paths in this repo. The canonical inventory carries public fleet facts only (machine IDs, systems, Tailscale hostnames, host *public* keys once harvested); consumer-local inventory lives downstream, additive only. The fixture is a consumer-shaped integration test and must never resemble or feed the canonical inventory.
 
 ## Pointers into nix-homelab (read-only reference)
 
@@ -197,14 +199,15 @@ own `.github/workflows/` and fill the placeholders.
   fresh OIDC tokens bound to the cache audience (no long-lived secrets), and
   non-GHA coordinators use a fleet-issued push token in the same env var.
 
-CI builder artifacts come from the registry, not repo variables: a consumer
-flake importing the fleet feature gets `packages.ci` (canonical set; per-set bundles
-as `packages.ci-builders-<set>`) — a directory with `machines` (nix
+CI builder artifacts come from the fleet inventory, not repo variables: a
+consumer flake importing the fleet feature gets `packages.ci` (canonical set;
+per-set bundles as `packages.<set>`) — a directory with `machines` (nix
 machines-file lines), `known_hosts`, and `ssh_config`, rendered from the
-consumer's own registry. The `build-push-cache` template installs these
-instead of holding builder coordinates; a `FLEET_CI_ON_TAILNET=true` repo
-variable plus `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_CLIENT_SECRET` secrets add the
-Tailscale join for fleet-host builders.
+merged inventory at consumer eval time. The `build-push-cache` template
+installs these instead of holding builder coordinates; a
+`FLEET_CI_ON_TAILNET=true` repo variable plus
+`TS_OAUTH_CLIENT_ID`/`TS_OAUTH_CLIENT_SECRET` secrets add the Tailscale join
+for fleet-host builders. Full contract: [docs/contracts/ci.md](docs/contracts/ci.md).
 
 CI-capable cache setup consumer-side:
 
