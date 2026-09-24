@@ -157,6 +157,7 @@ let
                 optionForm = builtins.toJSON (resolve.buildMachines specs);
                 trustKnownHosts = builtins.toJSON (resolve.knownHosts trustSpecs);
                 trustSshConfig = resolve.sshConfig trustSpecs;
+                knownHostsText = resolve.knownHostsText trustSpecs;
                 passAsFile = [
                   "machines"
                   "sshConfig"
@@ -164,6 +165,7 @@ let
                   "optionForm"
                   "trustKnownHosts"
                   "trustSshConfig"
+                  "knownHostsText"
                 ];
               }
               ''
@@ -194,6 +196,14 @@ let
                   && { echo "fleet: sshConfig emitted a User line for managementUser = null"; cat "$trustSshConfigPath"; exit 1; }
                 grep -qx 'Host fleet-peer' "$trustSshConfigPath" \
                   || { echo "fleet: trust sshConfig missing the peer Host block"; cat "$trustSshConfigPath"; exit 1; }
+
+                # Text-form ≡ option-form knownHosts: every attrset entry's
+                # key must appear in the line form (same selection, same set).
+                ${pkgs.jq}/bin/jq -r 'to_entries[] | .value.hostNames[0] + " " + .value.publicKey' "$trustKnownHostsPath" \
+                  | while read -r line; do
+                      grep -qx "$line" "$knownHostsTextPath" \
+                        || { echo "fleet: knownHostsText missing line: $line"; exit 1; }
+                    done
 
                 cat "$machinesPath" > "$out"
               '';

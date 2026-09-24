@@ -11,8 +11,10 @@
 #
 # Stage-2 renderers accept HostSpec[]; BuilderSpec extends HostSpec, so the
 # scheduling path can render trust too, never the reverse — buildMachines on
-# a HostSpec fails on the missing scheduling fields. Consumers never rebuild
-# records by hand.
+# a HostSpec fails on the missing scheduling fields. The *Text renderers
+# (machinesFile, knownHostsText) are the line-form twins of the option-form
+# ones for consumers that cannot take attrsets (system-manager). Consumers
+# never rebuild records by hand.
 lib:
 let
   inherit (lib)
@@ -142,7 +144,7 @@ rec {
         publicKey = host.publicKey or null;
         sshUser =
           if (member.sshUser or null) != null then member.sshUser else (host.managementUser or null);
-        sshOptions = { };
+        sshOptions = member.sshOptions or { };
       }
     ) selection;
 
@@ -206,6 +208,23 @@ rec {
         }
       ) (filter (spec: spec.publicKey != null) specs)
     );
+
+  # Stage 2c-text: known_hosts line format — the option-form renderer's
+  # twin for consumers that cannot take attrsets (system-manager), mirroring
+  # why machinesFile exists next to buildMachines. Same key-type field the
+  # key line carries; same filter on unkeyed hosts.
+  knownHostsText =
+    specs:
+    lib.concatStringsSep "\n" (
+      map (
+        spec:
+        lib.concatStringsSep " " [
+          (lib.concatStringsSep "," spec.hostNames)
+          spec.publicKey
+        ]
+      ) (filter (spec: spec.publicKey != null) specs)
+    )
+    + lib.optionalString (lib.any (spec: spec.publicKey != null) specs) "\n";
 
   # Stage 2d: ssh client Host blocks for the selection.
   sshConfig =
