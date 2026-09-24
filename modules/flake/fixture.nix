@@ -66,8 +66,9 @@ let
       # Non-vacuity guard: every aspect must show its contribution.
       assertions = [
         {
-          assertion = config.services.beszel.agent.enable;
-          message = "fixture: the beszel-agent aspect registered no agent; its secret-file gate did not fire.";
+          assertion =
+            config.services.beszel.agent.enable && config.services.beszel.agent.environment.KEY or "" != "";
+          message = "fixture: the beszel-agent aspect registered no agent or no public KEY.";
         }
         {
           assertion = config.services.tailscale.authKeyFile != null;
@@ -157,10 +158,10 @@ let
       };
 
       services = {
-        # KEY-only agent (no TOKEN wiring at all; the host file is the gate).
-        beszel-agent.secretFiles = {
-          common = fixtureSecretFile;
-          host = fixtureSecretFile;
+        # The KEY is the hub's public half — policy, not a secret.
+        beszel-agent = {
+          enable = true;
+          key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE1AAAAIfixtureplaceholderpublickeybody0000 fixture";
         };
 
         niks3-cache = {
