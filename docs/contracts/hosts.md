@@ -63,14 +63,15 @@ specs = resolve.resolveHosts config.fleet {
   spectre = { sshUser = "saurabhj"; };
 };
 programs.ssh.knownHosts = resolve.knownHosts specs;   # exactly the selection
-programs.ssh.extraConfig = resolve.sshConfig specs;   # User from ssh.user
+programs.ssh.extraConfig = resolve.sshConfig specs;   # User from managementUser
 ```
 
 `scheduling` uses the other door (`resolveBuildProfile`); the two never
 constrain each other — naming a host for trust never makes it schedulable,
 and the scheduling door still rejects non-builders (pinned by a render
-check). Host records carry `ssh.user` — the reach identity a human or client
-logs in as, distinct from a builder's `endpoint.user` (what nix dials as).
+check). Host records carry `managementUser` — the fleet management account an
+operator or client logs in as, distinct from a builder's `endpoint.user`
+(what nix dials as).
 
 A host with a bound key in the canonical inventory is trusted only where a
 selection includes it — inventory membership never implies fleet-wide trust,

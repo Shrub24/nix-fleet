@@ -7,7 +7,7 @@ _: {
   fleet = {
     hosts = {
       home-forge = {
-        ssh.user = "dev";
+        managementUser = "dev";
         system = "x86_64-linux";
         tailscale.hostname = "home-forge";
         hostNames = [ "home-forge" ];
@@ -26,7 +26,7 @@ _: {
       };
 
       la-admin-1 = {
-        ssh.user = "dev";
+        managementUser = "dev";
         system = "x86_64-linux";
         tailscale.hostname = "la-admin-1";
         hostNames = [ "la-admin-1" ];
@@ -39,7 +39,7 @@ _: {
       };
 
       oci-melb-1 = {
-        ssh.user = "dev";
+        managementUser = "dev";
         system = "aarch64-linux";
         tailscale.hostname = "oci-melb-1";
         hostNames = [ "oci-melb-1" ];
@@ -83,14 +83,18 @@ _: {
       metered = true;
     };
 
-    # Canonical cross-fleet profile. A profile is a scheduling policy: which
-    # builders a workload class may use, and the per-relationship parameters.
-    # nixbuild is metered — scheduling it is always an explicit member here.
-    # No all-hosts profile on purpose: "every machine capable of building" is
-    # a discoverable fact, not a safe scheduling policy; a consumer that
-    # genuinely wants breadth writes the explicit profile itself.
+    # Canonical cross-fleet profiles. A profile is a scheduling policy:
+    # which builders a workload class may use, and the per-relationship
+    # parameters. Ordinary CI runs on the free/background fleet; the metered
+    # external joins only through an explicitly named profile (arm-expensive),
+    # so nixbuild participation is always visible in the workload's name.
     buildProfiles.ci = {
       hosts.home-forge = { };
+      hosts.la-admin-1 = { };
+      hosts.oci-melb-1 = { };
+    };
+    buildProfiles.arm-expensive = {
+      hosts.oci-melb-1 = { };
       external.nixbuild.maxJobs = 4;
     };
   };

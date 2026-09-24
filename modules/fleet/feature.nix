@@ -50,7 +50,7 @@ let
       tailscale.hostname = "fleet-peer";
       hostNames = [ "fleet-peer" ];
       publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE1AAAAI-sample-peer";
-      ssh.user = null; # reach identity unset: sshConfig must omit User
+      managementUser = null; # reach identity unset: sshConfig must omit User
     };
     hosts.sample-host = {
       system = "x86_64-linux";
@@ -189,9 +189,9 @@ let
                   || { echo "fleet: resolveHosts omitted the non-builder"; cat "$trustKnownHostsPath"; exit 1; }
                 grep -q '"host-sample-host"' "$trustKnownHostsPath" \
                   || { echo "fleet: resolveHosts omitted the builder host"; cat "$trustKnownHostsPath"; exit 1; }
-                # ssh.user = null: no User line, and never the dispatch default.
+                # managementUser = null: no User line, never the dispatch default.
                 grep -q 'User' "$trustSshConfigPath" \
-                  && { echo "fleet: sshConfig emitted a User line for ssh.user = null"; cat "$trustSshConfigPath"; exit 1; }
+                  && { echo "fleet: sshConfig emitted a User line for managementUser = null"; cat "$trustSshConfigPath"; exit 1; }
                 grep -qx 'Host fleet-peer' "$trustSshConfigPath" \
                   || { echo "fleet: trust sshConfig missing the peer Host block"; cat "$trustSshConfigPath"; exit 1; }
 

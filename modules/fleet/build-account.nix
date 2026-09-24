@@ -5,10 +5,14 @@
 # fleet.hosts.<id>.capabilities.nixBuilder.endpoint.user). Its authorized
 # keys are consumer policy: the aspect owns the identity, the consumer owns
 # who may use it.
-{ lib, ... }:
-{
+_: {
   flake.modules.nixos.build-account =
-    { config, ... }:
+    {
+      config,
+      lib,
+      pkgs,
+      ...
+    }:
     {
       options.services.build-account = {
         enable = lib.mkEnableOption "the dedicated fleet dispatch account for remote build coordinators";
@@ -25,6 +29,10 @@
           isSystemUser = true;
           group = config.services.build-account.name;
           description = "Fleet remote-build dispatch account";
+          # ssh-ng remote store needs a working shell to execute the remote
+          # nix command; the shadow default is not. Restrict via the
+          # authorized key's command= / restrictions, not by removing the shell.
+          shell = lib.getExe pkgs.bashInteractive;
           useDefaultShell = false;
           home = "/var/lib/${config.services.build-account.name}";
           createHome = true;

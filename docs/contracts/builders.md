@@ -72,8 +72,13 @@ fleet.externalBuilders.nixbuild = {
 };
 fleet.buildProfiles.ci = {
   hosts.home-forge = { };
-  external.nixbuild.maxJobs = 4;   # metered-cost knob, per-relationship
-};
+  hosts.la-admin-1 = { };
+  hosts.oci-melb-1 = { };
+};                        # canonical ci = the free fleet
+fleet.buildProfiles.arm-expensive = {
+  hosts.oci-melb-1 = { };
+  external.nixbuild.maxJobs = 4;  # metered-cost knob, per-relationship
+};                        # nixbuild only via explicit profile
 ```
 
 ## Consumer adoption (tier 3)
@@ -131,8 +136,9 @@ unchanged.
   profile. A host scheduling a profile containing itself dials itself —
   keep such hosts out or accept the self-entry deliberately.
 - **Dispatch vs reach identity**: `endpoint.user` (what nix dials as) and
-  `ssh.user` (what a human/client logs in as) are separate facts; never
-  collapse them, or the trust/scheduling conflation returns one level down.
+  `managementUser` (the fleet management account an operator/client logs
+  in as) are separate facts; never collapse them, or the trust/scheduling
+  conflation returns one level down.
 
 ## What stays consumer-side
 

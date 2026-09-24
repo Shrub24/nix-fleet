@@ -5,7 +5,7 @@ future hosts): what each published contract is, who owns what, and the
 minimum wiring to onboard.
 
 The recurring shape: **nix-fleet is the authority for canonical fleet facts
-(identity, participation, cross-fleet sets) and the mechanism code; consumers
+(identity, build capabilities, cross-fleet profiles) and the mechanism code; consumers
 derive from those facts and own everything downstream** — compositions,
 placement, per-relationship policy, local additions, secrets. Fact tiers:
 

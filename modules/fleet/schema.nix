@@ -39,14 +39,14 @@
               description = "SSH host public key; null until the host's key is bound (deploy -> harvest -> bind). Canonical fact.";
             };
 
-            ssh.user = lib.mkOption {
+            managementUser = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
               description = ''
-                Account a human or client logs in as on this host — the reach
-                identity, distinct from a builder capability's endpoint.user
-                (what nix dials as). Canonical fact; null omits the User line
-                in rendered ssh config.
+                The fleet management account an operator or client logs in as
+                on this host — the reach identity, distinct from a builder
+                capability's endpoint.user (what nix dials as). Canonical
+                fleet fact; null omits the User line in rendered ssh config.
               '';
             };
 
@@ -73,12 +73,6 @@
                 type = lib.types.listOf lib.types.str;
                 default = [ ];
                 description = "Features derivations may require (big-parallel, kvm, nixos-test).";
-              };
-
-              mandatoryFeatures = lib.mkOption {
-                type = lib.types.listOf lib.types.str;
-                default = [ ];
-                description = "Features every derivation sent here must require.";
               };
 
               extraSystems = lib.mkOption {

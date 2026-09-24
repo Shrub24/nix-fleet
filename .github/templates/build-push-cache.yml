@@ -30,7 +30,7 @@
 #       with:
 #         cache_api_url: https://niks3.tailnet.example.com
 #         targets: .#nixosConfigurations.myhost.config.system.build.toplevel
-#         builder_attr: ci            # optional, canonical set by default
+#         builder_attr: ci            # optional, canonical profile by default
 #         gha_systems: x86_64-linux   # optional, add aarch64-linux for arm
 #       secrets:
 #         BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_KEY }}

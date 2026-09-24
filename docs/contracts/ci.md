@@ -26,13 +26,13 @@ and the workflow carry no failover logic.
 
 ## The artifacts output
 
-Any flake importing `flakeModules.fleet` gets, per declared set (canonical
-_and_ consumer-local — a set is not free: declaring it publishes a bundle):
+Any flake importing `flakeModules.fleet` gets, per declared profile (canonical
+_and_ consumer-local — a profile is not free: declaring it publishes a bundle):
 
 ```nix
 # imports = [ inputs.nix-fleet.flakeModules.fleet ];
 packages.ci                    # the canonical "ci" profile (declared in nix-fleet)
-packages.<set>                 # every other declared set (consumer-local too)
+packages.<profile>            # every other declared profile (consumer-local too)
 ```
 
 Each bundle is a directory:
@@ -40,11 +40,11 @@ Each bundle is a directory:
 | File          | Content                                                                    | Installed to                            |
 | ------------- | -------------------------------------------------------------------------- | --------------------------------------- |
 | `machines`    | nix machines-file lines (7 fields, comma-joined systems, `-` placeholders) | `/tmp/nix-builders` → `builders = @...` |
-| `known_hosts` | ssh_known_hosts lines for the set's builders                               | `/etc/ssh/ssh_known_hosts`              |
+| `known_hosts` | ssh_known_hosts lines for the profile's builders                           | `/etc/ssh/ssh_known_hosts`              |
 | `ssh_config`  | Host blocks with long-build tuning                                         | appended to `~/.ssh/config`             |
 
 Rendered from the merged fleet inventory (canonical + consumer additions) at
-consumer eval time — the workflow never stores addresses, keys, or sets.
+consumer eval time — the workflow never stores addresses, keys, or profiles.
 
 ## The workflow
 
@@ -59,7 +59,7 @@ jobs:
       cache_api_url: https://niks3.tailnet.example.com
       targets: .#nixosConfigurations.myhost.config.system.build.toplevel
       # optional:
-      # builder_attr: ci           (any fleet.builderSets entry; ci default)
+      # builder_attr: ci           (any fleet.buildProfiles entry; ci default)
       # gha_systems: x86_64-linux  (space-separated; add aarch64-linux for arm)
     secrets:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
@@ -121,9 +121,9 @@ Tailscale at all.
 ## What the consumer must provide (checklist)
 
 1. `flakeModules.fleet` import (hosts.md, builders.md) — canonical inventory
-   - shared sets arrive with it; add only consumer-local sets/builders
-2. A `fleet.builderSets.ci` naming the builders CI may use (canonical `ci`
-   exists; extend or add a local set)
+   - shared profiles arrive with it; add only consumer-local profiles/builders
+2. A `fleet.buildProfiles.ci` naming the builders CI may use (canonical `ci`
+   exists; extend or add a local profile)
 3. `{{CACHE_URL}}`-shaped niks3 endpoint with OIDC provider bound
    (`services.niks3-cache.oidc.providers`, see README)
 4. Coordinator SSH key authorized on fleet builders (builder-side policy)
@@ -131,7 +131,7 @@ Tailscale at all.
 
 ## Intent (why CI reads the inventory)
 
-The workflow holds no builder coordinates so that a builder change (new set,
+The workflow holds no builder coordinates so that a builder change (new profile,
 retired host, key rotation) is a one-repo change in nix-fleet's inventory,
 picked up by every consuming workflow on the next flake bump. Repo variables
 like the old `NIX_BUILDERS` were a hand-copied second registry — the exact

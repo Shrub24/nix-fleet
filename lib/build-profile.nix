@@ -67,11 +67,15 @@ rec {
                 member.supportedFeatures
               else
                 (cap.supportedFeatures or [ ]);
+            # mandatoryFeatures is scheduling policy, not a machine fact: it
+            # lives on profile members only. `or null` misses schema-typed
+            # members (the attr exists with value null), hence the explicit
+            # null filter.
             mandatoryFeatures =
-              if (member.mandatoryFeatures or null) != null then
-                member.mandatoryFeatures
-              else
-                (cap.mandatoryFeatures or [ ]);
+              let
+                mf = member.mandatoryFeatures or null;
+              in
+              if mf == null then [ ] else mf;
           }
       ) (profile.hosts or { });
 
@@ -136,7 +140,8 @@ rec {
         hostName = host.tailscale.hostname;
         hostNames = if (host.hostNames or [ ]) != [ ] then host.hostNames else [ host.tailscale.hostname ];
         publicKey = host.publicKey or null;
-        sshUser = if (member.sshUser or null) != null then member.sshUser else (host.ssh.user or null);
+        sshUser =
+          if (member.sshUser or null) != null then member.sshUser else (host.managementUser or null);
         sshOptions = { };
       }
     ) selection;
