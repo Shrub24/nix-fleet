@@ -7,6 +7,8 @@
   flake.modules.nixos.ssh =
     { config, ... }:
     {
+      imports = [ ../notifications/notify/_notify-events.nix ];
+
       options.services.ssh-baseline = {
         enable = lib.mkEnableOption "the shared SSH baseline (server hardening + client tuning)";
 
@@ -41,6 +43,11 @@
                     ControlPath ~/.ssh/ctl-%r@%h:%p
               '';
             };
+
+        # The aspect owns the sshd hardening, so it owns the failure
+        # registration. Registration is unconditional in the class; the
+        # notify aspect realizes it only when co-selected.
+        services.notify.events.sshd.failure = { };
       };
     };
 }

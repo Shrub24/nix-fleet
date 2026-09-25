@@ -111,7 +111,19 @@ let
           assertion =
             (config.systemd.services."nix-gc".onFailure or [ ]) != [ ]
             || (config.systemd.services."nh-clean".onFailure or [ ]) != [ ];
-          message = "fixture: the nix-gc aspect registered no failure event.";
+        }
+        {
+          # Ownership policy: an aspect that owns a unit registers its
+          # failure. nix-baseline owns the daemon baseline (nix-daemon),
+          # ssh owns the hardening (sshd) — both wired as drop-ins.
+          assertion =
+            (config.systemd.services."nix-daemon".onFailure or [ ]) != [ ]
+            && (config.systemd.services.sshd.onFailure or [ ]) != [ ];
+          message = "fixture: the nix-baseline/ssh aspects registered no failure hooks on their units.";
+        }
+        {
+          assertion = config.services.tailscale.extraSetFlags == [ "--ssh" ];
+          message = "fixture: tailscale --ssh default regressed.";
         }
         {
           assertion =
@@ -205,12 +217,6 @@ let
         success = { };
       };
 
-      # A unit that exists only as a package-provided file (nixpkgs symlinks it
-      # via systemd.packages); option-level config carries no ExecStart.
-      services.notify.events.nix-daemon = {
-        fromPackage = true;
-        failure = { };
-      };
     };
 in
 {

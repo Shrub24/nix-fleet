@@ -31,6 +31,16 @@ _: {
           '';
         };
 
+        sshServe = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = ''
+            Advertise Tailscale SSH (--ssh on tailscale set). Moves SSH auth
+            for tailnet peers from host keys to tailnet ACLs — deliberate
+            policy, off only when a consumer needs plain sshd auth.
+          '';
+        };
+
         secretFiles.auth = secretHelpers.mkSecretFileOption "the Tailscale auth key";
 
         secretKeys.auth = secretHelpers.mkSecretKeyOption "tailscale/auth_key";
@@ -76,7 +86,7 @@ _: {
           services.tailscale = {
             enable = true;
             openFirewall = false;
-            extraSetFlags = [ "--ssh" ];
+            extraSetFlags = lib.optionals cfg.sshServe [ "--ssh" ];
             extraUpFlags = lib.mkDefault [ "--hostname=${hostName}" ];
             authKeyFile = lib.mkIf authKeyReady "/run/secrets/tailscale.auth_key";
           };
