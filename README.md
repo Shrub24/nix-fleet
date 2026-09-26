@@ -74,6 +74,15 @@ renovate.json        # weekly nix flake input updates
 5. **`niks3-publisher`** — niks3 closure-upload *client* (upstream post-build-hook module). `serverUrl` required; token via `secretFiles.apiToken`.
 6. **`notify`** — notification dispatch (Telegram + ntfy) realizing native systemd event notifications. One owned package (`pkgs/notify`, overridable): the daemon (`notify serve`, unprivileged system user, unix socket + loopback TCP for app webhooks) owns secrets, the policy map, and journal access; `notify send`/`notify test` and the `unit-notify` handler are thin unprivileged connectors. The registration contract `services.notify.events.<unit>.{failure,success}` is a declaration-only fragment contributors import, so registration is unconditional and realization happens only when notify is co-selected. Socket access: callers join the always-defined `notify` group from their own module (`users.users.<name>.extraGroups`); root units need nothing. Per-event policy: severity, topic, journalLines, context, title — explicit only (no hook without a declared event). Routing resolves per transport: semantic topic if the consumer's map has it, otherwise the severity. Dispatch policy (chatId, topics, ntfy coordinates) is consumer-bound; secrets follow the two-step bootstrap.
 
+### System baselines
+
+7. **`nix-baseline`** — substituter catalog + daemon tuning (nixpkgs-owned defaults such as `cache.nixos.org` are not restated). Consumers extend through `extraSubstituters`, `extraTrustedPublicKeys`, `extraTrustedSubstituters`. Registers `nix-daemon.failure` (`fromPackage`).
+8. **`ssh`** — server hardening (password auth off, `prohibit-password`, firewall default on) + client tuning fragment in `/etc/ssh/ssh_config.d`. Namespace is `services.ssh-baseline`. Registers `sshd.failure`.
+9. **`mosh`** — `programs.mosh` with `openFirewall = false` deliberately: exposure is the consumer's call, and tailnet-only use needs none.
+10. **`nix-gc`** — scheduled store GC; `implementation = "nh" | "fast-nix-gc"`. Registers `nix-gc.failure` either way.
+11. **`podman`** — runtime baseline (`services.podman-baseline`): storage-prune cadence and flags, and the start-limit guard for `virtualisation.oci-containers` units (`serviceName`-based, so renamed units are covered) that makes a crash-looping container reach `failed`. Registers `podman-prune.failure` always; `notifyContainerFailures` adds a failure event per container. `--volumes` is not a default — it reclaims volumes whose container was removed.
+
+
 ## Consumer contract (how nix-homelab / dotfiles consume)
 
 nix-fleet is the **authority for canonical fleet facts**: machine identity

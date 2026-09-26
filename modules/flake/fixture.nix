@@ -46,6 +46,7 @@ let
         build-account
         nix-baseline
         nix-gc
+        podman
         niks3-cache
         niks3-publisher
         notify
@@ -126,6 +127,30 @@ let
           message = "fixture: tailscale --ssh default regressed.";
         }
         {
+          # The guard must cover the unit nixpkgs actually creates — including
+          # a container that renamed it.
+          assertion =
+            config.systemd.services."podman-fixture-container".startLimitIntervalSec == 300
+            && config.systemd.services."podman-fixture-container".startLimitBurst == 5
+            && config.systemd.services."fixture-custom-name".startLimitIntervalSec == 300;
+          message = "fixture: the podman-baseline guard did not cover the container units.";
+        }
+        {
+          # Prune policy: cadence ours, --volumes deliberately not defaulted.
+          assertion =
+            config.virtualisation.podman.autoPrune.enable
+            && config.virtualisation.podman.autoPrune.dates == "weekly"
+            && !(builtins.elem "--volumes" config.virtualisation.podman.autoPrune.flags);
+          message = "fixture: the podman-baseline prune defaults regressed.";
+        }
+        {
+          assertion =
+            config.services.notify.events ? "podman-prune"
+            && config.services.notify.events ? "podman-fixture-container"
+            && config.services.notify.events ? "fixture-custom-name";
+          message = "fixture: podman-baseline registered no failure events.";
+        }
+        {
           assertion =
             config.nix.settings.substituters or [ ] != [ ]
             && builtins.elem "https://cache.shrublab.xyz" (config.nix.settings.substituters or [ ]);
@@ -165,8 +190,22 @@ let
         build-account.enable = true;
         nix-gc.enable = true;
         nix-baseline.enable = true;
+        podman-baseline = {
+          enable = true;
+          notifyContainerFailures = true;
+        };
         ssh-baseline.enable = true;
         tailscale.enable = true;
+      };
+
+      # Two containers exercise the guard: the default unit name and a renamed
+      # one (nixpkgs names units from `serviceName`).
+      virtualisation.oci-containers.containers = {
+        fixture-container.image = "docker.io/library/hello-world:latest";
+        fixture-renamed = {
+          image = "docker.io/library/hello-world:latest";
+          serviceName = "fixture-custom-name";
+        };
       };
 
       services = {
