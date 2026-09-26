@@ -1,4 +1,5 @@
 # Shared Nix daemon baseline: the substitution catalog and daemon tuning
+# Selection is enablement.
 # both consumer repos previously duplicated. The catalog is tier-2 shared
 # policy — every option carries a consumer override (mkDefault) so hosts
 # extend or replace entries without fighting the aspect. The niks3-cache
@@ -7,13 +8,11 @@
 { lib, ... }:
 {
   flake.modules.nixos.nix-baseline =
-    { config, ... }:
+    { ... }:
     {
       imports = [ ../notifications/notify/_notify-events.nix ];
 
       options.services.nix-baseline = {
-        enable = lib.mkEnableOption "the shared Nix daemon baseline (substitution catalog + tuning)";
-
         extraSubstituters = lib.mkOption {
           type = lib.types.listOf lib.types.str;
           default = [ ];
@@ -33,7 +32,7 @@
         };
       };
 
-      config = lib.mkIf config.services.nix-baseline.enable {
+      config = {
         nix.settings = {
           experimental-features = [
             "nix-command"

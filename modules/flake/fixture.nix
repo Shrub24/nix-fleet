@@ -136,19 +136,17 @@ let
           message = "fixture: the podman-baseline guard did not cover the container units.";
         }
         {
-          # Prune policy: cadence ours, --volumes deliberately not defaulted.
+          # Prune defaults: weekly (nixpkgs' own), --volumes deliberately not
+          # defaulted, and a consumer's scalar override wins over mkDefault.
           assertion =
             config.virtualisation.podman.autoPrune.enable
-            && config.virtualisation.podman.autoPrune.dates == "weekly"
-            && !(builtins.elem "--volumes" config.virtualisation.podman.autoPrune.flags);
-          message = "fixture: the podman-baseline prune defaults regressed.";
+            && !(builtins.elem "--volumes" config.virtualisation.podman.autoPrune.flags)
+            && config.virtualisation.podman.autoPrune.dates == "daily";
+          message = "fixture: the podman prune defaults regressed.";
         }
         {
-          assertion =
-            config.services.notify.events ? "podman-prune"
-            && config.services.notify.events ? "podman-fixture-container"
-            && config.services.notify.events ? "fixture-custom-name";
-          message = "fixture: podman-baseline registered no failure events.";
+          assertion = config.services.notify.events ? "podman-prune";
+          message = "fixture: the podman aspect registered no prune failure event.";
         }
         {
           assertion =
@@ -186,17 +184,8 @@ let
       nix.distributedBuilds = true;
       nix.buildMachines = resolve.buildMachines resolvedProfile;
 
-      services = {
-        build-account.enable = true;
-        nix-gc.enable = true;
-        nix-baseline.enable = true;
-        podman-baseline = {
-          enable = true;
-          notifyContainerFailures = true;
-        };
-        ssh-baseline.enable = true;
-        tailscale.enable = true;
-      };
+      # Consumer-side override wins over the aspect's mkDefault.
+      virtualisation.podman.autoPrune.dates = "daily";
 
       # Two containers exercise the guard: the default unit name and a renamed
       # one (nixpkgs names units from `serviceName`).
@@ -211,7 +200,6 @@ let
       services = {
         # The KEY is the hub's public half — policy, not a secret.
         beszel-agent = {
-          enable = true;
           key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE1AAAAIfixtureplaceholderpublickeybody0000 fixture";
         };
 

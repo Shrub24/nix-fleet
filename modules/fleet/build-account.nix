@@ -1,4 +1,5 @@
 # The builder-side dispatch account: isolated dial-in identity for remote
+# Selection is enablement.
 # build dispatch — no login shell, empty authorized keys by default. This is
 # the mechanism half of the old realization; the fleet convention is that
 # remote coordinators dial builder hosts as this account (see
@@ -15,8 +16,6 @@ _: {
     }:
     {
       options.services.build-account = {
-        enable = lib.mkEnableOption "the dedicated fleet dispatch account for remote build coordinators";
-
         name = lib.mkOption {
           type = lib.types.str;
           default = "nixbuild";
@@ -24,7 +23,7 @@ _: {
         };
       };
 
-      config = lib.mkIf config.services.build-account.enable {
+      config = {
         users.users.${config.services.build-account.name} = {
           isSystemUser = true;
           group = config.services.build-account.name;

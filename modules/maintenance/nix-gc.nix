@@ -1,4 +1,5 @@
 # Scheduled Nix store garbage collection with a selectable implementation:
+# Selection is enablement.
 # "nh" keeps nh clean's profile orchestration UX; "fast-nix-gc" uses the
 # CSR-graph collector (serves the gc-roots socket while running, so
 # concurrent builds register temp roots without blocking on gc.lock —
@@ -27,8 +28,6 @@
       ];
 
       options.services.nix-gc = {
-        enable = lib.mkEnableOption "scheduled Nix store garbage collection";
-
         implementation = lib.mkOption {
           type = lib.types.enum [
             "nh"
@@ -70,39 +69,37 @@
         };
       };
 
-      config = lib.mkIf cfg.enable (
-        lib.mkMerge [
-          {
-            warnings = lib.optional (
-              cfg.implementation == "nh" && cfg.noVacuum
-            ) "services.nix-gc: noVacuum applies only to the fast-nix-gc implementation.";
+      config = lib.mkMerge [
+        {
+          warnings = lib.optional (
+            cfg.implementation == "nh" && cfg.noVacuum
+          ) "services.nix-gc: noVacuum applies only to the fast-nix-gc implementation.";
 
-            # Registration is unconditional: the shared fragment declares the
-            # namespace, and the notify aspect realizes it only when co-selected.
-            services.notify.events."nix-gc".failure = { };
-          }
+          # Registration is unconditional: the shared fragment declares the
+          # namespace, and the notify aspect realizes it only when co-selected.
+          services.notify.events."nix-gc".failure = { };
+        }
 
-          (lib.mkIf (cfg.implementation == "nh") {
-            programs.nh = {
+        (lib.mkIf (cfg.implementation == "nh") {
+          programs.nh = {
+            enable = true;
+            clean = {
               enable = true;
-              clean = {
-                enable = true;
-                inherit (cfg) dates;
-                inherit (cfg) extraArgs;
-              };
-            };
-          })
-
-          (lib.mkIf (cfg.implementation == "fast-nix-gc") {
-            services.fast-nix-gc = {
-              enable = true;
-              automatic = true;
               inherit (cfg) dates;
-              deleteOlderThan = cfg.generationsOlderThan;
-              inherit (cfg) noVacuum;
+              inherit (cfg) extraArgs;
             };
-          })
-        ]
-      );
+          };
+        })
+
+        (lib.mkIf (cfg.implementation == "fast-nix-gc") {
+          services.fast-nix-gc = {
+            enable = true;
+            automatic = true;
+            inherit (cfg) dates;
+            deleteOlderThan = cfg.generationsOlderThan;
+            inherit (cfg) noVacuum;
+          };
+        })
+      ];
     };
 }

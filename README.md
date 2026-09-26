@@ -76,11 +76,13 @@ renovate.json        # weekly nix flake input updates
 
 ### System baselines
 
+Selection is enablement for every aspect: importing the module applies it, so there is no `enable` flag to remember.
+
 7. **`nix-baseline`** — substituter catalog + daemon tuning (nixpkgs-owned defaults such as `cache.nixos.org` are not restated). Consumers extend through `extraSubstituters`, `extraTrustedPublicKeys`, `extraTrustedSubstituters`. Registers `nix-daemon.failure` (`fromPackage`).
 8. **`ssh`** — server hardening (password auth off, `prohibit-password`, firewall default on) + client tuning fragment in `/etc/ssh/ssh_config.d`. Namespace is `services.ssh-baseline`. Registers `sshd.failure`.
 9. **`mosh`** — `programs.mosh` with `openFirewall = false` deliberately: exposure is the consumer's call, and tailnet-only use needs none.
 10. **`nix-gc`** — scheduled store GC; `implementation = "nh" | "fast-nix-gc"`. Registers `nix-gc.failure` either way.
-11. **`podman`** — runtime baseline (`services.podman-baseline`): storage-prune cadence and flags, and the start-limit guard for `virtualisation.oci-containers` units (`serviceName`-based, so renamed units are covered) that makes a crash-looping container reach `failed`. Registers `podman-prune.failure` always; `notifyContainerFailures` adds a failure event per container. `--volumes` is not a default — it reclaims volumes whose container was removed.
+11. **`podman`** — no option namespace: selection contributes fleet defaults onto the platform's own options (`virtualisation.podman.enable`, `autoPrune.{enable,flags}`), so consumer overrides read as upstream config and `flags` appends rather than fighting. Adds the start-limit guard for `virtualisation.oci-containers` units (`serviceName`-based, so renamed units are covered) that makes a crash-looping container reach `failed`, and registers `podman-prune.failure`. `--volumes` is not a default — it reclaims volumes whose container was removed. Container units are consumer-declared, so their failure events stay the consumer's registration.
 
 
 ## Consumer contract (how nix-homelab / dotfiles consume)

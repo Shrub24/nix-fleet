@@ -86,8 +86,8 @@ fleet.buildProfiles.arm-expensive = {
 Select the capability aspect on builder hosts (creates the dispatch account):
 
 ```nix
-# host composition
-services.build-account.enable = true;   # modules.nixos.build-account
+# host composition: importing the aspect IS enabling it
+imports = [ inputs.nix-fleet.modules.nixos.build-account ];
 ```
 
 Wire scheduling in your own flake-level module — this replaces

@@ -1,4 +1,5 @@
 # SSH baseline: the server hardening both consumer repos duplicated, plus
+# Selection is enablement.
 # the client tuning fragment for /etc/ssh/ssh_config.d. Trust is the fleet
 # feature's job (known-hosts projection); per-host server policy (listen
 # addresses, extra matches) stays consumer-side.
@@ -10,8 +11,6 @@
       imports = [ ../notifications/notify/_notify-events.nix ];
 
       options.services.ssh-baseline = {
-        enable = lib.mkEnableOption "the shared SSH baseline (server hardening + client tuning)";
-
         clientTuning = lib.mkOption {
           type = lib.types.bool;
           default = true;
@@ -19,7 +18,7 @@
         };
       };
 
-      config = lib.mkIf config.services.ssh-baseline.enable {
+      config = {
         services.openssh = {
           enable = lib.mkDefault true;
           openFirewall = lib.mkDefault true;
