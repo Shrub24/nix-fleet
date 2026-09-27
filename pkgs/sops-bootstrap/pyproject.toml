@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sops-bootstrap"
+version = "1.0"
+description = "Create one SOPS-encrypted secret file from a template"
+requires-python = ">=3.11"
+dependencies = ["jinja2", "pyyaml"]
+
+[project.scripts]
+sops-bootstrap = "sops_bootstrap:main"
+
+[tool.setuptools]
+py-modules = ["sops_bootstrap"]
+package-dir = { "" = "src" }

@@ -84,6 +84,11 @@ on the contract change; none conflict with it.
       docs/contracts/ci.md; renovate bumps via tags.
 - [ ] **`nix-baseline` adoption in both consumers** so the substituter
       catalog has one owner.
+- [x] **`sops-bootstrap` package**: homelab's `scripts/secrets-bootstrap.py`
+      generalized into `packages.<system>.sops-bootstrap` (literal or Jinja2
+      templates, one-shot, placeholder + containment + validation gates,
+      `--check`, recipients reported from the sops metadata). Consumer
+      adoption: delete the script, drop devShell `jinja2`.
 
 ## Adoption (consumers — after v2 lands)
 

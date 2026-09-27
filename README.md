@@ -38,6 +38,7 @@ lib/
                      # nix-homelab's lib/secrets.nix; aspects import it explicitly
 pkgs/
   notify/               # owned implementation: daemon + CLI + systemd handler (one package)
+  sops-bootstrap/       # owned implementation: create one SOPS file from a template
 modules/
   flake/             # flake plumbing, not host features
     flake-parts.nix  # imports inputs.flake-parts.flakeModules.modules (REQUIRED)
@@ -84,6 +85,10 @@ Selection is enablement for every aspect: importing the module applies it, so th
 10. **`nix-gc`** — scheduled store GC; `implementation = "nh" | "fast-nix-gc"`. Registers `nix-gc.failure` either way.
 11. **`podman`** — no option namespace: selection contributes fleet defaults onto the platform's own options (`virtualisation.podman.enable`, `autoPrune.{enable,flags}`), so consumer overrides read as upstream config and `flags` appends rather than fighting. Adds the start-limit guard for `virtualisation.oci-containers` units (`serviceName`-based, so renamed units are covered) that makes a crash-looping container reach `failed` — 3600/5, because systemd counts every start in a fixed window and a 300s window only reaches loops faster than 60s, and registers `podman-prune.failure`. `--volumes` is not a default — it reclaims volumes whose container was removed. Container units are consumer-declared, so their failure events stay the consumer's registration.
 
+
+### Operator tools
+
+12. **`sops-bootstrap`** — `packages.<system>.sops-bootstrap`: create one SOPS-encrypted file from a checked-in template (literal or Jinja2), refusing existing targets, unfilled `<placeholders>`, invalid documents, and paths outside the secrets directory. Operator-only, never a CI path. Contract: [docs/contracts/secrets.md](docs/contracts/secrets.md).
 
 ## Consumer contract (how nix-homelab / dotfiles consume)
 

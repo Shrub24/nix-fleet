@@ -25,6 +25,7 @@ placement, per-relationship policy, local additions, secrets. Fact tiers:
 | Beszel agent enrollment  | README, aspect 2                   | `secretFiles.{common,host}` gate; KEY-only (no TOKEN)                                                 |
 | niks3 cache / publisher  | README, aspects 4–5                | `services.niks3-cache.*`, `secretFiles.apiToken`                                                      |
 | Flake input declarations | [flake-inputs.md](flake-inputs.md) | generated `flake.nix` — composition policy, no fleet surface                                          |
+| Secret bootstrapping     | [secrets.md](secrets.md)           | `packages.<system>.sops-bootstrap` — operator tool, templates + `.sops.yaml` stay consumer-side       |
 
 Aspect-level contracts (the lower four) are documented in README's aspect
 list; they follow the same tier rule — mechanism here, placement/policy/
