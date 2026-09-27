@@ -140,6 +140,18 @@ _: {
               exit 1
             }
 
+            # environ is the seam for a value that cannot be generated: the
+            # template names the variable, an unset one fails the render, and an
+            # exported one reaches the document.
+            printf 'token: "{{ environ.BOOTSTRAP_CHECK_TOKEN }}"\n' > secrets/.templates/services/env.yaml.j2
+            expect_refusal "a template naming an unset variable" "BOOTSTRAP_CHECK_TOKEN" \
+              sops-bootstrap secrets/services/env.yaml
+            test ! -e secrets/services/env.yaml
+
+            BOOTSTRAP_CHECK_TOKEN=from-the-environment \
+              sops-bootstrap secrets/services/env.yaml
+            sops -d secrets/services/env.yaml | grep -qE 'token: "?from-the-environment"?'
+
             touch $out
           '';
     };

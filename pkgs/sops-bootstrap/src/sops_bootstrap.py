@@ -10,9 +10,12 @@ path relative to `<secrets-dir>`. Two forms, never both:
               settings_password: "{{ secrets.token_hex(32) }}"
 
 Randomness comes from the stdlib CSPRNG (`secrets`), derivation from `hashlib`,
-`base64`, and `uuid`; all four are Jinja globals. `random` is deliberately not
-exposed and undefined names are an error, so a typo fails the render instead of
-emitting nothing.
+with `base64` and `uuid` beside them; `environ` is the process environment, for
+a value that cannot be generated — an API token, a credential issued by a web
+UI, an identity choice. All of them are Jinja globals. `random` is deliberately
+not exposed and undefined names are an error, so a typo fails the render instead
+of emitting nothing — as does a variable a template expects and the caller did
+not export.
 
 One-shot by design: the target is never overwritten without --force, the
 template is never modified, and a document that still holds a `<placeholder>`
@@ -115,7 +118,11 @@ def render_document(templates: Path, rest: str) -> tuple[str, str]:
             lstrip_blocks=True,
         )
         environment.globals.update(
-            secrets=secrets, hashlib=hashlib, base64=base64, uuid=uuid
+            secrets=secrets,
+            hashlib=hashlib,
+            base64=base64,
+            uuid=uuid,
+            environ=os.environ,
         )
         try:
             return environment.get_template(f"{rest}.j2").render(), "jinja2"

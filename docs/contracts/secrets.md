@@ -34,10 +34,23 @@ settings_sha256: "{{ hashlib.sha256(password.encode()).hexdigest() }}"
 ```
 
 Jinja globals: `secrets` (the stdlib CSPRNG — `token_hex`, `token_urlsafe`,
-`token_bytes`, `choice`), `hashlib`, `base64`, `uuid`. `random` is deliberately
-not exposed: it is seeded predictably, and a secret generated from it would look
-fine. Undefined names are errors, so a typo fails the render instead of emitting
-nothing.
+`token_bytes`, `choice`), `hashlib`, `base64`, `uuid`, `environ`. `random` is
+deliberately not exposed: it is seeded predictably, and a secret generated from
+it would look fine. Undefined names are errors, so a typo fails the render
+instead of emitting nothing.
+
+`environ` is the seam for a value that cannot be generated — an API token, a
+credential a web UI issues, an identity choice:
+
+```jinja
+cloudflare:
+  dns_api_token: "{{ environ.CLOUDFLARE_DNS_API_TOKEN }}"
+```
+
+Export it, run the command, and a missing variable fails the render by name.
+Consumers conventionally prefix these variables (nix-homelab uses `BOOTSTRAP_`)
+so an ambient variable of the same name cannot be captured silently; the tool
+requires no prefix.
 
 Two Jinja details worth knowing before writing a template:
 
