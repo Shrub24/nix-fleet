@@ -130,9 +130,9 @@ let
           # The guard must cover the unit nixpkgs actually creates — including
           # a container that renamed it.
           assertion =
-            config.systemd.services."podman-fixture-container".startLimitIntervalSec == 300
+            config.systemd.services."podman-fixture-container".startLimitIntervalSec == 3600
             && config.systemd.services."podman-fixture-container".startLimitBurst == 5
-            && config.systemd.services."fixture-custom-name".startLimitIntervalSec == 300;
+            && config.systemd.services."fixture-custom-name".startLimitIntervalSec == 3600;
           message = "fixture: the podman-baseline guard did not cover the container units.";
         }
         {

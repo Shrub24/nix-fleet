@@ -35,15 +35,24 @@
         };
 
         # nixpkgs gives container units Restart = "on-failure" with
-        # TimeoutStartSec = 0, so a container in a multi-second crash cycle
-        # never trips systemd's default limit (5/10s) and never reaches
-        # `failed` — where a failure notification, and an operator, can see it.
+        # TimeoutStartSec = 0, so a crash-looping container restarts forever and
+        # never reaches `failed` — where a failure notification, and an
+        # operator, can see it. An hour rather than systemd's 5/10s: systemd
+        # counts EVERY start in a fixed window (manual and Restart= alike) and
+        # trips on the sixth, so 300s only reaches loops faster than 60s — a
+        # container dying every few minutes stays invisible, which is the case
+        # this guard exists for. 3600/5 trips anything restarting six times in
+        # an hour, up to a 12-minute cycle. The counter is not cleared by a
+        # successful start, so more than five redeploys of one unit inside the
+        # hour leave it refused until the window lapses or `systemctl
+        # reset-failed`; per-unit `mkForce` is the escape for a container that
+        # genuinely redeploys that often.
         # Keyed on each container's serviceName: renamed units are covered too.
         # mkDefault, so a per-unit override still wins.
         systemd.services = lib.mapAttrs' (
           _: container:
           lib.nameValuePair container.serviceName {
-            startLimitIntervalSec = lib.mkDefault 300;
+            startLimitIntervalSec = lib.mkDefault 3600;
             startLimitBurst = lib.mkDefault 5;
           }
         ) config.virtualisation.oci-containers.containers;
