@@ -4,16 +4,16 @@ A dendritic flake-parts repository that is the **shared fleet control-plane cont
 
 ## Mission
 
-- Host **one authoritative copy** of cross-fleet facts (machine identity + capabilities, external build resources, scheduling profiles) and of infrastructure capabilities more than one repository needs, so fixes land once — including the implementation code specific to each mechanism (`pkgs/`), so a shared mechanism is never split across repositories.
+- Host **one authoritative copy** of cross-fleet facts (machine identity + capabilities, external build resources, scheduling profiles, service endpoints) and of infrastructure capabilities more than one repository needs, so fixes land once — including the implementation code specific to each mechanism (`pkgs/`), so a shared mechanism is never split across repositories.
 - Publish **facts, pure projections, aspects, and owned implementation packages**, not configurations: canonical facts + `fleet.buildProfiles` are tier-1 data; `lib.buildProfile` projects them; modules contribute `flake.modules.nixos.<aspect>`; packages contribute `packages.<system>.<name>`.
-- Keep **canonical facts/policy distinct from consumer-local placement**: placement, recipients/topics, endpoint policy, and secrets stay downstream.
+- Keep **canonical facts/policy distinct from consumer-local placement**: placement, recipients/topics, endpoint exposure/ingress policy, and secrets stay downstream.
 - Stay **provider-agnostic** in mechanisms: no cloud-specific defaults in aspect code; provider coordinates enter through typed options or the tier-1 inventory, where nix-fleet is deliberately the authority.
 
 ## Non-goals
 
 - No `nixosConfigurations` beyond the fixture evaluation class, no deploy topology — consumers own those.
 - No secrets or `.sops.yaml` — consumers bind secret paths through typed option contracts.
-- No service policy data (recipients, topics, publisher lists) — those are consumer concerns. Cross-fleet service endpoints (`fleet.services.*`) are a future tier-1 namespace, added only when a fact genuinely crosses repositories.
+- No service policy data (recipients, topics, publisher lists, ingress/auth) — those are consumer concerns. Cross-fleet service coordinates (`fleet.services.*`) are tier-1 facts; public routes exist only when explicitly bound.
 
 The boundary in one line: **nix-fleet owns the canonical facts, the shared policy, the projection API, the mechanism, and its code; consumers own placement, recipients/topics, consumer-local endpoint policy, and secrets.** Per-contract reference docs for onboarding other repos live in [docs/contracts/](docs/contracts/README.md) — hosts (identity + trust), builders (capabilities + profiles + scheduling), ci (builder artifacts + workflow template).
 
@@ -71,6 +71,8 @@ renovate.json        # weekly nix flake input updates
 1. **`tailscale`** — Tailscale baseline: enable, Tailscale SSH, systemd restart/ordering pinning, MTU debug option. Auth key via `secretFiles.auth`; unbound or missing file means the two-step sops bootstrap, registering nothing.
 2. **`beszel-agent`** — agent enrollment (the hub stays in nix-homelab). The KEY the agent holds is the hub's PUBLIC key (hub→agent SSH auth): policy data, bound via `services.beszel-agent.key`, no sops involved. TOKEN is deliberately not wired — WebSocket registration needs plain-HTTP reachability of the hub URL, but the hub sits behind Cloudflare Access and agents reach it over tailnet SSH, so the hub-issued token path can never work here. No host secrets remain for beszel.
 3. **`fleet`** — the fleet authority feature: canonical machine identity with build capabilities (`fleet.hosts.*.capabilities`), external build resources (`fleet.externalBuilders`), named scheduling profiles (`fleet.buildProfiles`), and the pure projection API `lib.buildProfile` (`resolveBuildProfile` → renderers). No NixOS realization is published; the consumer's own flake-level module resolves a profile and wires trust + scheduling. Includes the `build-account` dispatch-account aspect. Full contract: [docs/contracts/builders.md](docs/contracts/builders.md) (hosts: [hosts.md](docs/contracts/hosts.md), CI: [ci.md](docs/contracts/ci.md)).
+The same fleet feature publishes the typed `fleet.services.*.endpoints.*` endpoint catalog and pure `lib.serviceEndpoints` resolver (`resolveEndpoint` returns URL, canonical host ID, hostname, and port for a tailnet route). Its raw canonical data is `lib.serviceEndpoints.canonicalServices`. See [docs/contracts/services.md](docs/contracts/services.md) for selection and ownership.
+
 4. **`niks3-cache`** — niks3 binary-cache *server*. S3 coordinates, cache URL, secret paths are options; fails closed when unbound.
 5. **`niks3-publisher`** — niks3 closure-upload *client* (upstream post-build-hook module). `serverUrl` required; token via `secretFiles.apiToken`.
 6. **`notify`** — notification dispatch (Telegram + ntfy) realizing native systemd event notifications. One owned package (`pkgs/notify`, overridable): the daemon (`notify serve`, unprivileged system user, unix socket + loopback TCP for app webhooks) owns secrets, the policy map, and journal access; `notify send`/`notify test` and the `unit-notify` handler are thin unprivileged connectors. The registration contract `services.notify.events.<unit>.{failure,success}` is a declaration-only fragment contributors import, so registration is unconditional and realization happens only when notify is co-selected. Socket access: callers join the always-defined `notify` group from their own module (`users.users.<name>.extraGroups`); root units need nothing. Per-event policy: severity, topic, journalLines, context, title — explicit only (no hook without a declared event). Routing resolves per transport: semantic topic if the consumer's map has it, otherwise the severity. Dispatch policy (chatId, topics, ntfy coordinates) is consumer-bound; secrets follow the two-step bootstrap.
@@ -95,7 +97,7 @@ Selection is enablement for every aspect: importing the module applies it, so th
 nix-fleet is the **authority for canonical fleet facts**: machine identity
 and build capabilities (`fleet.hosts`), external build resources
 (`fleet.externalBuilders`), cross-fleet scheduling profiles
-(`fleet.buildProfiles`), and shared mechanism defaults. Three tiers govern
+(`fleet.buildProfiles`), service endpoint coordinates (`fleet.services`), and shared mechanism defaults. Three tiers govern
 who may change what:
 
 1. **Canonical fact** — declared here (inventory + schema). Consumers derive;
@@ -108,7 +110,7 @@ who may change what:
 ```nix
 # consumer flake-level: one import — the fleet feature composes schema,
 # canonical inventory, validation, CI artifacts; lib.buildProfile is the
-# pure projection API.
+# pure projection API; lib.serviceEndpoints resolves explicitly selected routes.
 imports = [
   inputs.nix-fleet.flakeModules.fleet
   inputs.nix-fleet.flakeModules.tooling

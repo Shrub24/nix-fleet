@@ -5,7 +5,7 @@ future hosts): what each published contract is, who owns what, and the
 minimum wiring to onboard.
 
 The recurring shape: **nix-fleet is the authority for canonical fleet facts
-(identity, build capabilities, cross-fleet profiles) and the mechanism code; consumers
+(identity, build capabilities, cross-fleet profiles, service endpoints) and the mechanism code; consumers
 derive from those facts and own everything downstream** — compositions,
 placement, per-relationship policy, local additions, secrets. Fact tiers:
 
@@ -18,6 +18,7 @@ placement, per-relationship policy, local additions, secrets. Fact tiers:
 | Machine identity + trust | [hosts.md](hosts.md)               | `fleet.hosts.*` (canonical), known-hosts, ssh Host blocks                                             |
 | Builders + scheduling    | [builders.md](builders.md)         | `fleet.hosts.*.capabilities`, `fleet.externalBuilders.*`, `fleet.buildProfiles.*`, `lib.buildProfile` |
 | CI builds + cache push   | [ci.md](ci.md)                     | `packages.<profile>`, `.github/templates/build-push-cache.yml`                                        |
+| Service endpoints        | [services.md](services.md)         | `fleet.services.*`, `lib.serviceEndpoints` (resolver + pure canonical data)                           |
 | Tooling (treefmt base)   | README, "Tooling contract"         | `flakeModules.tooling`                                                                                |
 | Secrets helpers          | README, "Tooling contract"         | `lib.secrets`                                                                                         |
 | Notification events      | README, aspect 6                   | `services.notify.events.<unit>` (fragment; realization when notify co-selected)                       |
@@ -33,7 +34,7 @@ secrets downstream.
 
 All fleet surfaces hang off one import: `flakeModules.fleet` (schema +
 canonical inventory + validation + CI bundles) plus the pure projection API
-`lib.buildProfile`. There is deliberately no NixOS realization module — the
+`lib.buildProfile` and `lib.serviceEndpoints`. There is deliberately no NixOS realization module — the
 consumer's own flake-level module closes over its `config.fleet` and calls
 `resolveBuildProfile` (builders.md carries the pattern).
 

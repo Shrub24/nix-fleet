@@ -11,6 +11,7 @@
 }:
 let
   resolve = import ../../lib/build-profile.nix lib;
+  serviceEndpoints = import ../../lib/service-endpoints.nix lib;
 
   # Named, fail-closed inventory validation, run by the render check so an
   # invalid canonical record fails `nix flake check` by name.
@@ -32,7 +33,29 @@ let
       lib.optionals (fleet.externalBuilders.${extId}.publicHostKey == null) [
         "fleet: external builder '${extId}' has no publicHostKey — there is no host record to inherit trust from"
       ]
-    ) (builtins.attrNames fleet.externalBuilders);
+    ) (builtins.attrNames fleet.externalBuilders)
+    ++ lib.concatMap (
+      serviceId:
+      lib.concatMap (
+        endpointId:
+        let
+          endpoint = fleet.services.${serviceId}.endpoints.${endpointId};
+          routeName = "fleet: service '${serviceId}' endpoint '${endpointId}'";
+          tailnet = endpoint.tailnet or null;
+          publicUrl = endpoint.publicUrl or null;
+        in
+        lib.optionals (tailnet == null && publicUrl == null) [
+          "${routeName} has no route (tailnet or publicUrl required)"
+        ]
+        ++ lib.optionals (publicUrl == "") [ "${routeName} publicUrl must not be empty" ]
+        ++ lib.optionals (tailnet != null && !(lib.hasPrefix "/" (tailnet.basePath or "/"))) [
+          "${routeName} tailnet basePath must start with /"
+        ]
+        ++ lib.optionals (tailnet != null && !(builtins.hasAttr tailnet.host fleet.hosts)) [
+          "${routeName} references unknown fleet host '${tailnet.host}'"
+        ]
+      ) (builtins.attrNames fleet.services.${serviceId}.endpoints)
+    ) (builtins.attrNames fleet.services);
 
   assertRegistry =
     fleet:
@@ -68,6 +91,12 @@ let
       systems = [ "aarch64-linux" ];
       publicHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI-sample-external";
     };
+    services.sample-service.endpoints.api.tailnet = {
+      host = "sample-host";
+      port = 6280;
+      basePath = "/mcp/";
+    };
+    services.sample-service.endpoints.public.publicUrl = "https://example.invalid/api/";
     buildProfiles.sample = {
       hosts.sample-host.maxJobs = 2;
       hosts.sample-host.supportedFeatures = [
@@ -82,6 +111,117 @@ let
   };
 
   sampleSpecs = resolve.resolveBuildProfile sample "sample";
+
+  rejects = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
+  serviceCheck =
+    let
+      endpoint = serviceEndpoints.resolveEndpoint sample {
+        service = "sample-service";
+        endpoint = "api";
+        via = "tailnet";
+      };
+      missingRoute = sample // {
+        services.sample-service.endpoints.api = { };
+      };
+      unknownHost = sample // {
+        services.sample-service.endpoints.api.tailnet = {
+          host = "absent-host";
+          port = 6280;
+        };
+      };
+      invalidPath = sample // {
+        services.sample-service.endpoints.api.tailnet = {
+          host = "sample-host";
+          port = 6280;
+          basePath = "mcp";
+        };
+      };
+      select =
+        fleet: service: endpointName: via:
+        serviceEndpoints.resolveEndpoint fleet {
+          inherit service via;
+          endpoint = endpointName;
+        };
+      canonical = [
+        [
+          "omniroute"
+          "api"
+          "http://home-forge:20128/"
+          20128
+          "home-forge"
+        ]
+        [
+          "hindsight"
+          "api"
+          "http://home-forge:8888/"
+          8888
+          "home-forge"
+        ]
+        [
+          "docs-mcp"
+          "mcp"
+          "http://home-forge:6280/mcp"
+          6280
+          "home-forge"
+        ]
+        [
+          "ntfy"
+          "api"
+          "http://la-admin-1:2586/"
+          2586
+          "la-admin-1"
+        ]
+        [
+          "niks3-write"
+          "api"
+          "http://oci-melb-1:5751/"
+          5751
+          "oci-melb-1"
+        ]
+        [
+          "bifrost"
+          "embeddings"
+          "http://oci-melb-1:7411/v1"
+          7411
+          "oci-melb-1"
+        ]
+      ];
+    in
+    endpoint.url == "http://fleet-host:6280/mcp/"
+    && endpoint.host == "sample-host"
+    && endpoint.hostname == "fleet-host"
+    && endpoint.port == 6280
+    &&
+      serviceEndpoints.url sample {
+        service = "sample-service";
+        endpoint = "api";
+        via = "tailnet";
+      } == endpoint.url
+    && builtins.all (
+      entry:
+      let
+        result = select config.fleet (builtins.elemAt entry 0) (builtins.elemAt entry 1) "tailnet";
+      in
+      result.url == builtins.elemAt entry 2
+      && result.port == builtins.elemAt entry 3
+      && result.host == builtins.elemAt entry 4
+    ) canonical
+    &&
+      select sample "sample-service" "public" "public" == {
+        url = "https://example.invalid/api/";
+        host = null;
+        hostname = null;
+        port = null;
+      }
+    && rejects (select sample "unknown-service" "api" "tailnet")
+    && rejects (select sample "sample-service" "unknown-endpoint" "tailnet")
+    && rejects (select unknownHost "sample-service" "api" "tailnet")
+    && rejects (select sample "sample-service" "api" "public")
+    && rejects (select sample "sample-service" "api" "other")
+    && rejects (select missingRoute "sample-service" "api" "tailnet")
+    && rejects (assertRegistry missingRoute)
+    && rejects (assertRegistry unknownHost)
+    && rejects (assertRegistry invalidPath);
 
   # The separation is load-bearing: the non-builder that resolveHosts accepts
   # must stay unreachable through the scheduling door. Forced by the render
@@ -138,6 +278,7 @@ let
             assert assertRegistry sample;
             assert assertRegistry config.fleet;
             assert schedulingRejection;
+            assert serviceCheck;
             # Scheduling path (sampleSpecs) and trust path (trustSpecs) both
             # render here; the trust selection includes a NON-builder. The
             # separation itself is pinned by the schedulingRejection binding
@@ -223,6 +364,7 @@ in
   flake.flakeModules.fleet = fleetModule;
 
   flake.lib.buildProfile = resolve;
+  flake.lib.serviceEndpoints = serviceEndpoints;
 
   # Self-application (dogfood): the published module's perSystem pieces (render
   # check, CI bundles) only land when the module is imported into this

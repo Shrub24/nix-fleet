@@ -29,6 +29,11 @@ let
   # This is exactly the ~15-line pattern docs/contracts/builders.md prescribes.
   resolve = import ../../lib/build-profile.nix lib;
   resolvedProfile = resolve.resolveBuildProfile config.fleet "fixture";
+  resolvedDocsMcp = config.flake.lib.serviceEndpoints.resolveEndpoint config.fleet {
+    service = "docs-mcp";
+    endpoint = "mcp";
+    via = "tailnet";
+  };
 
   fixtureModule =
     {
@@ -86,6 +91,13 @@ let
         {
           assertion = config.nix.buildMachines != [ ];
           message = "fixture: the fleet feature scheduled no build machine.";
+        }
+        {
+          assertion =
+            resolvedDocsMcp.url == "http://home-forge:6280/mcp"
+            && resolvedDocsMcp.host == "home-forge"
+            && resolvedDocsMcp.port == 6280;
+          message = "fixture: the fleet service resolver lost the canonical docs-mcp route.";
         }
         {
           assertion = config.systemd.services.notify.serviceConfig.ExecStart != null;

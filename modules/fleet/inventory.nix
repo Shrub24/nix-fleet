@@ -71,6 +71,8 @@ _: {
       };
     };
 
+    services = import ../../lib/service-inventory.nix;
+
     externalBuilders.nixbuild = {
       uri = "ssh-ng://eu.nixbuild.net";
       sshUser = "root";

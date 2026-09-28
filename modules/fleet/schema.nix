@@ -1,7 +1,8 @@
 # Fleet schema: the typed namespaces nix-fleet is canonical authority for.
 # Tier 1 (canonical fact): fleet.hosts (identity + machine capabilities),
 # fleet.externalBuilders (externally provided build resources),
-# fleet.buildProfiles (cross-fleet scheduling policy).
+# fleet.buildProfiles (cross-fleet scheduling policy),
+# fleet.services (cross-fleet service endpoint facts).
 # Tier 2 (shared default): mechanism defaults below (endpoint user, tuning).
 # Tier 3 (consumer-local): everything else a consumer keeps in its own tree.
 { lib, ... }:
@@ -149,6 +150,59 @@
       );
       default = { };
       description = "Externally provided build resources. Deliberately narrow — Den can turn these into proper entities later.";
+    };
+
+    services = lib.mkOption {
+      type = lib.types.attrsOf (
+        lib.types.submodule {
+          options.endpoints = lib.mkOption {
+            type = lib.types.attrsOf (
+              lib.types.submodule {
+                options = {
+                  tailnet = lib.mkOption {
+                    type = lib.types.nullOr (
+                      lib.types.submodule {
+                        options = {
+                          host = lib.mkOption {
+                            type = lib.types.str;
+                            description = "Canonical fleet.hosts ID, not a hostname or tailnet suffix.";
+                          };
+                          scheme = lib.mkOption {
+                            type = lib.types.enum [
+                              "http"
+                              "https"
+                            ];
+                            default = "http";
+                          };
+                          port = lib.mkOption {
+                            type = lib.types.ints.between 1 65535;
+                          };
+                          basePath = lib.mkOption {
+                            type = lib.types.str;
+                            default = "/";
+                            description = "Absolute URL path, preserved verbatim (including trailing slash).";
+                          };
+                        };
+                      }
+                    );
+                    default = null;
+                    description = "Tailnet route; host resolves through fleet.hosts.<id>.tailscale.hostname.";
+                  };
+                  publicUrl = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Explicit public URL, if one exists; never inferred from a tailnet route.";
+                  };
+                };
+              }
+            );
+            default = { };
+            description = "Named access endpoints for this service (for example api or mcp).";
+          };
+        }
+      );
+      default = { };
+      description = "Canonical cross-fleet endpoint facts; exposure, credentials, and ingress policy remain consumer-owned.";
     };
 
     buildProfiles = lib.mkOption {

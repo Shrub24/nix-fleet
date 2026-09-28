@@ -6,8 +6,8 @@ rationale live in README, AGENTS.md, and docs/contracts/.
 ## Fleet Contract v2 (decided direction — next major work unit)
 
 Scope per owner decision: the parts of the v2 contract that the CI contract
-and fleet topology depend on, functionally self-contained. `fleet.services`
-/ omniroute land LATER; host-data harvest lands after the contract settles
+and fleet topology depend on, functionally self-contained. The service endpoint
+catalog subsequently landed; host-data harvest lands after the contract settles
 (nix-dotfiles' agent can input its own records then).
 
 - [x] **1. Realization decomposition** (PRIORITY — strong smell today):
@@ -55,10 +55,20 @@ supportedFeatures; endpoint.{protocol,user}; }`. Delete host-backed
       URI+key; duplicate canonical/local IDs fail; Nix-module form ≡
       machines-file form.
 
-Not in v2 scope: `fleet.services.*` (omniroute etc. — later wave, only
-cross-repo facts qualify); shrub/spectre inventory records (data harvest
+Not in original v2 scope: shrub/spectre inventory records (data harvest
 after the contract settles; nix-dotfiles' agent can input them itself);
 Den/repo-merge/policy-engine (explicitly out).
+
+## Cross-fleet service endpoints (completed follow-on)
+
+- [x] Typed `fleet.services.<service>.endpoints.<endpoint>` in the single
+      `flakeModules.fleet` feature, with canonical tailnet coordinates for
+      omniroute, hindsight, remote docs-mcp, ntfy, niks3-write, bifrost.
+- [x] Pure `lib.serviceEndpoints.resolveEndpoint` and `.url` with explicit
+      route selection, named reference errors, no public fallback; raw canonical
+      records exported as `.canonicalServices` for flake-level scripts.
+- [x] Fleet validation + mutation checks, and docs/contracts/services.md.
+      Downstream adoption and ingress/auth policy remain consumer-owned.
 
 ## Quick wins (pre-v2 value, consumer-adoptable independently)
 
@@ -109,9 +119,6 @@ on the contract change; none conflict with it.
 
 ## Deferred / future waves
 
-- [ ] **`fleet.services.<name>`**: cross-fleet endpoint facts — omniroute
-      first candidate (dotfiles consumes it today). Only facts used across
-      the repo boundary; homelab-only services stay in homelab.
 - [ ] **shrub/spectre canonical records**: sparse host records + host keys;
       input by the nix-dotfiles agent once the v2 contract settles.
 - [ ] **syncthing device IDs**: stays consumer-side (service credentials).
