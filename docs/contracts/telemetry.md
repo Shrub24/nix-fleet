@@ -1,149 +1,205 @@
-# Telemetry endpoint capabilities
+# Telemetry (host-local)
 
-Telemetry capabilities live on service endpoints, not in a separate registry.
-`flakeModules.fleet` provides the schema under `fleet.services` and
-`lib.telemetry` provides pure projections. Only endpoints actually bound by a
-consumer or declared as canonical facts are selectable. The two directions
-have different audiences: **ingest** advertises a producer-facing collector
-receiver; **sink** advertises a backend to which a collector may export.
-Backends are sinks, never ingest endpoints. No collector or backend is in the
-canonical inventory yet; fleet-render checks use invented sample endpoints.
+Scope: one NixOS host's telemetry. A **single** public aspect,
+`flake.modules.nixos.telemetry`, owns the implementation-agnostic
+`services.telemetry` contract: a service registers a Prometheus scrape source,
+reads the local OTLP endpoint, or binds a remote destination without knowing
+which collector serves it. Selection is enablement — no top-level enable flag.
+Cross-host routing, a fleet-wide DAG, self-discovery, and implicit forwarding
+are out of scope.
 
 ```nix
-fleet.services.my-collector.endpoints.otlp = {
-  tailnet = { host = "my-host-id"; port = 4318; }; # existing endpoint route
-  telemetry.ingest = {
-    protocol = "otlp-http";
-    signals = [ "traces" "logs" ];
-  };
+# the host's aspect list: one import
+imports = [ inputs.nix-fleet.modules.nixos.telemetry ];
+```
+
+## One aspect, implementations as private modules
+
+Implementations are **not** separate aspects. The aspect imports a private
+module per implemented backend (`modules/telemetry/telemetry/_providers/`);
+swapping or splitting an implementation is a value change, never an
+imports-list edit. Selection is per capability:
+
+```nix
+services.telemetry.providers = {
+  otlpIngest = "otel-collector"; # default
+  prometheusScrape = "otel-collector"; # default
 };
 ```
 
-`telemetry.ingest` is optional (null by default); its `protocol` is one of
-`otlp-grpc`, `otlp-http`, `prometheus-remote-write`, `loki-push`, and `signals`
-is a non-empty list drawn from `traces`, `metrics`, `logs`. A declared ingest
-endpoint must have a tailnet route to be selected. The URL, hostname, and port
-come from `lib.serviceEndpoints.resolveEndpoint` with `via = "tailnet"`;
-there is no fallback to a public route. `telemetry` nests `ingest` so a future
-`expose` direction can be introduced without confusing producers with
-consumers. Import/selection is enablement; there is no top-level enable flag.
+The capability axis (not the host, not the signal) is the unit of selection, so
+metrics and logs can use different implementations later without touching any
+registration. The enum lists the implemented set: an unimplemented value is a
+contract edit, not a host typo — there is no provider registry and no
+second-import gate.
+
+## Producer registrations
+
+Prometheus scrape sources — the self-registration case:
 
 ```nix
-let
-  ingest = inputs.nix-fleet.lib.telemetry;
-  endpoint = ingest.resolveIngest config.fleet {
-    signal = "logs";
-    # protocol = "otlp-http";         # optional filter
-    # collector = "my-collector";      # optional service ID
-  };
-  environment = ingest.otlpEnv {
-    inherit endpoint;
-    service = "my-app";
-    hostId = "my-host-id";
-    extraAttributes."deployment.environment" = "production";
-  };
-in environment
-```
-
-`resolveIngest fleet { signal; protocol?; collector?; }` returns exactly one
-`{ url; service; hostname; port; protocol; signals; }` record. `collector`
-is the `fleet.services` **service ID**, not the endpoint name: when given,
-only its endpoints are considered; otherwise all advertised ingest endpoints
-are candidates. Signal and optional protocol filter either selection. A
-single collector can advertise several endpoints; if more than one fits,
-selection is still ambiguous. Zero or multiple matches fail closed with
-named `telemetry:` errors and candidate `service.endpoint` names. Unknown
-signal, protocol, and collector also fail by name. No discovery fallback or
-arbitrary first match occurs. `ingestTargets fleet { signal?; protocol?; }`
-returns all matching records (all ingest endpoints when unfiltered), in
-service/endpoint name order, for future data-driven selection; it does not
-choose a preferred target. Missing tailnet routes fail through the endpoint
-resolver rather than silently choosing a public URL.
-
-A backend owner may declare `telemetry.sink = { protocol = "otlp-http";
-signals = [ "traces" ]; };` on its endpoint. It has the same protocol enum
-and non-empty signal list as ingest. `lib.telemetry.resolveSink fleet {
-service; endpoint; signal?; protocol?; }` resolves that **explicitly named**
-backend via its tailnet route to the same `{ url; service; hostname; port;
-protocol; signals; }` record shape. There is no sink search or unique-match
-default: collector configs name their targets. Unknown service/endpoint,
-missing sink capability, and requested signal/protocol mismatch fail closed
-by name. `resolveIngest` and `ingestTargets` never consider sinks, even if a
-sink is the only endpoint accepting a given signal.
-
-`otlpEnv { endpoint; service; hostId; extraAttributes?; }` emits
-`OTEL_EXPORTER_OTLP_ENDPOINT` (the resolved URL),
-`OTEL_EXPORTER_OTLP_PROTOCOL` (`http/protobuf` for `otlp-http`, `grpc` for
-`otlp-grpc`), `OTEL_SERVICE_NAME` (the workload name), and
-`OTEL_RESOURCE_ATTRIBUTES` (comma-separated `k=v` entries, including
-`service.name=<service>` and `host.name=<hostId>`). Additional attributes are
-an attrset of names to string values, rendered in attribute-name order;
-reserved `service.name` and `host.name` cannot be overridden. Non-OTLP
-protocols are rejected by name instead of being mapped to OTLP settings.
-
-## Collector aspect
-
-Select `flake.modules.nixos.otel-collector` to run nixpkgs' OpenTelemetry
-Collector service. There is no aspect-level enable flag. A local **agent**
-uses the default `services.otel-collector.ingest.address = "127.0.0.1"` and
-receives OTLP gRPC on 4317 and OTLP HTTP on 4318. A **gateway** binds its
-consumer-provided tailnet address through `ingest.address`; the consumer
-also declares a `fleet.services.<service>.endpoints.<endpoint>.telemetry.ingest`
-endpoint with the **same address and port** it exposes to producers. The
-NixOS aspect cannot write flake-level fleet facts. Exposure and firewall
-rules remain consumer-side.
-
-```nix
-services.otel-collector = {
-  ingest.address = "127.0.0.1"; # or a gateway's tailnet address
-  resourceAttributes."host.name" = "my-host-id";
-  exporters.upstream = {
-    type = "otlphttp";
-    endpoint = "https://collector.invalid"; # consumer-supplied
-    headers.Authorization = {
-      secret = "upstreamToken";
-      prefix = "Bearer ";
-    };
-  };
-  secretFiles.upstreamToken = ./secrets/collector.yaml;
-  secretKeys.upstreamToken = "collector/token";
+services.telemetry.scrape.my-app = {
+  target = "127.0.0.1"; # host-local address; fleet host IDs are not resolved
+  port = 9100;
+  # metricsPath = "/metrics"; scheme = "http"; interval = "30s"; labels = { };
 };
 ```
 
-`package` defaults to `pkgs.opentelemetry-collector-contrib` (overridable).
-`processors` defaults to `memory_limiter` and `batch`; additional processors
-are passed through. When `resourceAttributes` is non-empty, a `resource`
-processor upserts those attributes. Processor order is memory_limiter,
-resource (when present), batch, then other processor names alphabetically.
-Consumers may derive an exporter URL from the catalog in their flake-level
-wrapper, e.g. `endpoint = (resolveSink config.fleet { service = "latitude";
-endpoint = "otlp"; signal = "traces"; }).url`. The NixOS aspect itself does
-not read flake config. `exporters.<name>.type` accepts `otlp`, `otlphttp`,
-`prometheusremotewrite`, or `debug`; all but debug require `endpoint`.
-`extra` recursively overrides the generated exporter config. An `otlp`
-exporter with an `http://` endpoint defaults `tls.insecure = true` unless
-`extra` overrides it.
+The attribute name is the scrape job name; `labels` become static target
+labels. Two independent registrations merge into one receiver and reach the
+metrics pipeline.
 
-`pipelines.{traces,metrics,logs}` default to `null`, deriving each signal's
-exporters from the declared exporter types: OTLP and debug support all three,
-remote-write supports metrics only. Empty derived pipelines are omitted. An
-explicit exporter-name list overrides the derivation and must be nonempty,
-refer to declared exporters, and match the signal. With no exporters, the
-consumer must add one before the collector config can validate at build time.
+OTLP push producers obtain a stable local endpoint instead of registering:
 
-`secretFiles.<id>` (nullable path) and `secretKeys.<id>` (SOPS key path)
-must have matching IDs. An unbound/null file registers nothing; referenced
-unknown or unbound IDs fail closed. Bound secrets are registered under
-`sops.secrets."otel-collector/<id>"`, then rendered into a root-owned
-`sops.templates."otel-collector.env"` as `OTELCOL_<id>=<placeholder>`.
-The nixpkgs-owned unit loads that file through `EnvironmentFile` and reads
-headers as `"<prefix>${env:OTELCOL_<id>}"` at runtime. The aspect provides
-matching build-time validation overrides without putting credentials into
-the Nix store, and secret/template rotation restarts the collector. Secret
-IDs use ASCII letters, digits, and underscores. Consumers own exporter URLs,
-credentials, backend selection, exposure, firewall policy, and the matching
-fleet ingest advertisement; backend owners declare sink endpoints in the
-catalog, never ingest endpoints.
+```nix
+environment.OTEL_EXPORTER_OTLP_ENDPOINT = config.services.telemetry.otlp.httpUrl; # http://127.0.0.1:4318
+# grpcUrl is http://127.0.0.1:4317
+```
 
-**Still deferred:** the opposite `expose` direction, self-registration,
-automatic agent-to-gateway forwarding, and backend fan-out policy.
+`services.telemetry.otlp.{host,grpcPort,httpPort}` default to loopback
+(4317/4318); the URLs are derived read-only. A gateway overrides `host` to a
+consumer-provided address — the implementation binds where the contract says,
+so the advertised endpoint cannot drift from the listener.
+
+**Orphan guard.** Registration here is deliberately _not_ declaration-only (the
+`notify` idiom). A scrape source or destination written on a host that did not
+select `flake.modules.nixos.telemetry` fails closed by name:
+
+```text
+telemetry: scrape source(s) my-app configured without the host selecting
+flake.modules.nixos.telemetry; select that aspect (it realizes the
+registration) or remove it. A registration is never silently dropped.
+```
+
+A contributing aspect imports the fragment
+`modules/telemetry/telemetry/_contract.nix` to write a registration; the
+fragment carries the guard. Reliance is on the host selecting the aspect, not
+on the fragment alone.
+
+The same holds for a **push-only** consumer: it registers nothing, so there is
+no orphan to catch, and an endpoint nothing binds would be a dead address.
+Reading `otlp.httpUrl` / `otlp.grpcUrl` on a host that did not select the
+aspect fails closed by name instead:
+
+```text
+telemetry: services.telemetry.otlp.httpUrl was read on a host that did not
+select flake.modules.nixos.telemetry; no implementation binds the local OTLP
+endpoint. Select the host aspect or drop the read.
+```
+
+## Remote destinations and per-signal fanout
+
+The collector's backends are contract-level, so replacing the implementation or
+repointing a backend never reshapes a registration:
+
+```nix
+services.telemetry.destinations.latitude = {
+  protocol = "otlp-http"; # otlp-grpc | otlp-http | prometheus-remote-write
+  endpoint = "https://latitude.invalid"; # repoint an endpoint here, alone
+  signals = [ "traces" ]; # an LLM-observability backend: traces only
+  headers.Authorization = {
+    secret = "latitudeToken";
+    prefix = "Bearer ";
+  };
+};
+services.telemetry.secretFiles.latitudeToken = ./secrets/latitude.yaml;
+services.telemetry.secretKeys.latitudeToken = "latitude/token";
+
+# pipelines.traces defaults to [ "latitude" ]; logs/metrics omit this destination.
+```
+
+`protocol` is a narrow wire-protocol vocabulary, not a collector component
+name; it bounds what a destination could ever carry (`otlp-grpc` and
+`otlp-http`: traces, metrics, logs; `prometheus-remote-write`: metrics only).
+`signals` is required, non-empty, and **authoritative** — it is what the
+destination actually accepts, and it must be a subset of what the protocol can
+carry. It is never inferred from the protocol: an OTLP endpoint that carries
+traces alone (Langfuse, Latitude) must not silently receive metrics and logs
+just because OTLP could carry them.
+
+`pipelines.<signal> = null` (the default) fans out only to the destinations
+that list that signal; an explicit list overrides it. Every mistake fails
+closed by name (`telemetry: …`): an unknown destination, a destination listed
+for a signal it does not accept, a destination accepting a signal its protocol
+cannot carry (checked for every destination, even one no pipeline names), and
+an explicit empty list. Repointing a backend edits `endpoint` and nothing else;
+no registration and no implementation name changes. A scrape source whose
+metrics have no destination to land in is rejected by the implementation rather
+than dropped.
+
+```text
+telemetry: destination 'latitude' does not accept logs (accepts traces)
+telemetry: destination 'metricsWire' accepts logs, which protocol
+prometheus-remote-write cannot carry
+```
+
+## Implementation tuning: OpenTelemetry Collector
+
+`services.otel-collector` is the OpenTelemetry implementation's own namespace —
+the only place that speaks in collector terms:
+
+- `package` (defaults to `pkgs.opentelemetry-collector-contrib`, overridable);
+- `resourceAttributes` — upserted into all signals via a `resource` processor;
+- `processors` — extra processors, ordered memory_limiter → resource → batch →
+  others;
+- `exporterExtra.<destination>` — raw exporter override escape hatch.
+
+The implementation binds the OTLP receiver to `services.telemetry.otlp`, renders
+`services.telemetry.scrape` into
+`receivers.prometheus.config.scrape_configs` (metrics pipeline only), maps each
+destination protocol onto its exporter, and validates the config at build time.
+When a scrape source is registered but no metrics destination can carry it, it
+fails closed (`telemetry: N scrape source(s) are registered but the metrics
+pipeline has no destination to carry them`) — the collector accepts an unused
+receiver silently, so it rejects instead.
+
+## Secrets
+
+`services.telemetry.secretFiles.<id>` (nullable path) and
+`services.telemetry.secretKeys.<id>` (SOPS key path) must have matching IDs. An
+unbound/null file registers nothing; referenced unknown or unbound IDs fail
+closed. Bound secrets are registered under `sops.secrets."otel-collector/<id>"`,
+then rendered into a root-owned `sops.templates."otel-collector.env"` as
+`OTELCOL_<id>=<placeholder>`. The nixpkgs-owned unit loads that file through
+`EnvironmentFile` and reads headers as `"<prefix>${env:OTELCOL_<id>}"` at
+runtime. Matching build-time validation overrides are generated without putting
+credentials into the Nix store, and secret/template rotation restarts the
+collector. Secret IDs use ASCII letters, digits, and underscores. The
+implementation registers its own unit's failure on the notification contract.
+
+## Loopback and other configuration classes
+
+The contract is a NixOS host interface. A container, a standalone Home Manager
+instance, or any process outside the host's NixOS evaluation does not share this
+host's loopback address or its option tree: it cannot read
+`services.telemetry`, and its OTLP endpoint is not automatically the
+collector's loopback port. Such an instance sets its exporter endpoint
+explicitly (a literal, or a value the consumer's own flake-level module hands
+it). Cross-class access is documented rather than faked — there is no bridge
+from Home Manager into `services.telemetry`.
+
+## Remote backends and the fleet catalog
+
+Destination targets are consumer policy, not a fleet contract. Point
+`services.telemetry.destinations.<name>.endpoint` at the backend explicitly. A
+consumer that owns canonical service-endpoint facts can derive the URL in its
+own flake-level wrapper — the NixOS module cannot read flake-level fleet config:
+
+```nix
+# consumer flake-level module closing over config.fleet
+endpoint = (inputs.nix-fleet.lib.serviceEndpoints.resolveEndpoint config.fleet {
+  service = "latitude";
+  endpoint = "otlp";
+  via = "tailnet";
+}).url;
+```
+
+The earlier fleet-level `telemetry.ingest` / `telemetry.sink` endpoint
+capabilities and the `lib.telemetry` resolver were removed: they advertised
+collector endpoints in the flake catalog that no host-local registration
+consumed. Cross-fleet coordinates stay as generic `fleet.services` endpoint
+facts resolved by `lib.serviceEndpoints`.
+
+**Still deferred:** an `expose` direction, external authenticated ingress
+(public collector endpoints with auth), automatic agent-to-gateway forwarding,
+and cross-host destination discovery.

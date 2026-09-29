@@ -35,46 +35,92 @@ let
     via = "tailnet";
   };
 
-  collectorRejects =
-    bindings:
+  # A destination/fanout/secret mistake must fail closed by name at the
+  # contract level (it must hold for any implementation), so the reject checks
+  # force the rendered collector settings.
+  telemetryRejects =
+    module:
     let
       evaluated = lib.nixosSystem {
         system = "x86_64-linux";
         modules = [
           inputs.sops-nix.nixosModules.sops
-          aspects.otel-collector
-          { services.otel-collector = bindings; }
+          aspects.telemetry
+          module
         ];
       };
     in
     !(builtins.tryEval (
       builtins.deepSeq evaluated.config.services.opentelemetry-collector.settings true
     )).success;
-  collectorMutationChecks =
-    collectorRejects { exporters.missing.type = "otlp"; }
-    && collectorRejects {
-      exporters.invalid = {
-        type = "otlphttp";
+  telemetryMutationChecks =
+    # a destination header referencing an unknown secret
+    telemetryRejects {
+      services.telemetry.destinations.bad = {
+        protocol = "otlp-http";
         endpoint = "https://invalid.example";
+        signals = [ "traces" ];
         headers.Authorization.secret = "absent";
       };
     }
-    && collectorRejects {
-      secretFiles.token = fixtureSecretFile;
-      secretKeys.other = "otel/token";
+    # secretFiles and secretKeys must pair
+    && telemetryRejects {
+      services.telemetry.secretFiles.token = fixtureSecretFile;
+      services.telemetry.secretKeys.other = "otel/token";
     }
-    && collectorRejects { pipelines.traces = [ "absent" ]; }
-    && collectorRejects {
-      exporters.metricsOnly = {
-        type = "prometheusremotewrite";
-        endpoint = "http://invalid.example";
+    # explicit fanout naming an unknown destination
+    && telemetryRejects { services.telemetry.pipelines.traces = [ "absent" ]; }
+    # a destination accepting a signal its protocol cannot carry
+    && telemetryRejects {
+      services.telemetry.destinations.metricsWire = {
+        protocol = "prometheus-remote-write";
+        endpoint = "http://metrics.invalid/api/v1/write";
+        signals = [
+          "metrics"
+          "logs"
+        ];
       };
-      pipelines.traces = [ "metricsOnly" ];
     }
-    && collectorRejects { pipelines.logs = [ ]; }
-    && collectorRejects {
-      resourceAttributes."host.name" = "fixture-host";
-      processors.resource.attributes = [
+    # an explicit pipeline naming a destination for a signal it does not accept
+    && telemetryRejects {
+      services.telemetry.destinations.tracesOnly = {
+        protocol = "otlp-http";
+        endpoint = "https://langfuse.invalid";
+        signals = [ "traces" ];
+      };
+      services.telemetry.pipelines.logs = [ "tracesOnly" ];
+    }
+    # an explicit empty fanout is a silent drop
+    && telemetryRejects { services.telemetry.pipelines.logs = [ ]; }
+    # a scrape source with no metrics destination to carry it
+    && telemetryRejects {
+      services.telemetry.scrape.app = {
+        target = "127.0.0.1";
+        port = 9100;
+      };
+    }
+    # a scrape source whose only destination accepts traces, not metrics: the
+    # traces-only default fanout must not be what carries scraped metrics
+    && telemetryRejects {
+      services.telemetry.scrape.app = {
+        target = "127.0.0.1";
+        port = 9100;
+      };
+      services.telemetry.destinations.tracesOnly = {
+        protocol = "otlp-grpc";
+        endpoint = "http://langfuse.invalid:4317";
+        signals = [ "traces" ];
+      };
+    }
+    # the resource processor is configured through resourceAttributes, not raw
+    && telemetryRejects {
+      services.telemetry.destinations.local = {
+        protocol = "otlp-grpc";
+        endpoint = "http://gateway.invalid:4317";
+        signals = [ "traces" ];
+      };
+      services.otel-collector.resourceAttributes."host.name" = "fixture-host";
+      services.otel-collector.processors.resource.attributes = [
         {
           key = "k";
           value = "v";
@@ -90,18 +136,20 @@ let
       system = "x86_64-linux";
       modules = [
         inputs.sops-nix.nixosModules.sops
-        aspects.otel-collector
+        aspects.telemetry
         {
-          services.otel-collector = {
-            exporters.debugOnly.type = "debug";
-            processors.resource.attributes = [
-              {
-                key = "k";
-                value = "v";
-                action = "upsert";
-              }
-            ];
+          services.telemetry.destinations.local = {
+            protocol = "otlp-grpc";
+            endpoint = "http://gateway.invalid:4317";
+            signals = [ "traces" ];
           };
+          services.otel-collector.processors.resource.attributes = [
+            {
+              key = "k";
+              value = "v";
+              action = "upsert";
+            }
+          ];
         }
       ];
     }).config.services.opentelemetry-collector.settings.service.pipelines.traces.processors;
@@ -113,8 +161,14 @@ let
         system = "x86_64-linux";
         modules = [
           inputs.sops-nix.nixosModules.sops
-          aspects.otel-collector
-          { services.otel-collector.exporters.debugOnly.type = "debug"; }
+          aspects.telemetry
+          {
+            services.telemetry.destinations.plain = {
+              protocol = "otlp-grpc";
+              endpoint = "http://gateway.invalid:4317";
+              signals = [ "traces" ];
+            };
+          }
         ];
       };
       collector = evaluated.config.services.opentelemetry-collector;
@@ -124,8 +178,102 @@ let
     ))
     && !(evaluated.config.sops.templates ? "otel-collector.env")
     && evaluated.config.systemd.services.opentelemetry-collector.serviceConfig.EnvironmentFile == [ ]
-    && collector.settings.exporters ? "debug/debugOnly";
+    && collector.settings.exporters ? "otlp/plain";
 
+  # Source admission is unconditional: a registration is realized only on a
+  # host that selects the aspect, and an orphan fails closed by name instead of
+  # being silently accepted. A minimal host is evaluated through nixpkgs' own
+  # assertion check so the named `telemetry:` failure is what a deployment
+  # hits.
+  admissionAccepts =
+    modules:
+    let
+      evaluated = lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          inputs.sops-nix.nixosModules.sops
+          {
+            boot.loader.grub.enable = false;
+            fileSystems."/" = {
+              device = "nodev";
+              fsType = "tmpfs";
+            };
+            system.stateVersion = "25.11";
+          }
+        ]
+        ++ modules;
+      };
+    in
+    (builtins.tryEval (
+      lib.asserts.checkAssertWarn evaluated.config.assertions evaluated.config.warnings true
+    )).success;
+  # A push-only consumer registers nothing: it imports the fragment and reads
+  # the local OTLP endpoint. The orphan guard sees no registration, so the
+  # derived URL itself must fail closed — and the same read must succeed once
+  # the host selects the aspect, or the check would pass vacuously.
+  pushOnlyEndpoint =
+    withAspect:
+    (lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        inputs.sops-nix.nixosModules.sops
+      ]
+      ++ lib.optionals withAspect [ aspects.telemetry ]
+      ++ lib.optionals (!withAspect) [ ../telemetry/telemetry/_contract.nix ]
+      ++ [
+        ({ config, ... }: {
+          environment.variables.OTEL_EXPORTER_OTLP_ENDPOINT = config.services.telemetry.otlp.httpUrl;
+        })
+      ];
+    }).config.environment.variables.OTEL_EXPORTER_OTLP_ENDPOINT;
+  telemetryAdmissionChecks =
+    let
+      pushOnlyWithAspect = builtins.tryEval (pushOnlyEndpoint true);
+      pushOnlyWithoutAspect = builtins.tryEval (pushOnlyEndpoint false);
+    in
+    # the host aspect realizes a registered source (the destination must accept
+    # metrics, or the scrape has nowhere to land)
+    admissionAccepts [
+      aspects.telemetry
+      {
+        services.telemetry.scrape.app = {
+          target = "127.0.0.1";
+          port = 9100;
+        };
+        services.telemetry.destinations.local = {
+          protocol = "otlp-grpc";
+          endpoint = "http://gateway.invalid:4317";
+          signals = [ "metrics" ];
+        };
+      }
+    ]
+    # orphan: the fragment alone accepts no registration
+    && !(admissionAccepts [
+      ../telemetry/telemetry/_contract.nix
+      {
+        services.telemetry.scrape.app = {
+          target = "127.0.0.1";
+          port = 9100;
+        };
+      }
+    ])
+    # orphan: a destination written without the host aspect likewise
+    && !(admissionAccepts [
+      ../telemetry/telemetry/_contract.nix
+      {
+        services.telemetry.destinations.x = {
+          protocol = "otlp-grpc";
+          endpoint = "http://x.invalid:4317";
+          signals = [ "traces" ];
+        };
+      }
+    ])
+    # the fragment alone with no registration is inert, not an error
+    && admissionAccepts [ ../telemetry/telemetry/_contract.nix ]
+    # a push-only consumer's endpoint read fails closed without the host aspect
+    && !pushOnlyWithoutAspect.success
+    && pushOnlyWithAspect.success
+    && pushOnlyWithAspect.value == "http://127.0.0.1:4318";
   fixtureModule =
     {
       config,
@@ -149,7 +297,7 @@ let
         ssh
         tailscale
         mosh
-        otel-collector
+        telemetry
       ]);
 
       boot.loader.grub.enable = false;
@@ -275,6 +423,7 @@ let
           assertion =
             let
               collector = config.services.opentelemetry-collector;
+              telemetry = config.services.telemetry;
               inherit (collector) settings;
             in
             collector.enable
@@ -285,18 +434,32 @@ let
             &&
               settings.exporters."prometheusremotewrite/victoria".endpoint
               == "http://metrics.invalid/api/v1/write"
+            && telemetry.destinations.secure.protocol == "otlp-http"
+            && telemetry.destinations.secure.signals == [ "traces" ]
+            &&
+              telemetry.destinations.plain.signals == [
+                "traces"
+                "metrics"
+                "logs"
+              ]
+            && telemetry.destinations.victoria.signals == [ "metrics" ]
             &&
               settings.service.pipelines.traces.exporters == [
                 "otlp/plain"
                 "otlphttp/secure"
               ]
+            # A traces-only backend (the initial LLM-observability deployment)
+            # receives neither metrics nor logs from the default fanout, and a
+            # metrics-only remote-write backend receives nothing else.
             &&
               settings.service.pipelines.metrics.exporters == [
                 "otlp/plain"
-                "otlphttp/secure"
                 "prometheusremotewrite/victoria"
               ]
-            && settings.service.pipelines.logs.exporters == [ "otlphttp/secure" ]
+            && settings.service.pipelines.logs.exporters == [ "otlp/plain" ]
+            && !(builtins.elem "otlphttp/secure" settings.service.pipelines.metrics.exporters)
+            && !(builtins.elem "otlphttp/secure" settings.service.pipelines.logs.exporters)
+            && !(builtins.elem "prometheusremotewrite/victoria" settings.service.pipelines.traces.exporters)
             &&
               settings.service.pipelines.traces.processors == [
                 "memory_limiter"
@@ -311,8 +474,61 @@ let
                   value = "fixture-host";
                   action = "upsert";
                 }
-              ];
-          message = "fixture: the otel-collector receiver, exporter, or pipeline contract regressed.";
+              ]
+            && telemetryMutationChecks;
+          message = "fixture: the telemetry destination/fanout contract, the receiver bind, or the rendered exporter/processor set regressed.";
+        }
+        {
+          # The host-local contract: the OTLP endpoint producers read must be
+          # the receiver the collector actually binds, and both registrations
+          # must merge into the metrics pipeline.
+          assertion =
+            let
+              inherit (config.services.telemetry) otlp providers;
+              settings = config.services.opentelemetry-collector.settings;
+            in
+            otlp.httpUrl == "http://127.0.0.1:4318"
+            && otlp.grpcUrl == "http://127.0.0.1:4317"
+            && settings.receivers.otlp.protocols.http.endpoint == "${otlp.host}:${toString otlp.httpPort}"
+            && settings.receivers.otlp.protocols.grpc.endpoint == "${otlp.host}:${toString otlp.grpcPort}"
+            &&
+              settings.receivers.prometheus.config.scrape_configs == [
+                {
+                  job_name = "fixture-app";
+                  metrics_path = "/metrics";
+                  scheme = "http";
+                  scrape_interval = "30s";
+                  static_configs = [
+                    {
+                      targets = [ "127.0.0.1:9100" ];
+                      labels.service = "fixture-app";
+                    }
+                  ];
+                }
+                {
+                  job_name = "fixture-sidecar";
+                  metrics_path = "/metrics";
+                  scheme = "http";
+                  scrape_interval = "15s";
+                  static_configs = [
+                    {
+                      targets = [ "127.0.0.1:9101" ];
+                      labels = { };
+                    }
+                  ];
+                }
+              ]
+            &&
+              settings.service.pipelines.metrics.receivers == [
+                "otlp"
+                "prometheus"
+              ]
+            && settings.service.pipelines.traces.receivers == [ "otlp" ]
+            && settings.service.pipelines.logs.receivers == [ "otlp" ]
+            && providers.otlpIngest == "otel-collector"
+            && providers.prometheusScrape == "otel-collector"
+            && telemetryAdmissionChecks;
+          message = "fixture: the telemetry scrape registration, local OTLP endpoint, provider selection, or orphan/admission contract regressed.";
         }
         {
           assertion =
@@ -333,7 +549,6 @@ let
               config.systemd.services.opentelemetry-collector.serviceConfig.EnvironmentFile == [
                 config.sops.templates."otel-collector.env".path
               ]
-            && collectorMutationChecks
             &&
               collectorManualResourceOrder == [
                 "memory_limiter"
@@ -411,6 +626,51 @@ let
 
         tailscale.secretFiles.auth = fixtureSecretFile;
 
+        telemetry = {
+          scrape = {
+            fixture-app = {
+              target = "127.0.0.1";
+              port = 9100;
+              labels.service = "fixture-app";
+            };
+            fixture-sidecar = {
+              target = "127.0.0.1";
+              port = 9101;
+              interval = "15s";
+            };
+          };
+          destinations = {
+            # An LLM-observability sink (Langfuse/Latitude-style): traces only,
+            # so the default fanout must never hand it metrics or logs.
+            secure = {
+              protocol = "otlp-http";
+              endpoint = "https://telemetry.invalid";
+              signals = [ "traces" ];
+              headers.Authorization = {
+                secret = "token";
+                prefix = "Bearer ";
+              };
+            };
+            plain = {
+              protocol = "otlp-grpc";
+              endpoint = "http://gateway.invalid:4317";
+              signals = [
+                "traces"
+                "metrics"
+                "logs"
+              ];
+            };
+            victoria = {
+              protocol = "prometheus-remote-write";
+              endpoint = "http://metrics.invalid/api/v1/write";
+              signals = [ "metrics" ];
+            };
+          };
+          pipelines.logs = [ "plain" ];
+          secretFiles.token = fixtureSecretFile;
+          secretKeys.token = "otel/token";
+        };
+
         otel-collector = {
           resourceAttributes."host.name" = "fixture-host";
           processors.attributes.actions = [
@@ -420,27 +680,6 @@ let
               value = "fixture";
             }
           ];
-          secretFiles.token = fixtureSecretFile;
-          secretKeys.token = "otel/token";
-          exporters = {
-            secure = {
-              type = "otlphttp";
-              endpoint = "https://telemetry.invalid";
-              headers.Authorization = {
-                secret = "token";
-                prefix = "Bearer ";
-              };
-            };
-            plain = {
-              type = "otlp";
-              endpoint = "http://gateway.invalid:4317";
-            };
-            victoria = {
-              type = "prometheusremotewrite";
-              endpoint = "http://metrics.invalid/api/v1/write";
-            };
-          };
-          pipelines.logs = [ "secure" ];
         };
       };
 

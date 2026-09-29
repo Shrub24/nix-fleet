@@ -58,7 +58,11 @@ modules/
   observability/
     beszel-agent.nix # aspect: Beszel agent auth/enrollment
   telemetry/
-    otel-collector.nix # aspect: OTLP collector agent or gateway
+    telemetry.nix         # aspect: host-local telemetry contract + implementation selection
+    telemetry/
+      _contract.nix       # registration fragment: services.telemetry options + orphan guard
+      _providers/
+        otel-collector.nix # implementation: OpenTelemetry Collector
   access/
 .envrc               # direnv: use flake
 justfile             # fmt / fmt-check / check / lock
@@ -73,11 +77,11 @@ renovate.json        # weekly nix flake input updates
 1. **`tailscale`** — Tailscale baseline: enable, Tailscale SSH, systemd restart/ordering pinning, MTU debug option. Auth key via `secretFiles.auth`; unbound or missing file means the two-step sops bootstrap, registering nothing.
 2. **`beszel-agent`** — agent enrollment (the hub stays in nix-homelab). The KEY the agent holds is the hub's PUBLIC key (hub→agent SSH auth): policy data, bound via `services.beszel-agent.key`, no sops involved. TOKEN is deliberately not wired — WebSocket registration needs plain-HTTP reachability of the hub URL, but the hub sits behind Cloudflare Access and agents reach it over tailnet SSH, so the hub-issued token path can never work here. No host secrets remain for beszel.
 3. **`fleet`** — the fleet authority feature: canonical machine identity with build capabilities (`fleet.hosts.*.capabilities`), external build resources (`fleet.externalBuilders`), named scheduling profiles (`fleet.buildProfiles`), and the pure projection API `lib.buildProfile` (`resolveBuildProfile` → renderers). No NixOS realization is published; the consumer's own flake-level module resolves a profile and wires trust + scheduling. Includes the `build-account` dispatch-account aspect. Full contract: [docs/contracts/builders.md](docs/contracts/builders.md) (hosts: [hosts.md](docs/contracts/hosts.md), CI: [ci.md](docs/contracts/ci.md)).
-The same fleet feature publishes the typed `fleet.services.*.endpoints.*` endpoint catalog and pure `lib.serviceEndpoints` resolver (`resolveEndpoint` returns URL, canonical host ID, hostname, and port for a tailnet route). Its raw canonical data is `lib.serviceEndpoints.canonicalServices`. See [docs/contracts/services.md](docs/contracts/services.md) for selection and ownership. Optional endpoint `telemetry.ingest` and `telemetry.sink` capabilities and pure `lib.telemetry` resolution distinguish producer-facing collector ingress from collector export targets; see [docs/contracts/telemetry.md](docs/contracts/telemetry.md).
+The same fleet feature publishes the typed `fleet.services.*.endpoints.*` endpoint catalog and pure `lib.serviceEndpoints` resolver (`resolveEndpoint` returns URL, canonical host ID, hostname, and port for a tailnet route). Its raw canonical data is `lib.serviceEndpoints.canonicalServices`. See [docs/contracts/services.md](docs/contracts/services.md) for selection and ownership. Telemetry is host-local instead: the one `telemetry` aspect owns `services.telemetry` (see [telemetry.md](docs/contracts/telemetry.md)) — service aspects register sources and read the local endpoint, while the implementation is a private module selected per capability.
 
 4. **`niks3-cache`** — niks3 binary-cache *server*. S3 coordinates, cache URL, secret paths are options; fails closed when unbound.
 5. **`niks3-publisher`** — niks3 closure-upload *client* (upstream post-build-hook module). `serverUrl` required; token via `secretFiles.apiToken`.
-5a. **`otel-collector`** — nixpkgs-owned OpenTelemetry Collector with selectable agent (loopback) or gateway (tailnet) ingress, signal-compatible exporter pipelines, and SOPS-backed header credentials. See [docs/contracts/telemetry.md](docs/contracts/telemetry.md).
+5a. **`telemetry`** — the one host-local telemetry aspect. Producers register Prometheus scrape sources (`services.telemetry.scrape`) and read the local OTLP endpoint (`services.telemetry.otlp.httpUrl`/`grpcUrl`, which fails closed by name unless the host selects the aspect); remote backends are typed destinations with protocol/endpoint/secret-header and a required per-destination `signals` set plus per-signal fanout (`services.telemetry.destinations`/`pipelines`), so a traces-only backend never receives metrics or logs. Implementations are private modules selected per capability (`services.telemetry.providers.*`, default `otel-collector`), not separate aspects; the OpenTelemetry implementation renders the contract into nixpkgs' collector, with collector-only tuning (processors, resource attributes) under `services.otel-collector`. An orphan registration or a destination accepting a signal its protocol cannot carry fails closed by name. See [docs/contracts/telemetry.md](docs/contracts/telemetry.md).
 6. **`notify`** — notification dispatch (Telegram + ntfy) realizing native systemd event notifications. One owned package (`pkgs/notify`, overridable): the daemon (`notify serve`, unprivileged system user, unix socket + loopback TCP for app webhooks) owns secrets, the policy map, and journal access; `notify send`/`notify test` and the `unit-notify` handler are thin unprivileged connectors. The registration contract `services.notify.events.<unit>.{failure,success}` is a declaration-only fragment contributors import, so registration is unconditional and realization happens only when notify is co-selected. Socket access: callers join the always-defined `notify` group from their own module (`users.users.<name>.extraGroups`); root units need nothing. Per-event policy: severity, topic, journalLines, context, title — explicit only (no hook without a declared event). Routing resolves per transport: semantic topic if the consumer's map has it, otherwise the severity. Dispatch policy (chatId, topics, ntfy coordinates) is consumer-bound; secrets follow the two-step bootstrap.
 
 ### System baselines
@@ -113,8 +117,7 @@ who may change what:
 ```nix
 # consumer flake-level: one import — the fleet feature composes schema,
 # canonical inventory, validation, CI artifacts; lib.buildProfile is the
-# pure projection API; lib.serviceEndpoints resolves explicitly selected routes;
-# lib.telemetry resolves advertised ingest endpoints.
+# pure projection API; lib.serviceEndpoints resolves explicitly selected routes.
 imports = [
   inputs.nix-fleet.flakeModules.fleet
   inputs.nix-fleet.flakeModules.tooling

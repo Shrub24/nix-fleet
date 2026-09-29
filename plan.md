@@ -70,24 +70,61 @@ Den/repo-merge/policy-engine (explicitly out).
 - [x] Fleet validation + mutation checks, and docs/contracts/services.md.
       Downstream adoption and ingress/auth policy remain consumer-owned.
 
-## Telemetry ingest v1 (completed follow-on)
+## Telemetry contract (host-local, completed)
 
-- [x] Optional `fleet.services.*.endpoints.*.telemetry.ingest` capability
-      with typed protocol and non-empty signals; no collector inventory record.
-- [x] Pure `lib.telemetry` ingest resolution, enumeration, and OTLP environment
-      projection, with fail-closed selection and fixture mutation checks.
-- [x] Ingest-only consumer contract in docs/contracts/telemetry.md; expose,
-      forwarding, registration, deployment, and fan-out remain deferred.
-
-## Telemetry collector and sink follow-on
-
-- [x] `otel-collector` aspect: OTLP agent/gateway receiver, ordered processors,
-      signal-compatible exporter pipelines, SOPS-backed header environment,
-      build-time config validation, and owned failure notification.
-- [x] Optional `fleet.services.*.endpoints.*.telemetry.sink` capability and
-      explicit `lib.telemetry.resolveSink` tailnet projection; ingest selection
-      never considers backend sinks.
-- [x] Fixture checks and consumer contract documentation for both directions.
+- [x] ONE public aspect `flake.modules.nixos.telemetry` — the
+      implementation-agnostic `services.telemetry` contract: a Prometheus
+      scrape registration (`services.telemetry.scrape.<job>`), the local OTLP
+      endpoint producers read (`services.telemetry.otlp.{httpUrl,grpcUrl}`),
+      typed remote destinations (`services.telemetry.destinations.<name>`:
+      protocol + endpoint + required non-empty `signals` + secret headers) and
+      per-signal fanout (`services.telemetry.pipelines`). Selection is
+      enablement. A contributing aspect imports the `telemetry/_contract.nix`
+      fragment.
+- [x] `signals` is authoritative, never inferred from the protocol: a null
+      pipeline fans out only to destinations that accept that signal, so a
+      traces-only OTLP backend (Langfuse/Latitude) never receives metrics or
+      logs without every host writing override lists. A destination accepting a
+      signal its protocol cannot carry is rejected eagerly (even when no
+      pipeline names it), and an explicit pipeline naming a destination for a
+      signal it does not accept fails closed by name.
+- [x] Implementations are private modules (`telemetry/_providers/`) selected
+      per capability via `services.telemetry.providers.*`, defaulting to the
+      OpenTelemetry adapter. No second public aspect, no provider registry, and
+      no imports-list edit to swap one.
+- [x] Orphan guard: a scrape source or destination configured without the host
+      aspect fails closed by name; registration is not declaration-only. The
+      same guard covers push-only consumers, which register nothing: reading
+      `otlp.httpUrl`/`grpcUrl` on a host that did not select the aspect throws
+      instead of advertising an endpoint nothing binds.
+- [x] OpenTelemetry implementation renders the contract into nixpkgs'
+      collector: OTLP receiver bound to the contract endpoint, `scrape`
+      rendered into the Prometheus receiver and metrics pipeline, ordered
+      processors, protocol-mapped destinations, SOPS-backed header
+      environment, build-time config validation, owned failure notification.
+      Collector-only tuning (processors, resource attributes, package,
+      exporter override) stays under `services.otel-collector`.
+- [x] Removed the fleet-level `telemetry.{ingest,sink}` endpoint capabilities
+      and `lib.telemetry`: they advertised collector endpoints in the flake
+      catalog that no host-local registration consumed. Generic
+      `fleet.services` endpoint facts + `lib.serviceEndpoints` stay for
+      explicit remote backends.
+- [x] Fixture mutation/non-vacuity checks: endpoint aligns with the receiver,
+      two scrape registrations merge into the metrics pipeline, a traces-only
+      destination receives neither metrics nor logs, typed
+      destination drives the pipeline by protocol, orphan registration rejected
+      by name, push-only endpoint read rejected by name (and accepted with the
+      aspect), unknown destination / destination-not-accepting-the-signal /
+      protocol-cannot-carry-declared-signal / empty fanout /
+      scrape-without-metrics-destination rejected by name, and secret/notify
+      behavior intact.
+- [ ] Consumer adoption (nix-homelab / dotfiles): select `telemetry` per host
+      and move any host-local scrape registrations onto
+      `services.telemetry.scrape`.
+- Deferred: an `expose` direction, external authenticated ingress,
+  agent-to-gateway forwarding, cross-host destination discovery. A
+  container/standalone Home Manager instance does not share the NixOS host's
+  loopback or options and configures its exporter endpoint explicitly.
 
 ## Quick wins (pre-v2 value, consumer-adoptable independently)
 

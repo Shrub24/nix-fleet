@@ -12,7 +12,6 @@
 let
   resolve = import ../../lib/build-profile.nix lib;
   serviceEndpoints = import ../../lib/service-endpoints.nix lib;
-  telemetry = import ../../lib/telemetry.nix lib;
 
   # Named, fail-closed inventory validation, run by the render check so an
   # invalid canonical record fails `nix flake check` by name.
@@ -55,19 +54,6 @@ let
         ++ lib.optionals (tailnet != null && !(builtins.hasAttr tailnet.host fleet.hosts)) [
           "${routeName} references unknown fleet host '${tailnet.host}'"
         ]
-        ++
-          lib.concatMap
-            (
-              direction:
-              lib.optionals (
-                (endpoint.telemetry or { }).${direction} or null != null
-                && (endpoint.telemetry.${direction}.signals or [ ]) == [ ]
-              ) [ "${routeName} telemetry.${direction}.signals must not be empty" ]
-            )
-            [
-              "ingest"
-              "sink"
-            ]
       ) (builtins.attrNames fleet.services.${serviceId}.endpoints)
     ) (builtins.attrNames fleet.services);
 
@@ -111,49 +97,6 @@ let
       basePath = "/mcp/";
     };
     services.sample-service.endpoints.public.publicUrl = "https://example.invalid/api/";
-    services.sample-collector.endpoints.http = {
-      tailnet = {
-        host = "sample-host";
-        port = 4318;
-      };
-      telemetry.ingest = {
-        protocol = "otlp-http";
-        signals = [
-          "traces"
-          "logs"
-        ];
-      };
-    };
-    services.sample-collector.endpoints.grpc = {
-      tailnet = {
-        host = "sample-host";
-        port = 4317;
-      };
-      telemetry.ingest = {
-        protocol = "otlp-grpc";
-        signals = [ "traces" ];
-      };
-    };
-    services.sample-backend.endpoints.otlp = {
-      tailnet = {
-        host = "sample-host";
-        port = 4319;
-      };
-      telemetry.sink = {
-        protocol = "otlp-http";
-        signals = [ "traces" ];
-      };
-    };
-    services.sample-collector-second.endpoints.http = {
-      tailnet = {
-        host = "sample-nonbuilder";
-        port = 4318;
-      };
-      telemetry.ingest = {
-        protocol = "otlp-http";
-        signals = [ "traces" ];
-      };
-    };
     buildProfiles.sample = {
       hosts.sample-host.maxJobs = 2;
       hosts.sample-host.supportedFeatures = [
@@ -280,174 +223,6 @@ let
     && rejects (assertRegistry unknownHost)
     && rejects (assertRegistry invalidPath);
 
-  telemetryCheck =
-    let
-      logs = telemetry.resolveIngest sample { signal = "logs"; };
-      grpc = telemetry.resolveIngest sample {
-        signal = "traces";
-        protocol = "otlp-grpc";
-      };
-      chosen = telemetry.resolveIngest sample {
-        signal = "traces";
-        protocol = "otlp-http";
-        collector = "sample-collector-second";
-      };
-      httpEnv = telemetry.otlpEnv {
-        endpoint = logs;
-        service = "example-app";
-        hostId = "sample-host";
-        extraAttributes."deployment.environment" = "test";
-      };
-      grpcEnv = telemetry.otlpEnv {
-        endpoint = grpc;
-        service = "example-app";
-        hostId = "sample-host";
-      };
-      emptySignals = lib.recursiveUpdate sample {
-        services.sample-collector.endpoints.http.telemetry.ingest.signals = [ ];
-      };
-      emptySinkSignals = lib.recursiveUpdate sample {
-        services.sample-backend.endpoints.otlp.telemetry.sink.signals = [ ];
-      };
-      sinkOnly = sample // {
-        services = {
-          sample-backend = sample.services.sample-backend;
-        };
-      };
-      sink = telemetry.resolveSink sample {
-        service = "sample-backend";
-        endpoint = "otlp";
-        signal = "traces";
-        protocol = "otlp-http";
-      };
-      evalSample =
-        fleet:
-        lib.evalModules {
-          modules = [
-            ./schema.nix
-            { inherit fleet; }
-          ];
-        };
-    in
-    logs == {
-      url = "http://fleet-host:4318";
-      service = "sample-collector";
-      hostname = "fleet-host";
-      port = 4318;
-      protocol = "otlp-http";
-      signals = [
-        "traces"
-        "logs"
-      ];
-    }
-    && chosen.url == "http://fleet-peer:4318"
-    && chosen.service == "sample-collector-second"
-    && grpc.url == "http://fleet-host:4317"
-    && grpc.protocol == "otlp-grpc"
-    && builtins.length (telemetry.ingestTargets sample { signal = "traces"; }) == 3
-    && telemetry.ingestTargets sample { protocol = "otlp-grpc"; } == [ grpc ]
-    &&
-      sink == {
-        url = "http://fleet-host:4319";
-        service = "sample-backend";
-        hostname = "fleet-host";
-        port = 4319;
-        protocol = "otlp-http";
-        signals = [ "traces" ];
-      }
-    && telemetry.ingestTargets sinkOnly { signal = "traces"; } == [ ]
-    && rejects (telemetry.resolveIngest sinkOnly { signal = "traces"; })
-    && rejects (
-      telemetry.resolveSink sample {
-        service = "unknown";
-        endpoint = "otlp";
-      }
-    )
-    && rejects (
-      telemetry.resolveSink sample {
-        service = "sample-backend";
-        endpoint = "unknown";
-      }
-    )
-    && rejects (
-      telemetry.resolveSink sample {
-        service = "sample-collector";
-        endpoint = "http";
-      }
-    )
-    && rejects (
-      telemetry.resolveSink sample {
-        service = "sample-backend";
-        endpoint = "otlp";
-        signal = "logs";
-      }
-    )
-    && rejects (
-      telemetry.resolveSink sample {
-        service = "sample-backend";
-        endpoint = "otlp";
-        protocol = "otlp-grpc";
-      }
-    )
-    &&
-      httpEnv == {
-        OTEL_EXPORTER_OTLP_ENDPOINT = "http://fleet-host:4318";
-        OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf";
-        OTEL_SERVICE_NAME = "example-app";
-        OTEL_RESOURCE_ATTRIBUTES = "deployment.environment=test,host.name=sample-host,service.name=example-app";
-      }
-    &&
-      grpcEnv == {
-        OTEL_EXPORTER_OTLP_ENDPOINT = "http://fleet-host:4317";
-        OTEL_EXPORTER_OTLP_PROTOCOL = "grpc";
-        OTEL_SERVICE_NAME = "example-app";
-        OTEL_RESOURCE_ATTRIBUTES = "host.name=sample-host,service.name=example-app";
-      }
-    && rejects (telemetry.resolveIngest sample { signal = "traces"; })
-    && rejects (telemetry.resolveIngest sample { signal = "unknown"; })
-    && rejects (telemetry.resolveIngest sample { signal = null; })
-    && rejects (
-      telemetry.resolveIngest sample {
-        signal = "traces";
-        protocol = "unknown";
-      }
-    )
-    && rejects (
-      telemetry.resolveIngest sample {
-        signal = "traces";
-        collector = "unknown";
-      }
-    )
-    && rejects (
-      telemetry.resolveIngest sample {
-        signal = "traces";
-        protocol = "otlp-grpc";
-        collector = "sample-collector-second";
-      }
-    )
-    && rejects (telemetry.resolveIngest sample { signal = "metrics"; })
-    && rejects (
-      telemetry.otlpEnv {
-        endpoint = chosen // {
-          protocol = "loki-push";
-        };
-        service = "example-app";
-        hostId = "sample-host";
-      }
-    )
-    &&
-      (evalSample sample).config.fleet.services.sample-collector.endpoints.http.telemetry.ingest.signals
-      == [
-        "traces"
-        "logs"
-      ]
-    && rejects (assertRegistry emptySignals)
-    && rejects (assertRegistry emptySinkSignals)
-    && rejects (evalSample emptySinkSignals)
-      .config.fleet.services.sample-backend.endpoints.otlp.telemetry.sink.signals
-    && rejects (evalSample emptySignals)
-      .config.fleet.services.sample-collector.endpoints.http.telemetry.ingest.signals;
-
   # The separation is load-bearing: the non-builder that resolveHosts accepts
   # must stay unreachable through the scheduling door. Forced by the render
   # check below (deepSeq in its attrset), so relaxing the capability check
@@ -504,7 +279,6 @@ let
             assert assertRegistry config.fleet;
             assert schedulingRejection;
             assert serviceCheck;
-            assert telemetryCheck;
             # Scheduling path (sampleSpecs) and trust path (trustSpecs) both
             # render here; the trust selection includes a NON-builder. The
             # separation itself is pinned by the schedulingRejection binding
@@ -591,7 +365,6 @@ in
 
   flake.lib.buildProfile = resolve;
   flake.lib.serviceEndpoints = serviceEndpoints;
-  flake.lib.telemetry = telemetry;
 
   # Self-application (dogfood): the published module's perSystem pieces (render
   # check, CI bundles) only land when the module is imported into this
