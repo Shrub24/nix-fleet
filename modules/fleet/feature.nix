@@ -146,14 +146,14 @@ let
         [
           "omniroute"
           "api"
-          "http://home-forge:20128/"
+          "http://home-forge:20128"
           20128
           "home-forge"
         ]
         [
           "hindsight"
           "api"
-          "http://home-forge:8888/"
+          "http://home-forge:8888"
           8888
           "home-forge"
         ]
@@ -167,14 +167,14 @@ let
         [
           "ntfy"
           "api"
-          "http://la-admin-1:2586/"
+          "http://la-admin-1:2586"
           2586
           "la-admin-1"
         ]
         [
           "niks3-write"
           "api"
-          "http://oci-melb-1:5751/"
+          "http://oci-melb-1:5751"
           5751
           "oci-melb-1"
         ]

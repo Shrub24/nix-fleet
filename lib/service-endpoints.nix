@@ -31,8 +31,14 @@ let
         if !lib.hasPrefix "/" path then
           throw "${routeName} tailnet basePath '${path}' must start with /"
         else
+          let
+            origin = "${tailnet.scheme or "http"}://${host.tailscale.hostname}:${toString tailnet.port}";
+          in
           {
-            url = "${tailnet.scheme or "http"}://${host.tailscale.hostname}:${toString tailnet.port}${path}";
+            # A root base path yields the bare origin so consumers can append
+            # paths (`\${url}/v1`) without producing a double slash; any other
+            # path is preserved verbatim.
+            url = if path == "/" then origin else origin + path;
             inherit (tailnet) host;
             hostname = host.tailscale.hostname;
             inherit (tailnet) port;

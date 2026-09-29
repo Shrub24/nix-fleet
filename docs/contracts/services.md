@@ -15,7 +15,9 @@ Each endpoint has at least one of:
 - `tailnet = { host; scheme = "http"; port; basePath = "/"; }`, where `host`
   is a **canonical `fleet.hosts` ID**. `scheme` is `http` or `https`; `port`
   is 1–65535; `basePath` starts with `/` and is preserved verbatim, including
-  a trailing slash if supplied. The dial hostname comes from
+  a trailing slash if supplied. A root base path (`/`) yields the bare origin
+  (`http://host:port`, no trailing slash) so callers can append paths without
+  a double slash. The dial hostname comes from
   `fleet.hosts.<id>.tailscale.hostname`, never from a copied service hostname.
 - `publicUrl = "https://..."`, an explicit URL. No public route is declared
   for the canonical services here (notably ntfy): ingress, auth, and public
