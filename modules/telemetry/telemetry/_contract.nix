@@ -109,7 +109,15 @@ let
     ++ lib.optional (
       cfg.destinations != { }
     ) "destination(s) ${lib.concatStringsSep ", " destinationNames}"
+    ++ lib.optional (cfg.journald.sink.endpoint != null) "journald sink"
   );
+
+  # A sink endpoint is a URL the provider dials; a bare `host:port` is the
+  # mistake this catches, not a stylistic preference.
+  validSinkUrl = url: lib.hasPrefix "http://" url || lib.hasPrefix "https://" url;
+
+  nothingRegistered =
+    cfg.scrape == { } && cfg.destinations == { } && cfg.journald.sink.endpoint == null;
 in
 {
   options.services.telemetry = {
@@ -162,6 +170,11 @@ in
         default = "otel-collector";
         description = "Implementation serving Prometheus scrape sources on this host. Selection is per capability, so metrics and logs may split later without touching registrations.";
       };
+      journaldIngest = mkOption {
+        type = types.enum [ "vector" ];
+        default = "vector";
+        description = "Implementation shipping this host's journald logs (`services.telemetry.journald`). Per capability like the others: a future implementation is an enum value plus its private module, never a registration change.";
+      };
     };
 
     scrape = mkOption {
@@ -204,6 +217,69 @@ in
       );
       default = { };
       description = "Prometheus scrape sources this host's collector pulls. The attribute name is the scrape job name.";
+    };
+
+    # The host-local log source: systemd's journal. Deliberately opt-in — a
+    # host that selected telemetry for metrics or traces must not start
+    # shipping its journal as a side effect.
+    journald = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Ship this host's systemd journal to `journald.sink.endpoint`.";
+      };
+      includeUnits = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "Only ship entries whose `_SYSTEMD_UNIT` is listed. Empty means every unit. Unit names without a `.` get `.service` appended by the reader.";
+      };
+      excludeUnits = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "Never ship entries whose `_SYSTEMD_UNIT` is listed.";
+      };
+      sink = {
+        endpoint = mkOption {
+          type = types.nullOr types.nonEmptyStr;
+          default = null;
+          description = ''
+            Remote log-store ingest URL, including any path the backend needs
+            (VictoriaLogs' HTTP JSON-line endpoint is
+            `https://<store>/insert/jsonline`). Consumer policy: the aspect
+            names no backend, and the whole URL is one value so repointing is
+            an edit here alone.
+          '';
+        };
+        streamFields = mkOption {
+          type = types.listOf types.str;
+          default = [
+            "_HOSTNAME"
+            "_SYSTEMD_UNIT"
+          ];
+          description = ''
+            Journal fields the backend groups log streams by. Keep this
+            low-cardinality: a stream field is a storage/grep partition, and a
+            high-cardinality one (a pid, a message) multiplies stream count.
+            Mirrors the defaults VictoriaLogs uses for its own journald
+            ingestion path.
+          '';
+        };
+      };
+      buffer = {
+        maxSizeMb = mkOption {
+          type = types.ints.positive;
+          default = 512;
+          description = "On-disk buffer capacity for log records not yet accepted by the sink. Bounds what an outage can hold, not a lossless-forever promise.";
+        };
+        whenFull = mkOption {
+          type = types.enum [
+            "block"
+            "drop_newest"
+          ];
+          default = "block";
+          description = "What happens when the buffer is full: `block` stops reading the journal (the journal keeps its own records, so nothing is lost until it rotates) and `drop_newest` discards. Blocking trades memory pressure upstream for durability.";
+        };
+      };
     };
 
     destinations = mkOption {
@@ -289,8 +365,20 @@ in
 
     assertions = [
       {
-        assertion = cfg.realized || (cfg.scrape == { } && cfg.destinations == { });
+        assertion = cfg.realized || nothingRegistered;
         message = "telemetry: ${orphanReport} configured without the host selecting flake.modules.nixos.telemetry; select that aspect (it realizes the registration) or remove it. A registration is never silently dropped.";
+      }
+      {
+        assertion = !cfg.journald.enable || cfg.journald.sink.endpoint != null;
+        message = "telemetry: journald shipping is enabled but services.telemetry.journald.sink.endpoint is not set; the host's journal has nowhere to go.";
+      }
+      {
+        assertion = cfg.journald.sink.endpoint == null || cfg.journald.enable;
+        message = "telemetry: services.telemetry.journald.sink.endpoint is set while journald shipping is disabled; enable it or remove the sink. A registration is never silently dropped.";
+      }
+      {
+        assertion = cfg.journald.sink.endpoint == null || validSinkUrl cfg.journald.sink.endpoint;
+        message = "telemetry: journald sink endpoint '${cfg.journald.sink.endpoint}' must be an http:// or https:// URL.";
       }
     ];
   };

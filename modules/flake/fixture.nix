@@ -185,28 +185,36 @@ let
   # being silently accepted. A minimal host is evaluated through nixpkgs' own
   # assertion check so the named `telemetry:` failure is what a deployment
   # hits.
+  admissionEval =
+    modules:
+    lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        inputs.sops-nix.nixosModules.sops
+        {
+          boot.loader.grub.enable = false;
+          fileSystems."/" = {
+            device = "nodev";
+            fsType = "tmpfs";
+          };
+          system.stateVersion = "25.11";
+        }
+      ]
+      ++ modules;
+    };
   admissionAccepts =
     modules:
     let
-      evaluated = lib.nixosSystem {
-        system = "x86_64-linux";
-        modules = [
-          inputs.sops-nix.nixosModules.sops
-          {
-            boot.loader.grub.enable = false;
-            fileSystems."/" = {
-              device = "nodev";
-              fsType = "tmpfs";
-            };
-            system.stateVersion = "25.11";
-          }
-        ]
-        ++ modules;
-      };
+      evaluated = admissionEval modules;
     in
     (builtins.tryEval (
       lib.asserts.checkAssertWarn evaluated.config.assertions evaluated.config.warnings true
     )).success;
+  admissionFailures =
+    modules:
+    map (assertion: assertion.message) (
+      builtins.filter (assertion: !assertion.assertion) (admissionEval modules).config.assertions
+    );
   # A push-only consumer registers nothing: it imports the fragment and reads
   # the local OTLP endpoint. The orphan guard sees no registration, so the
   # derived URL itself must fail closed — and the same read must succeed once
@@ -274,6 +282,92 @@ let
     && !pushOnlyWithoutAspect.success
     && pushOnlyWithAspect.success
     && pushOnlyWithAspect.value == "http://127.0.0.1:4318";
+
+  # The journald provider's own fail-closed checks: forcing the rendered Vector
+  # settings is what a host build does, so a bad value must fail there by name.
+  vectorRejects =
+    telemetryConfig:
+    let
+      evaluated = lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          inputs.sops-nix.nixosModules.sops
+          aspects.telemetry
+          { services.telemetry = telemetryConfig; }
+        ];
+      };
+    in
+    !(builtins.tryEval (builtins.deepSeq evaluated.config.services.vector.settings true)).success;
+  telemetryJournaldChecks =
+    # shipping enabled with no endpoint: a journal with nowhere to go
+    vectorRejects { journald.enable = true; }
+    # a disk buffer under Vector's floor would be rejected at startup
+    && vectorRejects {
+      journald = {
+        enable = true;
+        sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+        buffer.maxSizeMb = 100;
+      };
+    }
+    # an endpoint with no scheme is not dialable
+    && !(admissionAccepts [
+      aspects.telemetry
+      {
+        services.telemetry.journald = {
+          enable = true;
+          sink.endpoint = "victorialogs.invalid:9428/insert/jsonline";
+        };
+      }
+    ])
+    # an endpoint while shipping is off is a registration nothing realizes
+    && !(admissionAccepts [
+      aspects.telemetry
+      { services.telemetry.journald.sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline"; }
+    ])
+    # the sink written without the host aspect is an orphan
+    && !(admissionAccepts [
+      ../telemetry/telemetry/_contract.nix
+      {
+        services.telemetry.journald = {
+          enable = true;
+          sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+        };
+      }
+    ]);
+  # Selecting telemetry for metrics or traces must not start a log shipper.
+  vectorDisabledWithoutJournald =
+    (lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        inputs.sops-nix.nixosModules.sops
+        aspects.telemetry
+        {
+          services.telemetry.destinations.plain = {
+            protocol = "otlp-grpc";
+            endpoint = "http://gateway.invalid:4317";
+            signals = [ "traces" ];
+          };
+        }
+      ];
+    }).config.services.vector.enable;
+  # The node-exporter aspect owns both ends of its scrape: it composes with the
+  # host aspect, and alone it is an orphan registration that fails by name.
+  nodeExporterAdmissionChecks =
+    admissionAccepts [
+      aspects.telemetry
+      aspects.node-exporter
+      {
+        services.telemetry.destinations.victoria = {
+          protocol = "prometheus-remote-write";
+          endpoint = "http://metrics.invalid/api/v1/write";
+          signals = [ "metrics" ];
+        };
+      }
+    ]
+    && !(admissionAccepts [ aspects.node-exporter ])
+    &&
+      builtins.any (lib.hasPrefix "telemetry: scrape source(s) node configured without")
+        (admissionFailures [ aspects.node-exporter ]);
   fixtureModule =
     {
       config,
@@ -290,6 +384,7 @@ let
         build-account
         nix-baseline
         nix-gc
+        node-exporter
         podman
         niks3-cache
         niks3-publisher
@@ -500,7 +595,7 @@ let
                   scrape_interval = "30s";
                   static_configs = [
                     {
-                      targets = [ "127.0.0.1:9100" ];
+                      targets = [ "127.0.0.1:9187" ];
                       labels.service = "fixture-app";
                     }
                   ];
@@ -517,6 +612,20 @@ let
                     }
                   ];
                 }
+                {
+                  # Contributed by the node-exporter aspect, which also owns
+                  # the listener this target names.
+                  job_name = "node";
+                  metrics_path = "/metrics";
+                  scheme = "http";
+                  scrape_interval = "30s";
+                  static_configs = [
+                    {
+                      targets = [ "127.0.0.1:9100" ];
+                      labels = { };
+                    }
+                  ];
+                }
               ]
             &&
               settings.service.pipelines.metrics.receivers == [
@@ -529,6 +638,67 @@ let
             && providers.prometheusScrape == "otel-collector"
             && telemetryAdmissionChecks;
           message = "fixture: the telemetry scrape registration, local OTLP endpoint, provider selection, or orphan/admission contract regressed.";
+        }
+        {
+          # The node-exporter aspect owns the exporter, the loopback bind and
+          # its own scrape registration, so the target cannot drift from the
+          # listener — and it stays off the firewall.
+          assertion =
+            let
+              node = config.services.prometheus.exporters.node;
+              unit = config.systemd.services."prometheus-node-exporter";
+            in
+            node.enable
+            && node.listenAddress == "127.0.0.1"
+            && node.port == 9100
+            && !node.openFirewall
+            && !(builtins.elem 9100 config.networking.firewall.allowedTCPPorts)
+            && lib.hasInfix "--web.listen-address 127.0.0.1:9100" unit.serviceConfig.ExecStart
+            && config.services.telemetry.scrape.node.target == "127.0.0.1"
+            && config.services.telemetry.scrape.node.port == 9100
+            && config.services.notify.events.prometheus-node-exporter.failure != null
+            && unit.onFailure != [ ]
+            && nodeExporterAdmissionChecks;
+          message = "fixture: the node-exporter aspect's loopback bind, scrape registration, notify hook, or orphan behavior regressed.";
+        }
+        {
+          # The journald logs path: a Vector journald source writing JSON lines
+          # to the consumer's endpoint over a bounded disk buffer, alongside an
+          # untouched collector pipeline — the same log record is not shipped
+          # twice.
+          assertion =
+            let
+              vector = config.services.vector;
+              sink = vector.settings.sinks.logs;
+              otel = config.services.opentelemetry-collector.settings;
+            in
+            config.services.telemetry.providers.journaldIngest == "vector"
+            && vector.enable
+            && vector.journaldAccess
+            && vector.settings.data_dir == "/var/lib/vector"
+            && vector.settings.sources.journald.type == "journald"
+            && vector.settings.sources.journald.include_units == [ "fixture-monitored" ]
+            && !(vector.settings.sources.journald ? exclude_units)
+            && sink.type == "http"
+            && sink.inputs == [ "journald" ]
+            && sink.uri == "http://victorialogs.invalid:9428/insert/jsonline"
+            && sink.encoding.codec == "json"
+            && sink.framing.method == "newline_delimited"
+            && sink.compression == "gzip"
+            && sink.healthcheck.enabled == false
+            && sink.request.headers."VL-Msg-Field" == "message"
+            && sink.request.headers."VL-Time-Field" == "timestamp"
+            && sink.request.headers."VL-Stream-Fields" == "_HOSTNAME,_SYSTEMD_UNIT"
+            && sink.buffer.type == "disk"
+            && sink.buffer.max_size == 512 * 1048576
+            && sink.buffer.when_full == "block"
+            && config.services.notify.events.vector.failure != null
+            && config.systemd.services.vector.onFailure != [ ]
+            && !vectorDisabledWithoutJournald
+            && otel.service.pipelines.logs.exporters == [ "otlp/plain" ]
+            && otel.service.pipelines.traces.receivers == [ "otlp" ]
+            && telemetryJournaldChecks;
+          message = "fixture: the journald log path (Vector journald source, JSON-line sink, disk buffer, notify) or its isolation from the collector pipelines regressed.";
         }
         {
           assertion =
@@ -627,10 +797,20 @@ let
         tailscale.secretFiles.auth = fixtureSecretFile;
 
         telemetry = {
+          # The log path is opt-in and carries its own endpoint: the consumer
+          # names the backend, the aspect names none.
+          journald = {
+            enable = true;
+            includeUnits = [ "fixture-monitored" ];
+            sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+          };
           scrape = {
+            # A service's own metrics surface. Port 9187, deliberately not the
+            # node exporter's 9100: that target belongs to the node-exporter
+            # aspect's registration.
             fixture-app = {
               target = "127.0.0.1";
-              port = 9100;
+              port = 9187;
               labels.service = "fixture-app";
             };
             fixture-sidecar = {

@@ -24,6 +24,7 @@ imports-list edit. Selection is per capability:
 services.telemetry.providers = {
   otlpIngest = "otel-collector"; # default
   prometheusScrape = "otel-collector"; # default
+  journaldIngest = "vector"; # default
 };
 ```
 
@@ -49,6 +50,25 @@ The attribute name is the scrape job name; `labels` become static target
 labels. Two independent registrations merge into one receiver and reach the
 metrics pipeline.
 
+### Shipped producer aspect: node-exporter
+
+`flake.modules.nixos.node-exporter` is a normal aspect a host selects next to
+`telemetry`: it enables nixpkgs' node exporter on `127.0.0.1` (no firewall
+rule), registers `services.telemetry.scrape.node` for the same port, and
+registers its own unit's failure. It names no backend: the host's collector
+carries those metrics to whatever metrics destination the consumer declares.
+Selecting it **without** `telemetry` is an orphan registration and fails closed
+by name. `services.node-exporter.port` is the only option — one value, so the
+listener and the registration cannot disagree; anything else about the exporter
+is reachable through nixpkgs' own `services.prometheus.exporters.node`.
+
+**Migration, not coexistence.** A consumer that already scrapes every host's
+node exporter over the network from a central store is running a different
+design, and the two must not run together: delete those remote jobs (and the
+host lists that feed them) when adopting this aspect, or every host is scraped
+twice — once locally through its own collector, once remotely. A store's
+self-scrape job is unaffected, because it does not target other hosts.
+
 OTLP push producers obtain a stable local endpoint instead of registering:
 
 ```nix
@@ -62,8 +82,8 @@ consumer-provided address — the implementation binds where the contract says,
 so the advertised endpoint cannot drift from the listener.
 
 **Orphan guard.** Registration here is deliberately _not_ declaration-only (the
-`notify` idiom). A scrape source or destination written on a host that did not
-select `flake.modules.nixos.telemetry` fails closed by name:
+`notify` idiom). A scrape source, a destination, or a journald sink written on a
+host that did not select `flake.modules.nixos.telemetry` fails closed by name:
 
 ```text
 telemetry: scrape source(s) my-app configured without the host selecting
@@ -133,6 +153,48 @@ telemetry: destination 'metricsWire' accepts logs, which protocol
 prometheus-remote-write cannot carry
 ```
 
+## Local log shipping: journald
+
+Log shipping is **opt-in per host** and has its own typed sink: a machine that
+selected telemetry for metrics or traces must not start shipping its journal as
+a side effect.
+
+```nix
+services.telemetry.journald = {
+  enable = true;
+  includeUnits = [ "nginx" ]; # empty = every unit; _SYSTEMD_UNIT filter
+  sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+  # streamFields = [ "_HOSTNAME" "_SYSTEMD_UNIT" ];  # low-cardinality grouping
+  # buffer.maxSizeMb = 512; buffer.whenFull = "block";
+};
+```
+
+`sink.endpoint` is the backend's HTTP JSON-line ingest URL — consumer policy,
+never a fleet default. The provider reads the journal locally, writes one JSON
+event per line with gzip, and buffers on disk. `streamFields` selects the
+backend's stream grouping and is deliberately low-cardinality by default.
+
+**Why this does not go through the local collector.** The OTel pipeline is
+memory-only, so routing journald through it would advertise a durability it does
+not have. Vector's disk buffer plus its persistent journal read checkpoints
+cover journal → Vector → backend: a backend outage or a Vector restart does not
+drop what is already buffered, and a restart resumes after the last checkpoint
+instead of re-reading. It is **bounded**, not lossless-forever: the buffer has a
+capacity, `whenFull = "block"` stops reading the journal when it is full (the
+journal keeps its own records, so nothing is lost until journald rotates) while
+`drop_newest` discards, and once a record is accepted by the backend its
+durability is the backend's business. Vector's `current_boot_only` default is
+left in place, so a first start ships the current boot rather than replaying
+older ones.
+
+Both mistakes fail closed by name: shipping enabled with no `sink.endpoint`
+(`telemetry: journald shipping is enabled but
+services.telemetry.journald.sink.endpoint is not set`), and an endpoint that is
+not an http(s) URL. An endpoint set while shipping is disabled is the same
+class of error as an orphan registration. The provider also rejects a buffer
+below Vector's disk-buffer floor rather than letting the service fail at
+startup.
+
 ## Implementation tuning: OpenTelemetry Collector
 
 `services.otel-collector` is the OpenTelemetry implementation's own namespace —
@@ -166,6 +228,20 @@ runtime. Matching build-time validation overrides are generated without putting
 credentials into the Nix store, and secret/template rotation restarts the
 collector. Secret IDs use ASCII letters, digits, and underscores. The
 implementation registers its own unit's failure on the notification contract.
+
+## Implementation tuning: Vector (journald)
+
+Vector is the `journaldIngest` implementation and has no separate public
+namespace: its whole surface is the contract's `services.telemetry.journald`
+(source filters, sink endpoint, stream fields, buffer bounds). The rendered
+`services.vector.settings` is the nixpkgs module's own — the provider sets
+`data_dir = "/var/lib/vector"` (the unit's `StateDirectory`, where checkpoints
+and the disk buffer live), `journaldAccess = true`, and the JSON-line sink
+fields, and the module validates the config at build time through its own
+`vector validate` step. Secrets never enter the store: this path needs none (a
+private ingest route is authenticated by the network it sits on) and no value in
+the generated config is env-interpolated. The provider registers the `vector`
+unit's failure on the notification contract.
 
 ## Loopback and other configuration classes
 

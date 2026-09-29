@@ -118,13 +118,48 @@ Den/repo-merge/policy-engine (explicitly out).
       protocol-cannot-carry-declared-signal / empty fanout /
       scrape-without-metrics-destination rejected by name, and secret/notify
       behavior intact.
+- [x] `node-exporter` aspect (its own public aspect, NOT a provider): nixpkgs'
+      node exporter bound to `127.0.0.1` (no firewall rule) and its own
+      `services.telemetry.scrape.node` registration for the same port, so the
+      collector target cannot drift from the listener. `services.node-exporter.port`
+      is the only option; deeper tuning stays in nixpkgs'
+      `services.prometheus.exporters.node`. Registers
+      `prometheus-node-exporter.failure`. Fixture co-selects it with
+      `telemetry` and asserts the unit, the listen bind, the rendered scrape
+      job, the notify hook, and that node-exporter alone (no host aspect) is a
+      rejected orphan.
+- [x] Journald logs as an opt-in source with a typed sink
+      (`services.telemetry.journald.{enable,includeUnits,excludeUnits,sink.endpoint,sink.streamFields,buffer.*}`)
+      and a `journaldIngest` capability selector, implemented by a private
+      Vector provider that ships JSON lines straight to the consumer's HTTP
+      ingest URL over a bounded disk buffer with persistent read checkpoints —
+      deliberately NOT through the collector's memory-only pipeline, which
+      would imply durability it does not have. Fails closed on: shipping with
+      no endpoint, an endpoint that is not http(s), an endpoint while shipping
+      is off, a sink without the host aspect, and a buffer below Vector's
+      268435488-byte disk floor (confirmed against the real binary: below it,
+      the unit exits 78). Fixture asserts source/sink/buffer/notify, that the
+      collector's own pipelines are untouched, that telemetry without journald
+      starts no shipper, and the refusal probes.
 - [ ] Consumer adoption (nix-homelab / dotfiles): select `telemetry` per host
       and move any host-local scrape registrations onto
-      `services.telemetry.scrape`.
+      `services.telemetry.scrape`. For node metrics, select `node-exporter` and
+      DELETE the downstream remote scrape jobs (homelab's VictoriaMetrics
+      `node` job over the tailnet, and its `nodeExporterPort` / `scrapeTargets`
+      options): leaving both in place scrapes every host twice, once locally
+      through the collector and once remotely. The store's own self-scrape job
+      stays. Journald: select `journald` with a `sink.endpoint` derived in the
+      consumer's flake-level wrapper from its service endpoints.
 - Deferred: an `expose` direction, external authenticated ingress,
   agent-to-gateway forwarding, cross-host destination discovery. A
   container/standalone Home Manager instance does not share the NixOS host's
   loopback or options and configures its exporter endpoint explicitly.
+  Journald shipping is host-local and backend-agnostic in shape but implements
+  one wire protocol today (the backend's HTTP JSON-line ingest); a
+  different-protocol backend is a provider change, not a registration change.
+  A durable local queue for the _OTLP_ path is still absent — the collector's
+  exporters are memory-only, so trace/metric loss during an outage remains
+  possible and is not covered by the journald buffer.
 
 ## Quick wins (pre-v2 value, consumer-adoptable independently)
 

@@ -56,13 +56,15 @@ modules/
     niks3-cache.nix     # aspect: niks3 binary-cache server
     niks3-publisher.nix # aspect: niks3 closure-upload client (post-build hook)
   observability/
-    beszel-agent.nix # aspect: Beszel agent auth/enrollment
+    beszel-agent.nix  # aspect: Beszel agent auth/enrollment
+    node-exporter.nix # aspect: node metrics (loopback exporter + scrape registration)
   telemetry/
     telemetry.nix         # aspect: host-local telemetry contract + implementation selection
     telemetry/
       _contract.nix       # registration fragment: services.telemetry options + orphan guard
       _providers/
-        otel-collector.nix # implementation: OpenTelemetry Collector
+        otel-collector.nix # implementation: OpenTelemetry Collector (otlp ingest, scrape)
+        vector.nix         # implementation: Vector (journald logs)
   access/
 .envrc               # direnv: use flake
 justfile             # fmt / fmt-check / check / lock
@@ -81,7 +83,8 @@ The same fleet feature publishes the typed `fleet.services.*.endpoints.*` endpoi
 
 4. **`niks3-cache`** — niks3 binary-cache *server*. S3 coordinates, cache URL, secret paths are options; fails closed when unbound.
 5. **`niks3-publisher`** — niks3 closure-upload *client* (upstream post-build-hook module). `serverUrl` required; token via `secretFiles.apiToken`.
-5a. **`telemetry`** — the one host-local telemetry aspect. Producers register Prometheus scrape sources (`services.telemetry.scrape`) and read the local OTLP endpoint (`services.telemetry.otlp.httpUrl`/`grpcUrl`, which fails closed by name unless the host selects the aspect); remote backends are typed destinations with protocol/endpoint/secret-header and a required per-destination `signals` set plus per-signal fanout (`services.telemetry.destinations`/`pipelines`), so a traces-only backend never receives metrics or logs. Implementations are private modules selected per capability (`services.telemetry.providers.*`, default `otel-collector`), not separate aspects; the OpenTelemetry implementation renders the contract into nixpkgs' collector, with collector-only tuning (processors, resource attributes) under `services.otel-collector`. An orphan registration or a destination accepting a signal its protocol cannot carry fails closed by name. See [docs/contracts/telemetry.md](docs/contracts/telemetry.md).
+5a. **`telemetry`** — the one host-local telemetry aspect. Producers register Prometheus scrape sources (`services.telemetry.scrape`) and read the local OTLP endpoint (`services.telemetry.otlp.httpUrl`/`grpcUrl`, which fails closed by name unless the host selects the aspect); remote backends are typed destinations with protocol/endpoint/secret-header and a required per-destination `signals` set plus per-signal fanout (`services.telemetry.destinations`/`pipelines`), so a traces-only backend never receives metrics or logs. Journald shipping is opt-in and has its own typed sink (`services.telemetry.journald`: source filters, `sink.endpoint`, `streamFields`, bounded disk buffer), rendered by the journald provider. Implementations are private modules selected per capability (`services.telemetry.providers.*`, defaults `otel-collector` and `vector`), not separate aspects; the OpenTelemetry implementation renders the contract into nixpkgs' collector (collector-only tuning under `services.otel-collector`), and the Vector implementation ships journald logs straight to the consumer's HTTP JSON-line endpoint rather than through the collector's memory-only pipeline. An orphan registration, a destination accepting a signal its protocol cannot carry, or a journald sink with no endpoint fails closed by name. See [docs/contracts/telemetry.md](docs/contracts/telemetry.md).
+5b. **`node-exporter`** — node metrics as a producer of the telemetry contract: nixpkgs' node exporter bound to `127.0.0.1` (no firewall rule) plus its own `services.telemetry.scrape.node` registration on the same port, so the collector's target cannot drift from the listener. `services.node-exporter.port` is the only option; deeper exporter tuning stays in nixpkgs' own `services.prometheus.exporters.node`. Registers `prometheus-node-exporter.failure`. Selecting it without `telemetry` is an orphan registration and fails closed by name.
 6. **`notify`** — notification dispatch (Telegram + ntfy) realizing native systemd event notifications. One owned package (`pkgs/notify`, overridable): the daemon (`notify serve`, unprivileged system user, unix socket + loopback TCP for app webhooks) owns secrets, the policy map, and journal access; `notify send`/`notify test` and the `unit-notify` handler are thin unprivileged connectors. The registration contract `services.notify.events.<unit>.{failure,success}` is a declaration-only fragment contributors import, so registration is unconditional and realization happens only when notify is co-selected. Socket access: callers join the always-defined `notify` group from their own module (`users.users.<name>.extraGroups`); root units need nothing. Per-event policy: severity, topic, journalLines, context, title — explicit only (no hook without a declared event). Routing resolves per transport: semantic topic if the consumer's map has it, otherwise the severity. Dispatch policy (chatId, topics, ntfy coordinates) is consumer-bound; secrets follow the two-step bootstrap.
 
 ### System baselines
