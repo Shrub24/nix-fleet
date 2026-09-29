@@ -70,6 +70,15 @@ Den/repo-merge/policy-engine (explicitly out).
 - [x] Fleet validation + mutation checks, and docs/contracts/services.md.
       Downstream adoption and ingress/auth policy remain consumer-owned.
 
+## Telemetry ingest v1 (completed follow-on)
+
+- [x] Optional `fleet.services.*.endpoints.*.telemetry.ingest` capability
+      with typed protocol and non-empty signals; no collector inventory record.
+- [x] Pure `lib.telemetry` ingest resolution, enumeration, and OTLP environment
+      projection, with fail-closed selection and fixture mutation checks.
+- [x] Ingest-only consumer contract in docs/contracts/telemetry.md; expose,
+      forwarding, registration, deployment, and fan-out remain deferred.
+
 ## Quick wins (pre-v2 value, consumer-adoptable independently)
 
 Ship some of these before v2 so consumers get value that does NOT depend
