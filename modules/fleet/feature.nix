@@ -55,10 +55,19 @@ let
         ++ lib.optionals (tailnet != null && !(builtins.hasAttr tailnet.host fleet.hosts)) [
           "${routeName} references unknown fleet host '${tailnet.host}'"
         ]
-        ++ lib.optionals (
-          (endpoint.telemetry or { }).ingest or null != null
-          && (endpoint.telemetry.ingest.signals or [ ]) == [ ]
-        ) [ "${routeName} telemetry.ingest.signals must not be empty" ]
+        ++
+          lib.concatMap
+            (
+              direction:
+              lib.optionals (
+                (endpoint.telemetry or { }).${direction} or null != null
+                && (endpoint.telemetry.${direction}.signals or [ ]) == [ ]
+              ) [ "${routeName} telemetry.${direction}.signals must not be empty" ]
+            )
+            [
+              "ingest"
+              "sink"
+            ]
       ) (builtins.attrNames fleet.services.${serviceId}.endpoints)
     ) (builtins.attrNames fleet.services);
 
@@ -122,6 +131,16 @@ let
       };
       telemetry.ingest = {
         protocol = "otlp-grpc";
+        signals = [ "traces" ];
+      };
+    };
+    services.sample-backend.endpoints.otlp = {
+      tailnet = {
+        host = "sample-host";
+        port = 4319;
+      };
+      telemetry.sink = {
+        protocol = "otlp-http";
         signals = [ "traces" ];
       };
     };
@@ -287,6 +306,20 @@ let
       emptySignals = lib.recursiveUpdate sample {
         services.sample-collector.endpoints.http.telemetry.ingest.signals = [ ];
       };
+      emptySinkSignals = lib.recursiveUpdate sample {
+        services.sample-backend.endpoints.otlp.telemetry.sink.signals = [ ];
+      };
+      sinkOnly = sample // {
+        services = {
+          sample-backend = sample.services.sample-backend;
+        };
+      };
+      sink = telemetry.resolveSink sample {
+        service = "sample-backend";
+        endpoint = "otlp";
+        signal = "traces";
+        protocol = "otlp-http";
+      };
       evalSample =
         fleet:
         lib.evalModules {
@@ -313,6 +346,49 @@ let
     && grpc.protocol == "otlp-grpc"
     && builtins.length (telemetry.ingestTargets sample { signal = "traces"; }) == 3
     && telemetry.ingestTargets sample { protocol = "otlp-grpc"; } == [ grpc ]
+    &&
+      sink == {
+        url = "http://fleet-host:4319";
+        service = "sample-backend";
+        hostname = "fleet-host";
+        port = 4319;
+        protocol = "otlp-http";
+        signals = [ "traces" ];
+      }
+    && telemetry.ingestTargets sinkOnly { signal = "traces"; } == [ ]
+    && rejects (telemetry.resolveIngest sinkOnly { signal = "traces"; })
+    && rejects (
+      telemetry.resolveSink sample {
+        service = "unknown";
+        endpoint = "otlp";
+      }
+    )
+    && rejects (
+      telemetry.resolveSink sample {
+        service = "sample-backend";
+        endpoint = "unknown";
+      }
+    )
+    && rejects (
+      telemetry.resolveSink sample {
+        service = "sample-collector";
+        endpoint = "http";
+      }
+    )
+    && rejects (
+      telemetry.resolveSink sample {
+        service = "sample-backend";
+        endpoint = "otlp";
+        signal = "logs";
+      }
+    )
+    && rejects (
+      telemetry.resolveSink sample {
+        service = "sample-backend";
+        endpoint = "otlp";
+        protocol = "otlp-grpc";
+      }
+    )
     &&
       httpEnv == {
         OTEL_EXPORTER_OTLP_ENDPOINT = "http://fleet-host:4318";
@@ -366,6 +442,9 @@ let
         "logs"
       ]
     && rejects (assertRegistry emptySignals)
+    && rejects (assertRegistry emptySinkSignals)
+    && rejects (evalSample emptySinkSignals)
+      .config.fleet.services.sample-backend.endpoints.otlp.telemetry.sink.signals
     && rejects (evalSample emptySignals)
       .config.fleet.services.sample-collector.endpoints.http.telemetry.ingest.signals;
 

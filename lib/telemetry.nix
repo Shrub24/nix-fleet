@@ -74,6 +74,45 @@ let
       inherit (entry) service;
       inherit (entry.ingest) protocol signals;
     };
+  resolveSink =
+    fleet:
+    {
+      service,
+      endpoint,
+      signal ? null,
+      protocol ? null,
+    }:
+    let
+      knownService = builtins.hasAttr service fleet.services;
+      knownEndpoint = knownService && builtins.hasAttr endpoint fleet.services.${service}.endpoints;
+      sink =
+        if knownEndpoint then
+          (fleet.services.${service}.endpoints.${endpoint}.telemetry or { }).sink or null
+        else
+          null;
+    in
+    if !knownService then
+      throw "telemetry: unknown sink service '${service}'"
+    else if !knownEndpoint then
+      throw "telemetry: unknown sink endpoint '${service}.${endpoint}'"
+    else if sink == null then
+      throw "telemetry: endpoint '${service}.${endpoint}' has no sink capability"
+    else if signal != null && !(builtins.elem signal sink.signals) then
+      throw "telemetry: sink '${service}.${endpoint}' does not accept signal '${signal}'"
+    else if protocol != null && protocol != sink.protocol then
+      throw "telemetry: sink '${service}.${endpoint}' does not match protocol '${protocol}'"
+    else
+      let
+        route = serviceEndpoints.resolveEndpoint fleet {
+          inherit service endpoint;
+          via = "tailnet";
+        };
+      in
+      {
+        inherit (route) url hostname port;
+        inherit service;
+        inherit (sink) protocol signals;
+      };
   ingestTargets =
     fleet:
     {
@@ -144,5 +183,10 @@ let
       };
 in
 {
-  inherit resolveIngest ingestTargets otlpEnv;
+  inherit
+    resolveIngest
+    resolveSink
+    ingestTargets
+    otlpEnv
+    ;
 }

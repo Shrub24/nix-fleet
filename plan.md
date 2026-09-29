@@ -79,6 +79,16 @@ Den/repo-merge/policy-engine (explicitly out).
 - [x] Ingest-only consumer contract in docs/contracts/telemetry.md; expose,
       forwarding, registration, deployment, and fan-out remain deferred.
 
+## Telemetry collector and sink follow-on
+
+- [x] `otel-collector` aspect: OTLP agent/gateway receiver, ordered processors,
+      signal-compatible exporter pipelines, SOPS-backed header environment,
+      build-time config validation, and owned failure notification.
+- [x] Optional `fleet.services.*.endpoints.*.telemetry.sink` capability and
+      explicit `lib.telemetry.resolveSink` tailnet projection; ingest selection
+      never considers backend sinks.
+- [x] Fixture checks and consumer contract documentation for both directions.
+
 ## Quick wins (pre-v2 value, consumer-adoptable independently)
 
 Ship some of these before v2 so consumers get value that does NOT depend

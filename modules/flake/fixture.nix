@@ -35,6 +35,97 @@ let
     via = "tailnet";
   };
 
+  collectorRejects =
+    bindings:
+    let
+      evaluated = lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          inputs.sops-nix.nixosModules.sops
+          aspects.otel-collector
+          { services.otel-collector = bindings; }
+        ];
+      };
+    in
+    !(builtins.tryEval (
+      builtins.deepSeq evaluated.config.services.opentelemetry-collector.settings true
+    )).success;
+  collectorMutationChecks =
+    collectorRejects { exporters.missing.type = "otlp"; }
+    && collectorRejects {
+      exporters.invalid = {
+        type = "otlphttp";
+        endpoint = "https://invalid.example";
+        headers.Authorization.secret = "absent";
+      };
+    }
+    && collectorRejects {
+      secretFiles.token = fixtureSecretFile;
+      secretKeys.other = "otel/token";
+    }
+    && collectorRejects { pipelines.traces = [ "absent" ]; }
+    && collectorRejects {
+      exporters.metricsOnly = {
+        type = "prometheusremotewrite";
+        endpoint = "http://invalid.example";
+      };
+      pipelines.traces = [ "metricsOnly" ];
+    }
+    && collectorRejects { pipelines.logs = [ ]; }
+    && collectorRejects {
+      resourceAttributes."host.name" = "fixture-host";
+      processors.resource.attributes = [
+        {
+          key = "k";
+          value = "v";
+          action = "upsert";
+        }
+      ];
+    };
+  # A resource processor declared directly (not via resourceAttributes) must
+  # still reach the pipeline order, or the config would define a processor no
+  # pipeline runs.
+  collectorManualResourceOrder =
+    (lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        inputs.sops-nix.nixosModules.sops
+        aspects.otel-collector
+        {
+          services.otel-collector = {
+            exporters.debugOnly.type = "debug";
+            processors.resource.attributes = [
+              {
+                key = "k";
+                value = "v";
+                action = "upsert";
+              }
+            ];
+          };
+        }
+      ];
+    }).config.services.opentelemetry-collector.settings.service.pipelines.traces.processors;
+  # With no bound secret the aspect must register nothing: an unbound (or not
+  # yet bootstrapped) file is the two-step SOPS path, not a broken config.
+  collectorUnboundSecrets =
+    let
+      evaluated = lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          inputs.sops-nix.nixosModules.sops
+          aspects.otel-collector
+          { services.otel-collector.exporters.debugOnly.type = "debug"; }
+        ];
+      };
+      collector = evaluated.config.services.opentelemetry-collector;
+    in
+    !(builtins.any (name: lib.hasPrefix "otel-collector/" name) (
+      builtins.attrNames evaluated.config.sops.secrets
+    ))
+    && !(evaluated.config.sops.templates ? "otel-collector.env")
+    && evaluated.config.systemd.services.opentelemetry-collector.serviceConfig.EnvironmentFile == [ ]
+    && collector.settings.exporters ? "debug/debugOnly";
+
   fixtureModule =
     {
       config,
@@ -58,6 +149,7 @@ let
         ssh
         tailscale
         mosh
+        otel-collector
       ]);
 
       boot.loader.grub.enable = false;
@@ -180,6 +272,78 @@ let
           message = "fixture: the mosh aspect did not enable programs.mosh.";
         }
         {
+          assertion =
+            let
+              collector = config.services.opentelemetry-collector;
+              inherit (collector) settings;
+            in
+            collector.enable
+            && settings.receivers.otlp.protocols.grpc.endpoint == "127.0.0.1:4317"
+            && settings.receivers.otlp.protocols.http.endpoint == "127.0.0.1:4318"
+            && settings.exporters."otlphttp/secure".headers.Authorization == "Bearer \${env:OTELCOL_token}"
+            && settings.exporters."otlp/plain".tls.insecure
+            &&
+              settings.exporters."prometheusremotewrite/victoria".endpoint
+              == "http://metrics.invalid/api/v1/write"
+            &&
+              settings.service.pipelines.traces.exporters == [
+                "otlp/plain"
+                "otlphttp/secure"
+              ]
+            &&
+              settings.service.pipelines.metrics.exporters == [
+                "otlp/plain"
+                "otlphttp/secure"
+                "prometheusremotewrite/victoria"
+              ]
+            && settings.service.pipelines.logs.exporters == [ "otlphttp/secure" ]
+            &&
+              settings.service.pipelines.traces.processors == [
+                "memory_limiter"
+                "resource"
+                "batch"
+                "attributes"
+              ]
+            &&
+              settings.processors.resource.attributes == [
+                {
+                  key = "host.name";
+                  value = "fixture-host";
+                  action = "upsert";
+                }
+              ];
+          message = "fixture: the otel-collector receiver, exporter, or pipeline contract regressed.";
+        }
+        {
+          assertion =
+            config.services.notify.events.opentelemetry-collector.failure != null
+            && config.systemd.services.opentelemetry-collector.onFailure != [ ]
+            && config.sops.secrets."otel-collector/token".sopsFile == fixtureSecretFile
+            && config.sops.secrets."otel-collector/token".key == "otel/token"
+            &&
+              builtins.elem "opentelemetry-collector.service"
+                config.sops.templates."otel-collector.env".restartUnits
+            &&
+              builtins.elem "opentelemetry-collector.service"
+                config.sops.secrets."otel-collector/token".restartUnits
+            &&
+              config.sops.templates."otel-collector.env".content
+              == "OTELCOL_token=${config.sops.placeholder."otel-collector/token"}\n"
+            &&
+              config.systemd.services.opentelemetry-collector.serviceConfig.EnvironmentFile == [
+                config.sops.templates."otel-collector.env".path
+              ]
+            && collectorMutationChecks
+            &&
+              collectorManualResourceOrder == [
+                "memory_limiter"
+                "resource"
+                "batch"
+              ]
+            && collectorUnboundSecrets;
+          message = "fixture: the otel-collector SOPS, notify, or fail-closed contract regressed.";
+        }
+        {
           assertion = config.users.users ? "nixbuild" && config.users.users.nixbuild.isSystemUser;
           message = "fixture: the build-account aspect created no dispatch account.";
         }
@@ -246,6 +410,38 @@ let
         };
 
         tailscale.secretFiles.auth = fixtureSecretFile;
+
+        otel-collector = {
+          resourceAttributes."host.name" = "fixture-host";
+          processors.attributes.actions = [
+            {
+              key = "fixture.attribute";
+              action = "insert";
+              value = "fixture";
+            }
+          ];
+          secretFiles.token = fixtureSecretFile;
+          secretKeys.token = "otel/token";
+          exporters = {
+            secure = {
+              type = "otlphttp";
+              endpoint = "https://telemetry.invalid";
+              headers.Authorization = {
+                secret = "token";
+                prefix = "Bearer ";
+              };
+            };
+            plain = {
+              type = "otlp";
+              endpoint = "http://gateway.invalid:4317";
+            };
+            victoria = {
+              type = "prometheusremotewrite";
+              endpoint = "http://metrics.invalid/api/v1/write";
+            };
+          };
+          pipelines.logs = [ "secure" ];
+        };
       };
 
       # A unit owned by this module, registered on the notification contract:

@@ -6,6 +6,31 @@
 # Tier 2 (shared default): mechanism defaults below (endpoint user, tuning).
 # Tier 3 (consumer-local): everything else a consumer keeps in its own tree.
 { lib, ... }:
+let
+  telemetryCapability = lib.types.nullOr (
+    lib.types.submodule {
+      options = {
+        protocol = lib.mkOption {
+          type = lib.types.enum [
+            "otlp-grpc"
+            "otlp-http"
+            "prometheus-remote-write"
+            "loki-push"
+          ];
+        };
+        signals = lib.mkOption {
+          type = lib.types.nonEmptyListOf (
+            lib.types.enum [
+              "traces"
+              "metrics"
+              "logs"
+            ]
+          );
+        };
+      };
+    }
+  );
+in
 {
   options.fleet = {
     hosts = lib.mkOption {
@@ -193,32 +218,17 @@
                     default = null;
                     description = "Explicit public URL, if one exists; never inferred from a tailnet route.";
                   };
-                  telemetry.ingest = lib.mkOption {
-                    type = lib.types.nullOr (
-                      lib.types.submodule {
-                        options = {
-                          protocol = lib.mkOption {
-                            type = lib.types.enum [
-                              "otlp-grpc"
-                              "otlp-http"
-                              "prometheus-remote-write"
-                              "loki-push"
-                            ];
-                          };
-                          signals = lib.mkOption {
-                            type = lib.types.nonEmptyListOf (
-                              lib.types.enum [
-                                "traces"
-                                "metrics"
-                                "logs"
-                              ]
-                            );
-                          };
-                        };
-                      }
-                    );
-                    default = null;
-                    description = "Ingest capability at this endpoint; absent endpoints do not advertise telemetry.";
+                  telemetry = {
+                    ingest = lib.mkOption {
+                      type = telemetryCapability;
+                      default = null;
+                      description = "Producer-facing ingest capability at this endpoint.";
+                    };
+                    sink = lib.mkOption {
+                      type = telemetryCapability;
+                      default = null;
+                      description = "Collector export destination capability at this endpoint.";
+                    };
                   };
                 };
               }
