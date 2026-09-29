@@ -19,12 +19,12 @@ placement, per-relationship policy, local additions, secrets. Fact tiers:
 | Builders + scheduling    | [builders.md](builders.md)         | `fleet.hosts.*.capabilities`, `fleet.externalBuilders.*`, `fleet.buildProfiles.*`, `lib.buildProfile` |
 | CI builds + cache push   | [ci.md](ci.md)                     | `packages.<profile>`, `.github/templates/build-push-cache.yml`                                        |
 | Service endpoints        | [services.md](services.md)         | `fleet.services.*`, `lib.serviceEndpoints` (resolver + pure canonical data)                           |
-| Telemetry ingest         | [telemetry.md](telemetry.md)       | `fleet.services.*.endpoints.*.telemetry.ingest`, `lib.telemetry`                                      |
+| Telemetry + collector    | [telemetry.md](telemetry.md)       | `telemetry.{ingest,sink}`, `lib.telemetry`, `flake.modules.nixos.otel-collector`                      |
 | Tooling (treefmt base)   | README, "Tooling contract"         | `flakeModules.tooling`                                                                                |
 | Secrets helpers          | README, "Tooling contract"         | `lib.secrets`                                                                                         |
 | Notification events      | README, aspect 6                   | `services.notify.events.<unit>` (fragment; realization when notify co-selected)                       |
 | Tailscale baseline       | README, aspect 1                   | `secretFiles.auth` two-step bootstrap                                                                 |
-| Beszel agent enrollment  | README, aspect 2                   | `secretFiles.{common,host}` gate; KEY-only (no TOKEN)                                                 |
+| Beszel agent enrollment  | README, aspect 2                   | `services.beszel-agent.key` (policy, not SOPS); KEY-only (no TOKEN)                                   |
 | niks3 cache / publisher  | README, aspects 4–5                | `services.niks3-cache.*`, `secretFiles.apiToken`                                                      |
 | Flake input declarations | [flake-inputs.md](flake-inputs.md) | generated `flake.nix` — composition policy, no fleet surface                                          |
 | Secret bootstrapping     | [secrets.md](secrets.md)           | `packages.<system>.sops-bootstrap` — operator tool, templates + `.sops.yaml` stay consumer-side       |
