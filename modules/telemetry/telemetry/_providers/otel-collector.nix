@@ -180,10 +180,12 @@ in
       };
       batch = lib.mkDefault { };
     };
-    services.notify.events.opentelemetry-collector.failure = { };
+    services.notify.events = lib.optionalAttrs (destinationNames != [ ]) {
+      opentelemetry-collector.failure = { };
+    };
 
     services.opentelemetry-collector = {
-      enable = true;
+      enable = destinationNames != [ ];
       inherit (cfg) package;
       settings =
         if !secretNamesMatch then
@@ -241,8 +243,10 @@ in
         + "\n";
       restartUnits = [ "opentelemetry-collector.service" ];
     };
-    systemd.services.opentelemetry-collector.serviceConfig.EnvironmentFile = lib.optionals (
-      boundSecrets != [ ]
-    ) [ config.sops.templates."otel-collector.env".path ];
+    systemd.services = lib.optionalAttrs (destinationNames != [ ] && boundSecrets != [ ]) {
+      opentelemetry-collector.serviceConfig.EnvironmentFile = [
+        config.sops.templates."otel-collector.env".path
+      ];
+    };
   };
 }

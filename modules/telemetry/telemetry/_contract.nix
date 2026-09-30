@@ -97,10 +97,12 @@ let
   # address.
   derivedUrl =
     option: port:
-    if cfg.realized then
-      "http://${cfg.otlp.host}:${toString port}"
+    if !cfg.realized then
+      throw "telemetry: ${option} was read on a host that did not select flake.modules.nixos.telemetry; no implementation binds the local OTLP endpoint. Select the host aspect or drop the read."
+    else if destinationNames == [ ] then
+      throw "telemetry: ${option} was read without any destinations; no local OTLP collector can run without an exporter pipeline. Bind a destination before using the endpoint."
     else
-      throw "telemetry: ${option} was read on a host that did not select flake.modules.nixos.telemetry; no implementation binds the local OTLP endpoint. Select the host aspect or drop the read.";
+      "http://${cfg.otlp.host}:${toString port}";
 
   orphanReport = lib.concatStringsSep ", " (
     lib.optional (
@@ -367,6 +369,10 @@ in
       {
         assertion = cfg.realized || nothingRegistered;
         message = "telemetry: ${orphanReport} configured without the host selecting flake.modules.nixos.telemetry; select that aspect (it realizes the registration) or remove it. A registration is never silently dropped.";
+      }
+      {
+        assertion = !cfg.realized || destinationNames != [ ] || cfg.journald.enable;
+        message = "telemetry: the host selected flake.modules.nixos.telemetry without any OTLP destinations or journald shipping; bind a destination or configure the journald sink.";
       }
       {
         assertion = !cfg.journald.enable || cfg.journald.sink.endpoint != null;

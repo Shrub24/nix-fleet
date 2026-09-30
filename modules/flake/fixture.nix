@@ -177,7 +177,7 @@ let
       builtins.attrNames evaluated.config.sops.secrets
     ))
     && !(evaluated.config.sops.templates ? "otel-collector.env")
-    && evaluated.config.systemd.services.opentelemetry-collector.serviceConfig.EnvironmentFile == [ ]
+    && !(evaluated.config.systemd.services.opentelemetry-collector.serviceConfig ? EnvironmentFile)
     && collector.settings.exporters ? "otlp/plain";
 
   # Source admission is unconditional: a registration is realized only on a
@@ -220,7 +220,10 @@ let
   # derived URL itself must fail closed — and the same read must succeed once
   # the host selects the aspect, or the check would pass vacuously.
   pushOnlyEndpoint =
-    withAspect:
+    {
+      withAspect,
+      withDestination ? false,
+    }:
     (lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
@@ -228,6 +231,15 @@ let
       ]
       ++ lib.optionals withAspect [ aspects.telemetry ]
       ++ lib.optionals (!withAspect) [ ../telemetry/telemetry/_contract.nix ]
+      ++ lib.optionals withDestination [
+        {
+          services.telemetry.destinations.local = {
+            protocol = "otlp-grpc";
+            endpoint = "http://gateway.invalid:4317";
+            signals = [ "traces" ];
+          };
+        }
+      ]
       ++ [
         ({ config, ... }: {
           environment.variables.OTEL_EXPORTER_OTLP_ENDPOINT = config.services.telemetry.otlp.httpUrl;
@@ -236,8 +248,25 @@ let
     }).config.environment.variables.OTEL_EXPORTER_OTLP_ENDPOINT;
   telemetryAdmissionChecks =
     let
-      pushOnlyWithAspect = builtins.tryEval (pushOnlyEndpoint true);
-      pushOnlyWithoutAspect = builtins.tryEval (pushOnlyEndpoint false);
+      pushOnlyWithAspect = builtins.tryEval (pushOnlyEndpoint {
+        withAspect = true;
+        withDestination = true;
+      });
+      pushOnlyWithoutAspect = builtins.tryEval (pushOnlyEndpoint {
+        withAspect = false;
+      });
+      pushOnlyWithoutDestination = builtins.tryEval (pushOnlyEndpoint {
+        withAspect = true;
+      });
+      vectorOnly = admissionEval [
+        aspects.telemetry
+        {
+          services.telemetry.journald = {
+            enable = true;
+            sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+          };
+        }
+      ];
     in
     # the host aspect realizes a registered source (the destination must accept
     # metrics, or the scrape has nowhere to land)
@@ -276,12 +305,32 @@ let
         };
       }
     ])
-    # the fragment alone with no registration is inert, not an error
+    # the fragment alone with no registration is inert; selecting the host
+    # aspect without any provider work is rejected by name
     && admissionAccepts [ ../telemetry/telemetry/_contract.nix ]
-    # a push-only consumer's endpoint read fails closed without the host aspect
+    && !(admissionAccepts [ aspects.telemetry ])
+    && builtins.any (lib.hasPrefix "telemetry: the host selected") (admissionFailures [
+      aspects.telemetry
+    ])
+    # a push-only consumer's endpoint read requires both the host aspect and
+    # a destination, or the advertised collector would have no pipeline
     && !pushOnlyWithoutAspect.success
+    && !pushOnlyWithoutDestination.success
     && pushOnlyWithAspect.success
-    && pushOnlyWithAspect.value == "http://127.0.0.1:4318";
+    && pushOnlyWithAspect.value == "http://127.0.0.1:4318"
+    # selecting only Vector for journald must not start an invalid OTel collector
+    && admissionAccepts [
+      aspects.telemetry
+      {
+        services.telemetry.journald = {
+          enable = true;
+          sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+        };
+      }
+    ]
+    && vectorOnly.config.services.vector.enable
+    && !vectorOnly.config.services.opentelemetry-collector.enable
+    && !(vectorOnly.config.systemd.services ? opentelemetry-collector);
 
   # The journald provider's own fail-closed checks: forcing the rendered Vector
   # settings is what a host build does, so a bad value must fail there by name.

@@ -107,6 +107,13 @@ select flake.modules.nixos.telemetry; no implementation binds the local OTLP
 endpoint. Select the host aspect or drop the read.
 ```
 
+A host must also bind a destination before advertising either OTLP URL. With
+none, the OTel collector has no exporter pipeline and stays off; a read fails
+with `telemetry: ... was read without any destinations` instead of producing a
+dead endpoint or a collector build error. Selecting the aspect with neither a
+destination nor journald shipping also fails by name. The same host can still
+use Vector alone for journald shipping.
+
 ## Remote destinations and per-signal fanout
 
 The collector's backends are contract-level, so replacing the implementation or
