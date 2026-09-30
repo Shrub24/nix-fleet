@@ -4,7 +4,8 @@ Scope: one NixOS host's telemetry. A **single** public aspect,
 `flake.modules.nixos.telemetry`, owns the implementation-agnostic
 `services.telemetry` contract: a service registers a Prometheus scrape source,
 reads the local OTLP endpoint, or binds a remote destination without knowing
-which collector serves it. Selection is enablement — no top-level enable flag.
+which implementation serves it. Selection is enablement — no top-level enable
+flag.
 Cross-host routing, a fleet-wide DAG, self-discovery, and implicit forwarding
 are out of scope.
 
@@ -23,7 +24,7 @@ imports-list edit. Selection is per capability:
 ```nix
 services.telemetry.providers = {
   otlpIngest = "otel-collector"; # default
-  prometheusScrape = "otel-collector"; # default
+  prometheusScrape = "vmagent"; # default
   journaldIngest = "vector"; # default
 };
 ```
@@ -32,7 +33,9 @@ The capability axis (not the host, not the signal) is the unit of selection, so
 metrics and logs can use different implementations later without touching any
 registration. The enum lists the implemented set: an unimplemented value is a
 contract edit, not a host typo — there is no provider registry and no
-second-import gate.
+second-import gate. `prometheusScrape = "otel-collector"` remains the override
+for a host whose scraped metrics go to an OTLP destination instead of a
+Prometheus remote-write store.
 
 ## Producer registrations
 
@@ -47,26 +50,26 @@ services.telemetry.scrape.my-app = {
 ```
 
 The attribute name is the scrape job name; `labels` become static target
-labels. Two independent registrations merge into one receiver and reach the
-metrics pipeline.
+labels. Two independent registrations merge into one scrape configuration and
+reach the metrics pipeline.
 
 ### Shipped producer aspect: node-exporter
 
 `flake.modules.nixos.node-exporter` is a normal aspect a host selects next to
 `telemetry`: it enables nixpkgs' node exporter on `127.0.0.1` (no firewall
 rule), registers `services.telemetry.scrape.node` for the same port, and
-registers its own unit's failure. It names no backend: the host's collector
-carries those metrics to whatever metrics destination the consumer declares.
+registers its own unit's failure. It names no backend: the host's selected
+implementation carries those metrics to whatever metrics destination the
+consumer declares.
 Selecting it **without** `telemetry` is an orphan registration and fails closed
 by name. `services.node-exporter.port` is the only option — one value, so the
 listener and the registration cannot disagree; anything else about the exporter
 is reachable through nixpkgs' own `services.prometheus.exporters.node`.
-
 **Migration, not coexistence.** A consumer that already scrapes every host's
 node exporter over the network from a central store is running a different
 design, and the two must not run together: delete those remote jobs (and the
 host lists that feed them) when adopting this aspect, or every host is scraped
-twice — once locally through its own collector, once remotely. A store's
+twice — once locally through its own implementation, once remotely. A store's
 self-scrape job is unaffected, because it does not target other hosts.
 
 OTLP push producers obtain a stable local endpoint instead of registering:
@@ -116,8 +119,8 @@ use Vector alone for journald shipping.
 
 ## Remote destinations and per-signal fanout
 
-The collector's backends are contract-level, so replacing the implementation or
-repointing a backend never reshapes a registration:
+The implementation's backends are contract-level, so replacing the
+implementation or repointing a backend never reshapes a registration:
 
 ```nix
 services.telemetry.destinations.latitude = {
@@ -215,26 +218,113 @@ the only place that speaks in collector terms:
 
 The implementation binds the OTLP receiver to `services.telemetry.otlp`, renders
 `services.telemetry.scrape` into
-`receivers.prometheus.config.scrape_configs` (metrics pipeline only), maps each
-destination protocol onto its exporter, and validates the config at build time.
-When a scrape source is registered but no metrics destination can carry it, it
-fails closed (`telemetry: N scrape source(s) are registered but the metrics
-pipeline has no destination to carry them`) — the collector accepts an unused
-receiver silently, so it rejects instead.
+`receivers.prometheus.config.scrape_configs` **only when it is the selected
+scrape provider** (metrics pipeline only), maps each destination protocol onto
+its exporter, and validates the config at build time. When a scrape source is
+registered but no metrics destination can carry it, it fails closed
+(`telemetry: N scrape source(s) are registered but the metrics pipeline has no
+destination to carry them`) — the collector accepts an unused receiver
+silently, so it rejects instead.
 
-## Secrets
+## Implementation tuning: vmagent (Prometheus scrape)
 
-`services.telemetry.secretFiles.<id>` (nullable path) and
-`services.telemetry.secretKeys.<id>` (SOPS key path) must have matching IDs. An
-unbound/null file registers nothing; referenced unknown or unbound IDs fail
-closed. Bound secrets are registered under `sops.secrets."otel-collector/<id>"`,
-then rendered into a root-owned `sops.templates."otel-collector.env"` as
-`OTELCOL_<id>=<placeholder>`. The nixpkgs-owned unit loads that file through
-`EnvironmentFile` and reads headers as `"<prefix>${env:OTELCOL_<id>}"` at
-runtime. Matching build-time validation overrides are generated without putting
-credentials into the Nix store, and secret/template rotation restarts the
-collector. Secret IDs use ASCII letters, digits, and underscores. The
-implementation registers its own unit's failure on the notification contract.
+vmagent is the default `prometheusScrape` implementation and has no separate
+public namespace: its whole surface is the contract's `services.telemetry.scrape`
+plus the metrics fanout. The provider renders
+
+- the registered jobs into `services.vmagent.prometheusConfig.scrape_configs`
+  (job name = registration name; target, port, `metricsPath`, `scheme`,
+  `interval`, and static `labels` all translated), validated at build time by
+  nixpkgs' `checkConfig`, which runs the real `vmagent -dryRun` over the
+  rendered YAML;
+- one `-remoteWrite.url` per destination the metrics pipeline selects, in
+  pipeline order.
+
+`-remoteWrite.*` is adapter-owned, not a second option namespace: remote-write
+targets come from `services.telemetry.pipelines.metrics`, so ordinary consumers
+write no `services.vmagent` configuration at all. The upstream
+`services.vmagent` options stay the escape hatch — `extraArgs` merges _after_
+the adapter's arguments, so an explicit scalar override (the disk bound, the
+queue path) wins, and `package`, `checkConfig`, and `openFirewall` are untouched.
+One caveat: vmagent's array flags accumulate, so adding a second
+`-httpListenAddr` in `extraArgs` adds a listener rather than replacing the
+loopback one.
+
+**Scraped metrics go where the metrics fanout points, or nowhere.** vmagent
+speaks Prometheus remote write and nothing else, so every destination the
+metrics pipeline selects must be `prometheus-remote-write`. A fanout naming any
+other protocol fails closed by name rather than silently narrowing:
+
+```text
+telemetry: the metrics pipeline selects 'gateway' (otlp-grpc) for metrics,
+which the scrape provider vmagent cannot write to — vmagent speaks
+prometheus-remote-write only. Repoint those destinations or select
+services.telemetry.providers.prometheusScrape = "otel-collector".
+```
+
+A scrape source with no metrics destination fails the same way
+(`telemetry: N scrape source(s) are registered but the metrics pipeline has no
+destination to carry them`). Either way the host gets **no** vmagent unit, so an
+unsupported fanout can never be realized as a push to a destination the contract
+did not select. A host with no scrape work installs no agent at all.
+
+**Bounded durability, not lossless.** The queue lives under the unit's
+`StateDirectory` (`/var/lib/vmagent`, `%S` in the argument), so it is persistent
+across reboots rather than working-directory state, and each remote-write
+destination is bounded at 1 GiB
+(`-remoteWrite.maxDiskUsagePerURL=1073741824`). When that bound is reached
+vmagent drops the **oldest** buffered data to make room for newly scraped
+samples, and it flushes its file-based queue to a destination before newly
+ingested samples go there — a long outage past the bound loses data and lags
+the remote store. The management/inspection HTTP endpoint binds loopback
+(`-httpListenAddr=127.0.0.1:8429`) and `openFirewall` keeps its false default.
+The provider registers the `vmagent` unit's failure on the notification
+contract.
+
+**Credentials.** vmagent expands `%{ENV_VAR}` placeholders in its own
+command-line flags (its documented substitution syntax — not OTel's
+`${env:...}`), so a destination header is rendered as
+`<Header>: <prefix>%{VMAGENT_<secret-id>}`: the argument carries only a
+reference, and the credential reaches the unit through an `EnvironmentFile`
+rendered from SOPS. Nothing enters the Nix store or the process command line.
+Bound secrets are registered under `sops.secrets."vmagent/<id>"` and rendered
+into `sops.templates."vmagent.env"`; rotating either restarts the unit. Only
+destinations that actually carry headers bind a secret, and the empty header
+entry vmagent needs as a positional placeholder is emitted for the headerless
+ones — headers align with their own URL, not with their position in the
+registration.
+
+**A value is data only if it cannot change the parse.** vmagent expands
+`%{ENV_VAR}` in its arguments _before_ parsing them, and `-remoteWrite.*` are
+comma-separated positional arrays whose elements are `^^`-separated header
+lists. A `,` in an expanded value therefore adds an array element and shifts
+every later element onto the **next** destination, and `^^` splits one
+destination's headers in two — so a credential could be delivered to a
+destination that was never bound to it. Neither is left to chance:
+
+- literal values the adapter renders (a destination `endpoint`, a header name,
+  a header `prefix`) are rejected at build time with a named error, since they
+  are visible during evaluation;
+- a **secret's** value exists only once the unit's environment is loaded, so the
+  unit runs a guard as `ExecStartPre` and refuses to start when the value contains
+  any character vmagent treats as structure (comma, caret, bracket, brace,
+  parenthesis, quote, carriage return, newline):
+
+```text
+telemetry: VMAGENT_<id> contains a character that vmagent's remote-write
+argument parser treats as structure (comma, caret, bracket, brace, parenthesis,
+quote or newline); refusing to start rather than risk sending a credential to a
+destination that was not given one
+```
+
+Refusing to start is deliberate: a credential that cannot be represented safely
+is a configuration error, and a stopped exporter is visible while a leaked
+credential is not. Bearer and basic-auth credentials — `base64url`, dots,
+underscores, `~`, `+`, `/`, `=` — are unaffected. Selecting
+`providers.prometheusScrape = "otel-collector"` avoids the restriction entirely,
+because OTel reads header values through its own `${env:...}` expansion instead
+of vmagent's argument array. The guard itself is exercised by
+`checks.vmagent-secret-guard`.
 
 ## Implementation tuning: Vector (journald)
 
@@ -249,6 +339,31 @@ fields, and the module validates the config at build time through its own
 private ingest route is authenticated by the network it sits on) and no value in
 the generated config is env-interpolated. The provider registers the `vector`
 unit's failure on the notification contract.
+
+## Secrets
+
+`services.telemetry.secretFiles.<id>` (nullable path) and
+`services.telemetry.secretKeys.<id>` (SOPS key path) must have matching IDs. An
+unbound/null file registers nothing; referenced unknown or unbound IDs fail
+closed. Secret IDs use ASCII letters, digits, and underscores. Each provider
+binds the secrets its own transport needs, so a host can run both without
+duplicating the binding:
+
+- **otel-collector** registers `sops.secrets."otel-collector/<id>"`, then
+  renders a root-owned `sops.templates."otel-collector.env"` as
+  `OTELCOL_<id>=<placeholder>`. The nixpkgs-owned unit loads that file through
+  `EnvironmentFile` and reads headers as `"<prefix>${env:OTELCOL_<id>}"` at
+  runtime. Matching build-time validation overrides are generated without
+  putting credentials into the Nix store, and secret/template rotation restarts
+  the collector.
+- **vmagent** registers `sops.secrets."vmagent/<id>"` for the secrets its
+  remote-write headers reference, then renders
+  `sops.templates."vmagent.env"` as `VMAGENT_<id>=<placeholder>`. The unit loads
+  it through `EnvironmentFile` and the argument reads
+  `"<prefix>%{VMAGENT_<id>}"`, expanded by vmagent itself at startup.
+
+Each implementation registers its own unit's failure on the notification
+contract.
 
 ## Loopback and other configuration classes
 

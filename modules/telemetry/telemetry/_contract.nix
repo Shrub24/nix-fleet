@@ -1,7 +1,7 @@
 # The host-local telemetry contract. One namespace, `services.telemetry`,
 # implementation-agnostic: a service registers a Prometheus scrape source, reads
 # the local OTLP endpoint, or binds a remote destination without knowing which
-# collector serves it.
+# implementation serves it.
 #
 # Declared in a fragment so a service aspect can write a registration on any
 # host. Unlike the notification fragment, this one is NOT declaration-only: a
@@ -168,9 +168,21 @@ in
         description = "Implementation serving OTLP ingest on this host. The enum is the implemented set; an unimplemented value is a contract edit, not a host typo.";
       };
       prometheusScrape = mkOption {
-        type = types.enum [ "otel-collector" ];
-        default = "otel-collector";
-        description = "Implementation serving Prometheus scrape sources on this host. Selection is per capability, so metrics and logs may split later without touching registrations.";
+        type = types.enum [
+          "vmagent"
+          "otel-collector"
+        ];
+        default = "vmagent";
+        description = ''
+          Implementation serving Prometheus scrape sources on this host.
+          Selection is per capability, so metrics and logs may split later
+          without touching registrations. `vmagent` is the default: an agent
+          that scrapes and forwards over Prometheus remote write. It can only
+          write to destinations the metrics pipeline selects that speak
+          `prometheus-remote-write`, so a fanout naming any other protocol is a
+          named failure; `otel-collector` remains the override for a host whose
+          scraped metrics go to an OTLP destination.
+        '';
       };
       journaldIngest = mkOption {
         type = types.enum [ "vector" ];

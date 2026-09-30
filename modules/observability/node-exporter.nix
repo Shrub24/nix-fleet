@@ -1,8 +1,9 @@
 # Node metrics for the host-local telemetry contract. Selection is enablement:
 # the aspect owns the exporter, its loopback bind, and its own scrape
-# registration, so the collector's target cannot drift from where the exporter
+# registration, so the implementation's target cannot drift from where the exporter
 # listens. This aspect names no backend — it registers a local source; the
-# consumer's collector carries it to whatever metrics destination it declares.
+# consumer's selected implementation carries it to whatever metrics destination
+# it declares.
 #
 # It imports the contract fragment so the registration is valid whether or not
 # the telemetry aspect is co-selected; on a host that did not select telemetry

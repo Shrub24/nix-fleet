@@ -20,6 +20,7 @@ _: {
         ./telemetry/_contract.nix
         ./telemetry/_providers/otel-collector.nix
         ./telemetry/_providers/vector.nix
+        ./telemetry/_providers/vmagent.nix
       ];
 
       config.services.telemetry.realized = true;
