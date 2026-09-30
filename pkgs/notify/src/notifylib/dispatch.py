@@ -16,29 +16,47 @@ from . import config as cfg
 
 log = logging.getLogger("notify")
 
+# The validated severity vocabulary: three values, at the ends and middle of
+# ntfy's own 1-5 priority scale. Everything that produces a severity — the Nix
+# event policy, the Alertmanager mapping, an HTTP caller — is checked against it
+# rather than being allowed to degrade silently into an unfamiliar label.
+SEVERITIES = ("info", "warning", "critical")
+
 TYPE_MAP = {
     "info": apprise.NotifyType.INFO,
-    "success": apprise.NotifyType.SUCCESS,
     "warning": apprise.NotifyType.WARNING,
-    "failure": apprise.NotifyType.FAILURE,
     "critical": apprise.NotifyType.FAILURE,
 }
 
+# ntfy's full priority scale is 1-5; slots 2 and 4 are deliberately unexposed —
+# reserved for future severities, so the dispatch surface stays three-valued
+# (info | warning | critical).
 NTFY_PRIORITY_MAP = {
     "info": 1,
-    "success": 2,
     "warning": 3,
-    "failure": 4,
     "critical": 5,
 }
 
-TOPIC_FALLBACK = {
-    "critical": "system",
-    "failure": "system",
-    "warning": "system",
-    "success": "system",
-    "info": "general",
-}
+
+def _resolve_topic(settings, topic, transport):
+    """Resolve a notification's use-case topic to this transport's destination.
+
+    Topics are routing, declared by the deployment's config: an explicit topic
+    names a use-case key, and otherwise the deployment's single default topic
+    does. Severity is weight, never a topic selector. An unresolvable topic is a
+    named error rather than a silent skip — a notification nobody can route is a
+    notification nobody receives.
+    """
+    name = topic or settings.get("default_topic")
+    if not name:
+        return None, [
+            "%s: notification carries no topic and the deployment declares no default_topic"
+            % transport
+        ]
+    destination = settings.get("topics", {}).get(name)
+    if not destination:
+        return None, ["%s: unknown topic '%s'" % (transport, name)]
+    return destination, []
 
 
 def _send_apprise(settings, title, message, severity, topic):
@@ -52,12 +70,9 @@ def _send_apprise(settings, title, message, severity, topic):
         log.error("telegram token unreadable: %s", exc)
         return ["telegram: token unreadable"]
 
-    topics = settings.get("topics", {})
-    topic_id = topics.get(topic) if topic else None
-    if not topic_id:
-        topic_id = topics.get(severity)
-    if not topic_id:
-        return []
+    topic_id, errors = _resolve_topic(settings, topic, "telegram")
+    if errors:
+        return errors
     url = "tgram://%s/%s:%s" % (bot_token, settings["chat_id"], topic_id)
     apobj = apprise.Apprise()
     apobj.add(url)
@@ -74,10 +89,12 @@ def _send_ntfy(ntfy, title, message, severity, topic):
     server = ntfy.get("server_url")
     if not server:
         return []
-    topic_name = topic or TOPIC_FALLBACK.get(severity, "system")
-    ntfy_topic = ntfy.get("topics", {}).get(topic_name)
-    if not ntfy_topic:
-        return ["ntfy: unknown topic '%s'" % topic_name]
+    # Topics are routing, declared by the deployment's config; an explicit
+    # topic or the deployment's single default topic selects one. Severity is
+    # weight, never a topic selector.
+    ntfy_topic, errors = _resolve_topic(ntfy, topic, "ntfy")
+    if errors:
+        return errors
 
     body = {
         "topic": ntfy_topic,
@@ -102,7 +119,7 @@ def _send_ntfy(ntfy, title, message, severity, topic):
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            log.info("ntfy sent: topic=%s status=%d", topic_name, resp.status)
+            log.info("ntfy sent: topic=%s status=%d", ntfy_topic, resp.status)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
         return ["ntfy: %s" % exc]
     return []
@@ -115,7 +132,10 @@ def dispatch(severity, title, message, topic=None):
         return ["config not found"]
 
     errors = []
-    labelled = "[%s] %s" % (topic or "general", title)
+    # The title carries the routing topic when the caller named one. It invents
+    # nothing otherwise: each transport resolves its own default topic, and a
+    # single label could not name them all.
+    labelled = "[%s] %s" % (topic, title) if topic else title
 
     errors += _send_apprise(settings.get("telegram", settings), labelled, message, severity, topic)
 

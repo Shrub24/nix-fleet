@@ -63,7 +63,7 @@ def _handle_event(payload):
     if not entry:
         return {"status": "skipped"}, 200
 
-    severity = entry.get("severity", event)
+    severity = entry.get("severity", "info" if event == "success" else "warning")
     topic = entry.get("topic")
     title = entry.get("title") or ("%s %s" % (unit, event))
 

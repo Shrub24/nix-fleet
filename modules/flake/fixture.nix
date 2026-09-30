@@ -474,6 +474,10 @@ let
         secretFiles.token = fixtureSecretFile;
         secretKeys.token = "fixture/token";
       };
+      # A secret id with a structural character is refused as well, but by the
+      # contract's own id charset (letters, digits, underscores) rather than by
+      # this adapter — which is what lets the adapter interpolate
+      # `%{VMAGENT_<id>}` into its argument without a check of its own.
     in
     # the default provider renders every scrape field into vmagent's own config
     rendered.services.telemetry.providers.prometheusScrape == "vmagent"
@@ -694,9 +698,45 @@ let
           message = "fixture: the notify aspect registered no Telegram token secret.";
         }
         {
+          # Severity vocabulary: three values, defaulted per event kind in the
+          # rendered policy map (failure -> warning, success -> info), a
+          # per-registration override winning, and routing declared by use
+          # case. The policy map is a JSON file, so its content is read back
+          # rather than trusted from the option definitions.
+          assertion =
+            let
+              events = builtins.fromJSON (builtins.readFile config.environment.etc."notify/events.json".source);
+            in
+            events.fixture-monitored.failure.severity == "warning"
+            && config.services.notify.events.fixture-monitored.failure.severity or null == null;
+          message = "fixture: the notification aspect's severity defaults or rendered policy map regressed.";
+        }
+        {
           assertion =
             config.systemd.services.fixture-monitored.onFailure == [ "notify-event@fixture-monitored.service" ];
           message = "fixture: the notification aspect attached no native failure hook for a registered unit.";
+        }
+        {
+          # Routing policy reaches the runtime intact: each enabled transport's
+          # rendered config carries its use-case map and a default that names a
+          # key of it, so a notification the deployment did not explicitly topic
+          # is still routable rather than a dispatch error.
+          assertion =
+            let
+              rendered = builtins.fromJSON (builtins.readFile config.environment.etc."notify/config.json".source);
+              routable =
+                transport:
+                let
+                  topics = transport.topics or { };
+                  default = transport.default_topic or null;
+                in
+                topics != { } && default != null && topics ? ${default};
+            in
+            routable rendered.ntfy
+            && routable rendered.telegram
+            && rendered.ntfy.topics.fleet == "fleet"
+            && rendered.telegram.default_topic == "fleet";
+          message = "fixture: the notify aspect's rendered routing config lost a transport's use-case map or a default that names one of its keys.";
         }
         {
           assertion = config.services.niks3-auto-upload.enable && config.nix.settings.post-build-hook != "";
@@ -1098,10 +1138,20 @@ let
           telegram = {
             chatId = "-1000000000000";
             topics = {
-              critical = "2";
-              warning = "3";
-              info = "4";
+              infra = "2";
+              fleet = "4";
             };
+            defaultTopic = "fleet";
+          };
+
+          ntfy = {
+            enable = true;
+            serverUrl = "http://127.0.0.1:8082";
+            topics = {
+              infra = "infra";
+              fleet = "fleet";
+            };
+            defaultTopic = "fleet";
           };
         };
 
@@ -1196,11 +1246,10 @@ let
       };
 
       # A unit owned by this module, registered on the notification contract:
-      # failure severity defaulted, success pruned (a stop of a oneshot job is
-      # not news). Severity defaults to "failure".
+      # failure severity defaulted (warning), success pruned (a stop of a
+      # oneshot job is not news).
       services.notify.events.fixture-monitored = {
         failure = { };
-        success = { };
       };
 
     };

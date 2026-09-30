@@ -4,3 +4,5 @@ result-*
 .tmp
 .pi/
 .qmd/
+__pycache__/
+*.pyc

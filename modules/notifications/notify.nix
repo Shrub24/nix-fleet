@@ -36,20 +36,41 @@
         cfg.secretFiles.hostSystem != null && builtins.pathExists cfg.secretFiles.hostSystem;
 
       notifyConfig = {
-        telegram = lib.optionalAttrs cfg.telegram.enable {
-          token_file = cfg.telegram.tokenFile;
-          chat_id = cfg.telegram.chatId;
-          topics = cfg.telegram.topics;
-        };
-        ntfy = lib.optionalAttrs (cfg.ntfy.enable && cfg.ntfy.serverUrl != "") {
-          server_url = cfg.ntfy.serverUrl;
-          topics = cfg.ntfy.topics;
-          token_file = cfg.ntfy.tokenFile;
-        };
+        telegram = lib.optionalAttrs cfg.telegram.enable (
+          {
+            token_file = cfg.telegram.tokenFile;
+            chat_id = cfg.telegram.chatId;
+            topics = cfg.telegram.topics;
+          }
+          // lib.optionalAttrs (cfg.telegram.defaultTopic != null) {
+            default_topic = cfg.telegram.defaultTopic;
+          }
+        );
+        ntfy = lib.optionalAttrs (cfg.ntfy.enable && cfg.ntfy.serverUrl != "") (
+          {
+            server_url = cfg.ntfy.serverUrl;
+            topics = cfg.ntfy.topics;
+            token_file = cfg.ntfy.tokenFile;
+          }
+          // lib.optionalAttrs (cfg.ntfy.defaultTopic != null) {
+            default_topic = cfg.ntfy.defaultTopic;
+          }
+        );
       };
 
       # Registered units with at least one declared event.
       registeredUnits = lib.filterAttrs (_unit: ev: ev.failure != null || ev.success != null) cfg.events;
+
+      # A transport resolves a notification's topic by name: the explicit
+      # `topic`, else the transport's `defaultTopic`, looked up in that
+      # transport's `topics` map. Both halves are required for a deployment to
+      # be able to route anything, and dispatch refuses (never drops) what it
+      # cannot resolve — the runtime side of this contract is asserted below.
+      routingResolves =
+        transport:
+        transport.topics != { }
+        && transport.defaultTopic != null
+        && transport.topics ? ${transport.defaultTopic};
 
       # Fail-closed: a registration may only name a unit with a real service
       # implementation. The predicate reads only implementation attributes and
@@ -64,11 +85,17 @@
 
       # One event's entry in the policy map: defaults resolved here, so the
       # handler never needs fallback logic and the JSON only carries declared
-      # events.
+      # events. Severity defaults per event kind — failure at warning, success
+      # at info — never to the event name: failure/success are event names,
+      # not severities.
       eventEntry =
         event: policy:
         {
-          severity = if policy.severity != null then policy.severity else event;
+          severity =
+            if policy.severity != null then
+              policy.severity
+            else
+              (if event == "success" then "info" else "warning");
           inherit (policy) journalLines;
           inherit (policy) context;
         }
@@ -137,7 +164,22 @@
           topics = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = { };
-            description = "Mapping of notification tiers to Telegram topic IDs within the supergroup. Policy data: consumer-supplied.";
+            description = ''
+              Mapping of use-case topic names to Telegram topic IDs within the
+              supergroup, selected by an event's (or a webhook caller's)
+              explicit `topic` — routing is declared by use case, never derived
+              from severity. Policy data: consumer-supplied.
+            '';
+          };
+
+          defaultTopic = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              Use-case topic for notifications without an explicit topic; must
+              name a key of `topics`. No silent fallback exists: a notification
+              without a topic and without this is a named dispatch error.
+            '';
           };
 
           tokenFile = lib.mkOption {
@@ -158,11 +200,22 @@
 
           topics = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
-            default = {
-              system = "system";
-              services = "services";
-            };
-            description = "Semantic ntfy topic names; the tier map's values select among them.";
+            default = { };
+            description = ''
+              Mapping of use-case topic names to ntfy topics, selected by an
+              event's explicit `topic` — routing is declared by use case, never
+              derived from severity. Policy data: consumer-supplied.
+            '';
+          };
+
+          defaultTopic = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              Use-case topic for notifications without an explicit topic; must
+              name a key of `topics`. No silent fallback exists: a notification
+              without a topic and without this is a named dispatch error.
+            '';
           };
 
           tokenFile = lib.mkOption {
@@ -182,14 +235,20 @@
                 message = "notify: services.notify.telegram.chatId must be set to the Telegram supergroup chat ID.";
               }
               {
-                assertion = cfg.telegram.topics != { };
-                message = "notify: services.notify.telegram.topics must be configured with at least one tier.";
+                assertion = routingResolves cfg.telegram;
+                message = "notify: services.notify.telegram needs a routable topic — declare services.notify.telegram.topics (use-case name -> topic ID) and set telegram.defaultTopic to one of its keys. A transport that cannot resolve a topic drops the notification, so this fails at build time instead.";
               }
             ]
             ++ lib.optional (cfg.ntfy.enable && cfg.ntfy.serverUrl == "") {
               assertion = false;
               message = "notify: services.notify.ntfy.serverUrl must be set when ntfy is enabled.";
             }
+            ++ lib.optionals cfg.ntfy.enable [
+              {
+                assertion = routingResolves cfg.ntfy;
+                message = "notify: services.notify.ntfy needs a routable topic — declare services.notify.ntfy.topics (use-case name -> ntfy topic) and set ntfy.defaultTopic to one of its keys. A transport that cannot resolve a topic drops the notification, so this fails at build time instead.";
+              }
+            ]
             ++ lib.mapAttrsToList (unit: ev: {
               assertion = ev.fromPackage || unitImplemented unit;
               message = "notify: events.${unit} is registered but has no systemd service implementation (serviceConfig.ExecStart or script; set fromPackage for units provided by systemd.packages); hooks attached by this aspect do not count. Register from the capability that owns the unit.";

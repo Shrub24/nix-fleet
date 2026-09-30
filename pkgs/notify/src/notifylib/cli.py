@@ -56,14 +56,14 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_send = sub.add_parser("send", help="Send a notification (stdin = body)")
-    p_send.add_argument("severity", choices=["info", "success", "warning", "failure", "critical"])
+    p_send.add_argument("severity", choices=["info", "warning", "critical"])
     p_send.add_argument("title", nargs="?", default="Notification")
     p_send.add_argument("--topic", default=None)
     p_send.add_argument("message", nargs="?", default="")
 
     p_test = sub.add_parser("test", help="Send a test notification end-to-end")
     p_test.add_argument("--topic", default=None)
-    p_test.add_argument("--severity", default="info", choices=["info", "success", "warning", "failure", "critical"])
+    p_test.add_argument("--severity", default="info", choices=["info", "warning", "critical"])
 
     p_serve = sub.add_parser("serve", help="Run the notify daemon")
     p_serve.add_argument("--port", type=int, default=5555)

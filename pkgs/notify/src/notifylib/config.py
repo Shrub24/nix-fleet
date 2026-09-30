@@ -1,4 +1,8 @@
-"""Shared configuration loading for the notify tools."""
+"""Shared configuration loading for the notify tools.
+
+The config declares routing (topics) per transport; severity is a property of
+the event or caller, never a routing key.
+"""
 
 import json
 import logging

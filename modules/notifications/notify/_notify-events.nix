@@ -28,20 +28,26 @@ let
         type = lib.types.nullOr (
           lib.types.enum [
             "info"
-            "success"
             "warning"
-            "failure"
             "critical"
           ]
         );
         default = null;
-        description = "Notification severity; null defaults to the event name. critical is an explicit escalation.";
+        description = ''
+          Notification severity: info | warning | critical. Null defaults per
+          event kind — `failure` alerts at warning, `success` at info — so
+          "failure" and "success" are event names, never severities.
+        '';
       };
 
       topic = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Semantic ntfy topic override; null uses the daemon's tier default.";
+        description = ''
+          Semantic ntfy topic override — routing declared by use case, resolved
+          per transport (explicit topic, else the deployment's single default
+          topic). Null uses that default.
+        '';
       };
 
       journalLines = lib.mkOption {
