@@ -3,7 +3,12 @@
 # reach into another repository for a package.
 _: {
   perSystem =
-    { config, pkgs, ... }:
+    {
+      config,
+      lib,
+      pkgs,
+      ...
+    }:
     let
       derivedTemplate = pkgs.writeText "derived.yaml.j2" ''
         {% set password = secrets.token_hex(16) %}
@@ -23,12 +28,34 @@ _: {
       literalTemplate = pkgs.writeText "literal.yaml" ''
         url: https://y
       '';
+
+      # The notify daemon's Alertmanager webhook route is a wire contract: what
+      # Alertmanager posts, and what one webhook group becomes. Both halves are
+      # proven offline — the payload mapping directly, and the route end to end
+      # through the real handler on loopback with an ntfy stub recording what
+      # dispatch delivered (so the topic and severity choices are observed, not
+      # re-derived from the mapping function).
+      notifySrc = lib.cleanSource ../../pkgs/notify;
+      notifyPython = pkgs.python3.withPackages (ps: [ ps.apprise ]);
     in
     {
       packages = {
         notify = pkgs.callPackage ../../pkgs/notify { };
         sops-bootstrap = pkgs.callPackage ../../pkgs/sops-bootstrap { };
       };
+
+      checks.notify-alertmanager =
+        pkgs.runCommand "notify-alertmanager-check"
+          {
+            nativeBuildInputs = [ notifyPython ];
+          }
+          ''
+            set -euo pipefail
+            export PYTHONPATH=${notifySrc}/src
+            cd $TMPDIR
+            ${notifyPython.interpreter} -m unittest discover -s ${notifySrc}/tests -v
+            touch $out
+          '';
 
       # sops-bootstrap drives real sops + age, both offline, so the whole flow
       # is provable here: encrypt to a generated age key, decrypt back, and

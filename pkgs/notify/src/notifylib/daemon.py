@@ -8,6 +8,11 @@ Transports:
 - unix socket /run/notify/notify.sock (group `notify`): local dispatchers;
   filesystem permissions are the auth model
 - loopback TCP :5555: external HTTP callers (beszel webhooks, CI, tunnels)
+
+POST routes: /notify (application notification; `severity` must be one of
+info|warning|critical — an unknown one is refused, never downgraded), /event
+(systemd unit event), /alertmanager (one Alertmanager webhook group;
+`?topic=` selects the routing topic, absent uses the deployment default).
 """
 
 import json
@@ -16,9 +21,11 @@ import os
 import socket
 import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
+from . import alertmanager
 from . import config as cfg
-from .dispatch import dispatch
+from .dispatch import SEVERITIES, dispatch
 
 log = logging.getLogger("notify-daemon")
 
@@ -100,6 +107,8 @@ class Handler(BaseHTTPRequestHandler):
             self._reply({"error": "not found"}, status=404)
 
     def do_POST(self):
+        url = urlsplit(self.path)
+        path = url.path
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length))
@@ -107,11 +116,19 @@ class Handler(BaseHTTPRequestHandler):
             self._reply({"error": "invalid JSON body"}, status=400)
             return
 
-        if self.path == "/notify":
-            # Accepts the legacy notification-daemon schema: `tier` maps to
-            # severity, `type` is ignored.
+        if path == "/notify":
+            severity = body.get("severity", "info")
+            if severity not in SEVERITIES:
+                self._reply(
+                    {
+                        "error": "unknown severity %r; expected one of %s"
+                        % (severity, ", ".join(SEVERITIES))
+                    },
+                    status=400,
+                )
+                return
             errors = dispatch(
-                body.get("severity", body.get("tier", "info")),
+                severity,
                 body.get("title", "Notification"),
                 body.get("message", ""),
                 topic=body.get("topic"),
@@ -120,7 +137,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply({"status": "partial", "errors": errors}, status=500)
             else:
                 self._reply({"status": "ok"})
-        elif self.path == "/event":
+        elif path == "/alertmanager":
+            # One webhook group is one notification, whatever its alert count.
+            topic = (parse_qs(url.query).get("topic") or [None])[0]
+            try:
+                severity, title, message = alertmanager.map_payload(body)
+            except alertmanager.PayloadError as exc:
+                self._reply({"error": str(exc)}, status=400)
+                return
+            errors = dispatch(severity, title, message, topic=topic)
+            if errors:
+                self._reply({"status": "partial", "errors": errors}, status=500)
+            else:
+                self._reply({"status": "ok"})
+        elif path == "/event":
             payload, status = _handle_event(body)
             self._reply(payload, status=status)
         else:
