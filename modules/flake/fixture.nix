@@ -623,6 +623,65 @@ let
     &&
       builtins.any (lib.hasPrefix "telemetry: scrape source(s) node configured without")
         (admissionFailures [ aspects.node-exporter ]);
+
+  # The alerting aspects' own contract: selected but unbound leaves no unit and
+  # no registration, an enabled vmalert instance without a datasource or a
+  # notifier is refused by name (per instance), and a fully bound one is
+  # accepted and registers its failure.
+  alertingAdmissionChecks =
+    let
+      inert = admissionEval [
+        aspects.vmalert
+        aspects.alertmanager
+      ];
+      bound = {
+        services.vmalert.instances.bound = {
+          enable = true;
+          settings = {
+            "datasource.url" = "http://127.0.0.1:8428";
+            "notifier.url" = [ "http://127.0.0.1:9093" ];
+            "httpListenAddr" = "127.0.0.1:8880";
+          };
+        };
+      };
+    in
+    !(inert.config.systemd.services ? "vmalert")
+    && !(inert.config.systemd.services ? alertmanager)
+    && inert.config.services.notify.events == { }
+    && builtins.any (lib.hasPrefix "vmalert: instance(s) 'unbound-notifier'") (admissionFailures [
+      aspects.vmalert
+      {
+        services.vmalert.instances.unbound-notifier = {
+          enable = true;
+          settings."datasource.url" = "http://127.0.0.1:8428";
+        };
+      }
+    ])
+    && builtins.any (lib.hasPrefix "vmalert: instance(s) 'unbound-datasource'") (admissionFailures [
+      aspects.vmalert
+      { services.vmalert.instances.unbound-datasource.enable = true; }
+    ])
+    && builtins.any (lib.hasPrefix "vmalert: instance(s) 'unbound-management'") (admissionFailures [
+      aspects.vmalert
+      {
+        services.vmalert.instances.unbound-management = {
+          enable = true;
+          settings = {
+            "datasource.url" = "http://127.0.0.1:8428";
+            "notifier.url" = [ "http://127.0.0.1:9093" ];
+          };
+        };
+      }
+    ])
+    && admissionAccepts [
+      aspects.vmalert
+      bound
+    ]
+    && (admissionEval [
+      aspects.vmalert
+      bound
+    ]).config.services.notify.events
+      ? "vmalert-bound";
   fixtureModule =
     {
       config,
@@ -635,6 +694,7 @@ let
         inputs.niks3.nixosModules.niks3
       ]
       ++ (with aspects; [
+        alertmanager
         beszel-agent
         build-account
         nix-baseline
@@ -648,6 +708,7 @@ let
         tailscale
         mosh
         telemetry
+        vmalert
       ]);
 
       boot.loader.grub.enable = false;
@@ -1083,6 +1144,42 @@ let
           assertion = config.users.users ? "nixbuild" && config.users.users.nixbuild.isSystemUser;
           message = "fixture: the build-account aspect created no dispatch account.";
         }
+        {
+          # The alerting path end to end: vmalert renders the consumer's rule
+          # file and points at the bound datasource and notifier; Alertmanager
+          # listens on loopback with the configuration the build checked, and
+          # its webhook receiver posts back into the notify daemon's own
+          # Alertmanager route; both units register their failure.
+          assertion =
+            let
+              vmalertUnit = config.systemd.services."vmalert-fixture";
+              alertmanagerUnit = config.systemd.services.alertmanager;
+              alertmanager = config.services.prometheus.alertmanager;
+              receiverUrl =
+                (builtins.head (builtins.head alertmanager.configuration.receivers).webhook_configs).url;
+            in
+            config.services.vmalert.instances.fixture.enable
+            && lib.hasInfix "-datasource.url=http://127.0.0.1:8428" vmalertUnit.serviceConfig.ExecStart
+            && lib.hasInfix "-notifier.url=http://127.0.0.1:9093" vmalertUnit.serviceConfig.ExecStart
+            && lib.hasInfix "-httpListenAddr=127.0.0.1:8880" vmalertUnit.serviceConfig.ExecStart
+            && lib.hasInfix "-rule=/etc/vmalert-fixture/rules.yml" vmalertUnit.serviceConfig.ExecStart
+            && lib.hasInfix "FixtureWatchdog" (
+              builtins.readFile config.environment.etc."vmalert-fixture/rules.yml".source
+            )
+            && config.services.notify.events."vmalert-fixture".failure != null
+            && vmalertUnit.onFailure != [ ]
+            && alertmanager.enable
+            && alertmanager.listenAddress == "127.0.0.1"
+            && alertmanager.checkConfig
+            && !alertmanager.openFirewall
+            &&
+              receiverUrl == "http://127.0.0.1:${toString config.services.notify.port}/alertmanager?topic=infra"
+            && lib.hasInfix "--web.listen-address 127.0.0.1:9093" alertmanagerUnit.serviceConfig.ExecStart
+            && config.services.notify.events.alertmanager.failure != null
+            && alertmanagerUnit.onFailure != [ ]
+            && alertingAdmissionChecks;
+          message = "fixture: the alerting path (vmalert's bound datasource/notifier and rendered rules, alertmanager's loopback bind, checked config, webhook receiver, or either unit's notify ownership) regressed.";
+        }
       ];
 
       # A real unit for the notification contract to hook.
@@ -1156,6 +1253,61 @@ let
         };
 
         tailscale.secretFiles.auth = fixtureSecretFile;
+
+        # The consumer owns every binding below: the alertmanager aspect
+        # contributes the loopback default and the failure registration, the
+        # vmalert aspect the validation and the registrations — neither enables
+        # anything on its own.
+        prometheus.alertmanager = {
+          enable = true;
+          configuration = {
+            route = {
+              receiver = "notify";
+              group_by = [ "alertname" ];
+            };
+            receivers = [
+              {
+                name = "notify";
+                webhook_configs = [
+                  {
+                    # The receiver is the notify daemon's Alertmanager route,
+                    # on the topic the routing policy declares.
+                    url = "http://127.0.0.1:${toString config.services.notify.port}/alertmanager?topic=infra";
+                  }
+                ];
+              }
+            ];
+          };
+        };
+
+        vmalert.instances.fixture = {
+          enable = true;
+          settings = {
+            "datasource.url" = "http://127.0.0.1:8428";
+            "notifier.url" = [ "http://127.0.0.1:9093" ];
+            # The management endpoint is bound explicitly: the aspect refuses an
+            # instance that would otherwise inherit vmalert's all-interface
+            # default.
+            "httpListenAddr" = "127.0.0.1:8880";
+          };
+          # A trivial always-firing watchdog: this is the rule file
+          # checks.vmalert-rules evaluates through the real vmalert, and the
+          # one the fixture host's unit loads.
+          rules.groups = [
+            {
+              name = "fixture";
+              rules = [
+                {
+                  alert = "FixtureWatchdog";
+                  expr = "vector(1)";
+                  for = "0m";
+                  labels.severity = "warning";
+                  annotations.summary = "fixture always-firing watchdog";
+                }
+              ];
+            }
+          ];
+        };
 
         telemetry = {
           # The log path is opt-in and carries its own endpoint: the consumer
@@ -1313,6 +1465,48 @@ in
       pkgs = inputs.nixpkgs.legacyPackages.${system};
     in
     {
+      # The rendered rule file is a vmalert input, not a Nix value: this check
+      # feeds the fixture host's own rules.yml to the real evaluator, offline —
+      # a rule that does not parse or does not fire is caught here rather than
+      # on the host it was meant to alert from.
+      checks.vmalert-rules =
+        let
+          fixtureHost = "fixture-${builtins.replaceStrings [ "_" ] [ "-" ] system}";
+          rulesFile =
+            config.flake.nixosConfigurations.${fixtureHost}.config.environment.etc."vmalert-fixture/rules.yml".source;
+          unitTest = pkgs.writeText "vmalert-unittest.yaml" ''
+            rule_files:
+              - ${rulesFile}
+            evaluation_interval: 1m
+            tests:
+              - interval: 1m
+                alert_rule_test:
+                  - eval_time: 1m
+                    groupname: fixture
+                    alertname: FixtureWatchdog
+                    exp_alerts:
+                      - exp_labels:
+                          severity: warning
+                        exp_annotations:
+                          summary: fixture always-firing watchdog
+          '';
+        in
+        pkgs.runCommand "vmalert-rules-check"
+          {
+            nativeBuildInputs = [ pkgs.victoriametrics ];
+          }
+          ''
+            vmalert-tool unittest -files=${unitTest} > $TMPDIR/unittest.log 2>&1 || {
+              cat $TMPDIR/unittest.log
+              exit 1
+            }
+            grep -q SUCCESS $TMPDIR/unittest.log || {
+              cat $TMPDIR/unittest.log
+              exit 1
+            }
+            touch $out
+          '';
+
       checks.vmagent-secret-guard =
         pkgs.runCommand "vmagent-secret-guard-check"
           {
