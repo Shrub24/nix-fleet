@@ -27,4 +27,9 @@
     port = 7411;
     basePath = "/v1";
   };
+  # The gateway receiver for producers outside a host's local NixOS evaluation.
+  otel-collector.endpoints.otlp.tailnet = {
+    host = "oci-melb-1";
+    port = 4318;
+  };
 }

@@ -392,6 +392,10 @@ endpoint = (inputs.nix-fleet.lib.serviceEndpoints.resolveEndpoint config.fleet {
 }).url;
 ```
 
+The canonical `otel-collector.otlp` route names OCI's gateway listener for
+cross-host producers outside a host's NixOS evaluation. Host-local producers
+continue using `services.telemetry.otlp.httpUrl`.
+
 The earlier fleet-level `telemetry.ingest` / `telemetry.sink` endpoint
 capabilities and the `lib.telemetry` resolver were removed: they advertised
 collector endpoints in the flake catalog that no host-local registration

@@ -185,6 +185,13 @@ let
           7411
           "oci-melb-1"
         ]
+        [
+          "otel-collector"
+          "otlp"
+          "http://oci-melb-1:4318"
+          4318
+          "oci-melb-1"
+        ]
       ];
     in
     endpoint.url == "http://fleet-host:6280/mcp/"
