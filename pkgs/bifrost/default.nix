@@ -1,0 +1,143 @@
+# Bifrost (maximhq) is the gateway in front of the fleet's model providers: one
+# OpenAI-compatible HTTP service with its dashboard UI compiled into the binary.
+#
+# The Go module is built the way the project's own release builders build it.
+# transports/go.mod pins published versions of bifrost/core, bifrost/framework
+# and bifrost/plugins/*, and both .github/workflows/scripts/build-executables.sh
+# (`GOWORK=off`) and transports/Dockerfile resolve exactly those — with no local
+# module replaces. The build graph is therefore the published release graph for
+# this revision, not this checkout's sibling module sources.
+#
+# The UI is built from the same revision and copied into the directory
+# `//go:embed all:ui` embeds.
+{
+  lib,
+  buildGo127Module,
+  callPackage,
+  fetchFromGitHub,
+}:
+
+let
+  # transports/version at the pinned revision.
+  version = "2.2.5";
+
+  src = fetchFromGitHub {
+    owner = "maximhq";
+    repo = "bifrost";
+    rev = "77d08f241cfa10d09ea37d6b00ef9f2c363a3ede"; # tag transports/v2.2.5
+    hash = "sha256-6WEIbrpctkMN/qjzfCGFT9xhT8Hp9j+atBWOK5Dd7rA=";
+  };
+
+  # The two subtrees the binary is made of: the Go module that produces it and
+  # the UI source it embeds. Docs, terraform, helm charts, examples and the
+  # monorepo's other Go modules never reach a build step and are not inputs.
+  transportsSrc = lib.cleanSourceWith {
+    src = "${src}/transports";
+    name = "bifrost-transports-${version}";
+    # Air's hot-reload config is the only thing in the module tree that no build
+    # step reads (the config schema stays: the module's own tests read it).
+    filter = path: _: !(lib.hasSuffix "/.air.toml" path || lib.hasSuffix "/.air.debug.toml" path);
+  };
+
+  ui = callPackage ./ui.nix {
+    src = lib.cleanSourceWith {
+      src = "${src}/ui";
+      name = "bifrost-ui-${version}";
+    };
+    inherit version;
+  };
+  goModule = {
+    src = transportsSrc;
+
+    # Locked module cache for the pinned go.mod/go.sum.
+    vendorHash = "sha256-kflMpFZlYOGotkj70AOO8fyA5WZOdRi2y0uj97QeBv8=";
+
+    # go-sqlite3 compiles the SQLite amalgamation it carries, so CGO is
+    # required and no SQLite build input is needed.
+    env.CGO_ENABLED = "1";
+  };
+
+  bifrost = buildGo127Module (
+    goModule
+    // {
+      pname = "bifrost";
+      inherit version;
+
+      subPackages = [ "bifrost-http" ];
+
+      # The dashboard is a build input, not something the Go build produces.
+      preBuild = ''
+        rm -rf bifrost-http/ui
+        mkdir -p bifrost-http/ui
+        cp -R --no-preserve=mode,ownership,timestamps ${ui}/. bifrost-http/ui/
+      '';
+
+      # The module's test files stand up servers, stores and providers; the
+      # released-binary path compiles without running them.
+      doCheck = false;
+
+      ldflags = [
+        "-s"
+        "-w"
+        # Same value the release scripts stamp in (`v`+version).
+        "-X main.Version=v${version}"
+      ];
+
+      meta = {
+        description = "HTTP gateway for AI model providers with the embedded dashboard UI";
+        homepage = "https://github.com/maximhq/bifrost";
+        license = lib.licenses.asl20;
+        mainProgram = "bifrost-http";
+      };
+    }
+  );
+
+  # Plugins compile as a package inside the same pinned transports module and
+  # vendored dependency graph as the host. GOFLAGS, CGO and the Go toolchain are
+  # inherited from the same buildGoModule builder, keeping shared package hashes
+  # compatible for Go's runtime plugin loader.
+  mkPlugin =
+    { name, src }:
+    buildGo127Module (
+      goModule
+      // {
+        pname = "bifrost-plugin-${name}";
+        inherit version;
+        subPackages = [ ];
+        doCheck = false;
+        ldflags = [
+          "-s"
+          "-w"
+        ];
+
+        postPatch = ''
+          mkdir -p "plugins/${name}"
+          cp -R --no-preserve=mode,ownership,timestamps ${src}/. "plugins/${name}/"
+        '';
+
+        buildPhase = ''
+          runHook preBuild
+          go build -p "$NIX_BUILD_CORES" -buildmode=plugin -o "${name}.so" "./plugins/${name}"
+          runHook postBuild
+        '';
+
+        installPhase = ''
+          runHook preInstall
+          install -D -m 0555 "${name}.so" "$out/lib/bifrost/${name}.so"
+          runHook postInstall
+        '';
+
+        meta = {
+          description = "Bifrost ${name} Go plugin";
+          homepage = "https://github.com/maximhq/bifrost";
+          license = lib.licenses.asl20;
+          platforms = lib.platforms.linux;
+        };
+      }
+    );
+in
+bifrost.overrideAttrs (old: {
+  passthru = (old.passthru or { }) // {
+    inherit mkPlugin;
+  };
+})

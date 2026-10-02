@@ -37,9 +37,16 @@ _: {
       # re-derived from the mapping function).
       notifySrc = lib.cleanSource ../../pkgs/notify;
       notifyPython = pkgs.python3.withPackages (ps: [ ps.apprise ]);
+      bifrost = pkgs.callPackage ../../pkgs/bifrost { };
+      bifrostVoyagePlugin = bifrost.mkPlugin {
+        name = "voyage";
+        src = ../../pkgs/bifrost/plugins/voyage;
+      };
     in
     {
       packages = {
+        inherit bifrost;
+        bifrost-voyage-plugin = bifrostVoyagePlugin;
         notify = pkgs.callPackage ../../pkgs/notify { };
         sops-bootstrap = pkgs.callPackage ../../pkgs/sops-bootstrap { };
       };
@@ -55,6 +62,135 @@ _: {
             cd $TMPDIR
             ${notifyPython.interpreter} -m unittest discover -s ${notifySrc}/tests -v
             touch $out
+          '';
+
+      # Prove the packaged hook in a packaged gateway: the real .so must load
+      # into the real v2.2.5 binary and the outgoing embedding bodies must carry
+      # the normalization (and leave other providers alone).
+      checks.bifrost-voyage-plugin =
+        pkgs.runCommand "bifrost-voyage-plugin-check"
+          {
+            nativeBuildInputs = [ pkgs.python3 ];
+          }
+          ''
+            set -euo pipefail
+            ${pkgs.python3}/bin/python3 ${../../tests/bifrost/voyage_check.py} \
+              ${bifrost}/bin/bifrost-http \
+              ${bifrostVoyagePlugin}/lib/bifrost/voyage.so \
+              $out
+          '';
+
+      # Bifrost serves its dashboard out of `//go:embed all:ui`. Upstream's own
+      # Nix file writes a one-line placeholder index.html when the UI output is
+      # missing, which would still compile and still answer /health — so this
+      # check proves the embedded document is the real bundle: fresh state
+      # directory, healthy server, the served shell and the hashed asset it
+      # references, a ui/public file, and the SPA fallback for a client route.
+      checks.bifrost-startup =
+        pkgs.runCommand "bifrost-startup-check"
+          {
+            nativeBuildInputs = [
+              config.packages.bifrost
+              pkgs.coreutils
+              pkgs.curl
+              pkgs.gnugrep
+            ];
+          }
+          ''
+            set -euo pipefail
+
+            appDir=$TMPDIR/app
+            feed=$TMPDIR/feed
+            mkdir -p "$appDir" "$feed"
+            log=$TMPDIR/bifrost.log
+            port=18981
+            base=http://127.0.0.1:$port
+
+            # A virgin state directory cannot boot while the catalog feeds are
+            # remote, and the sandbox has no network at all. Bifrost resolves
+            # file:// for all three feed URLs (its documented air-gapped
+            # mechanism), so the check feeds them from local files with the
+            # payload shapes upstream's own test fixture uses. Nothing else
+            # about a fresh install is configured.
+            cat > $feed/pricing.json <<'PRICING'
+            {"gpt-4o-mini":{"provider":"openai","mode":"chat","input_cost_per_token":0.00000015,"output_cost_per_token":0.0000006}}
+            PRICING
+            cat > $feed/model-parameters.json <<'PARAMS'
+            {"gpt-4o-mini":{"supports_reasoning":false,"supports_sampling_params":true}}
+            PARAMS
+            cat > $feed/mcp-library.json <<'MCP'
+            {"servers":[]}
+            MCP
+            cat > $appDir/config.json <<CONFIG
+            {
+              "framework": {
+                "pricing": {
+                  "pricing_url": "file://$feed/pricing.json",
+                  "model_parameters_url": "file://$feed/model-parameters.json",
+                  "mcp_library_url": "file://$feed/mcp-library.json"
+                }
+              }
+            }
+            CONFIG
+
+            bifrost-http -app-dir "$appDir" -host 127.0.0.1 -port "$port" > "$log" 2>&1 &
+            pid=$!
+            trap 'kill $pid 2>/dev/null || true' EXIT
+
+            ready=
+            for _ in $(seq 1 120); do
+              if curl -fsS "$base/health" > $TMPDIR/health.json 2>/dev/null; then
+                ready=1
+                break
+              fi
+              sleep 0.5
+            done
+            if [ -z "$ready" ]; then
+              echo "bifrost-startup-check: server never answered /health"
+              tail -n 30 "$log"
+              exit 1
+            fi
+
+            grep -q '"status":"ok"' $TMPDIR/health.json || {
+              echo "bifrost-startup-check: /health did not report ok"
+              cat $TMPDIR/health.json
+              exit 1
+            }
+            # version stamped in by the package's ldflags, printed on the banner
+            grep -q 'v${config.packages.bifrost.version}' "$log" || {
+              echo "bifrost-startup-check: banner does not carry the package version"
+              tail -n 30 "$log"
+              exit 1
+            }
+
+            curl -fsS "$base/" > $TMPDIR/index.html
+            grep -q 'id="root"' $TMPDIR/index.html
+            asset=$(grep -m1 -oE '/assets/index-[A-Za-z0-9_-]+\.js' $TMPDIR/index.html)
+            test -n "$asset"
+            curl -fsS "$base$asset" > $TMPDIR/bundle.js
+            grep -q 'workspace/dashboard' $TMPDIR/bundle.js
+
+            curl -fsS "$base/bifrost-logo.webp" > $TMPDIR/logo.webp
+            test -s $TMPDIR/logo.webp
+
+            # a client route without a file extension serves the same shell
+            curl -fsS "$base/workspace/dashboard" > $TMPDIR/route.html
+            cmp -s $TMPDIR/index.html $TMPDIR/route.html
+
+            kill $pid
+            wait $pid || true
+            trap - EXIT
+
+            # Keep the startup log and the served-document facts with the check,
+            # so the runtime evidence outlives the build log.
+            mkdir -p $out
+            cp "$log" $out/startup.log
+            {
+              echo "health=$(cat $TMPDIR/health.json)"
+              echo "entrypoint=$asset"
+              echo "entrypoint_bytes=$(wc -c < $TMPDIR/bundle.js)"
+              echo "spa_fallback_identical_to_root=$(cmp -s $TMPDIR/index.html $TMPDIR/route.html && echo yes || echo no)"
+            } > $out/summary.txt
           '';
 
       # sops-bootstrap drives real sops + age, both offline, so the whole flow
