@@ -1,27 +1,21 @@
-# Host-local telemetry — the ONE public aspect a host selects. Selection is
-# enablement. It realizes the `services.telemetry` contract with the
-# implementation each capability selects (`services.telemetry.providers.*`,
-# defaulting to the adapters shipped under _providers/), and it always performs
-# source admission: an orphan registration — a scrape source, a destination, or
-# a journald sink written without this aspect — fails closed by name in the
-# contract fragment.
+# The host-local telemetry aspect: the ONE public aspect a host selects.
+# Selection is enablement.
 #
-# Implementations are private modules under telemetry/_providers/, not separate
-# public aspects: swapping one is a `services.telemetry.providers.*` value, not
-# an imports-list edit. A capability may select a different implementation than
-# another later; today each capability has exactly one implemented value, so the
-# provider enums name them and an unimplemented value is a contract edit rather
-# than a host typo.
+# This file declares the aspect itself (contract + realization marker); the
+# implementations are sibling flake-parts contributors in this directory
+# (`otel-collector.nix`, `vmagent.nix`, `vector.nix`) that merge the same
+# `flake.modules.nixos.telemetry` deferred module. Siblings never import one
+# another, and no implementation is exported as a second public aspect: swapping
+# one is a `services.telemetry.providers.*` value, not an imports-list edit.
+#
+# Source admission is unconditional: an orphan registration — a scrape source,
+# a destination, or a journald sink written without this aspect — fails closed
+# by name in the contract fragment.
 _: {
   flake.modules.nixos.telemetry =
     { ... }:
     {
-      imports = [
-        ./telemetry/_contract.nix
-        ./telemetry/_providers/otel-collector.nix
-        ./telemetry/_providers/vector.nix
-        ./telemetry/_providers/vmagent.nix
-      ];
+      imports = [ ../../lib/telemetry-contract.nix ];
 
       config.services.telemetry.realized = true;
     };

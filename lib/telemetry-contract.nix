@@ -1,15 +1,20 @@
 # The host-local telemetry contract. One namespace, `services.telemetry`,
 # implementation-agnostic: a service registers a Prometheus scrape source, reads
-# the local OTLP endpoint, or binds a remote destination without knowing which
-# implementation serves it.
+# the local OTLP endpoint, opts into journald shipping, or binds a remote
+# destination without knowing which implementation serves it.
 #
 # Declared in a fragment so a service aspect can write a registration on any
 # host. Unlike the notification fragment, this one is NOT declaration-only: a
-# registration that no host aspects realize must fail closed by name, so the
+# registration that no host aspect realizes must fail closed by name, so the
 # fragment carries the orphan guard, and the derived OTLP endpoint fails closed
-# too (a push-only consumer registers nothing). Realization (and the OTel-specific
-# tuning) lives in the provider modules under telemetry/_providers/, imported by
-# flake.modules.nixos.telemetry.
+# too (a push-only consumer registers nothing, and a destination alone does not
+# admit a signal). Everything that is implementation-independent lives here —
+# including the secret-ID vocabulary — so validating the contract never depends
+# on which implementation happens to be selected.
+#
+# Realization (`services.telemetry.realized`) is set by flake.modules.nixos.telemetry,
+# whose contributors are the sibling flake-parts files under modules/telemetry/.
+# OTel-specific tuning lives under `services.otel-collector`.
 { config, lib, ... }:
 let
   inherit (lib) mkOption types;
@@ -90,19 +95,134 @@ let
         ) names
     );
 
-  # The local endpoint is a promise that an implementation binds it. A push-only
-  # consumer that imports this fragment, reads the URL, and registers nothing has
-  # no orphan for the guard below to catch — and no collector would ever run — so
-  # the derived value itself fails closed by name instead of advertising a dead
-  # address.
+  # OTLP admission: the signals this host's OTLP input accepts. Empty by
+  # default — a destination declares where data goes, never that an input
+  # exists — and every admitted signal must have somewhere to go, or the
+  # receiver would acknowledge what it silently drops.
+  admittedSignals = cfg.otlp.signals;
+  duplicateSignals = builtins.filter (
+    signal: builtins.length (builtins.filter (other: other == signal) admittedSignals) > 1
+  ) admittedSignals;
+  unservedSignals = builtins.filter (signal: resolvedPipeline signal == [ ]) admittedSignals;
+
+  # The producer listener is loopback-only: the network-facing listener is the
+  # explicit, separately bound additional ingress below. A host id or tailnet
+  # address here would silently move the producer interface onto the network.
+  loopbackHosts = [
+    "127.0.0.1"
+    "::1"
+    "[::1]"
+    "localhost"
+  ];
+  ipv4Octet = "([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])";
+  isLoopbackHost =
+    host:
+    builtins.elem host loopbackHosts
+    || builtins.match "127\\.${ipv4Octet}\\.${ipv4Octet}\\.${ipv4Octet}" host != null;
+
+  ingress = cfg.otlp.ingress;
+  ingressHosts = lib.optional (ingress != null) ingress;
+  wildcardHosts = [
+    "0.0.0.0"
+    "::"
+    "[::]"
+    "*"
+  ];
+  # A bind string is a name, not a socket. `localhost` may land on either
+  # loopback address, an IPv6 literal is bracketed in a bind string but not in
+  # the address, and 127.0.0.2 is a different socket from 127.0.0.1. Comparing
+  # the addresses a host can occupy is what turns "the collector failed to
+  # bind" into the named conflict the contract promises; treating every distinct
+  # spelling as a distinct socket would miss the alias case and treating every
+  # loopback address as one socket would reject a legitimate second listener.
+  bindAddresses =
+    host:
+    let
+      unbracketed = lib.removePrefix "[" (lib.removeSuffix "]" host);
+    in
+    if unbracketed == "localhost" then
+      [
+        "127.0.0.1"
+        "::1"
+      ]
+    else
+      [ unbracketed ];
+  bindsSameSocket =
+    left: right:
+    left.port == right.port
+    && builtins.any (address: builtins.elem address (bindAddresses right.host)) (
+      bindAddresses left.host
+    );
+  localBinds = [
+    {
+      host = cfg.otlp.host;
+      port = cfg.otlp.httpPort;
+    }
+    {
+      host = cfg.otlp.host;
+      port = cfg.otlp.grpcPort;
+    }
+  ];
+  ingressBinds = lib.concatMap (
+    listener:
+    lib.optional (listener.httpPort != null) {
+      inherit (listener) host;
+      port = listener.httpPort;
+    }
+    ++ lib.optional (listener.grpcPort != null) {
+      inherit (listener) host;
+      port = listener.grpcPort;
+    }
+  ) ingressHosts;
+  # Reported as the consumer spelled it, so the named error points at the value
+  # that has to change.
+  listenerCollisions = map (bind: "${bind.host}:${toString bind.port}") (
+    builtins.filter (
+      ingressBind: builtins.any (localBind: bindsSameSocket localBind ingressBind) localBinds
+    ) ingressBinds
+  );
+  ingressTransports = lib.concatMap (
+    listener:
+    lib.optional (listener.httpPort != null) "http" ++ lib.optional (listener.grpcPort != null) "grpc"
+  ) ingressHosts;
+
+  # Credential vocabulary. Provider-independent: validating secret wiring must
+  # not depend on whether an OTel instance happens to run, because the scrape
+  # provider binds credentials too.
+  secretIds = builtins.attrNames cfg.secretFiles;
+  secretNamesMatch = secretIds == builtins.attrNames cfg.secretKeys;
+  validSecretIds = builtins.all (id: builtins.match "[A-Za-z0-9_]+" id != null) secretIds;
+  headerSecretIds = lib.unique (
+    lib.concatMap (
+      name: map (header: header.secret) (lib.attrValues cfg.destinations.${name}.headers)
+    ) destinationNames
+  );
+  unknownHeaderSecrets = builtins.filter (id: !(builtins.hasAttr id cfg.secretFiles)) headerSecretIds;
+
+  # The local endpoint is a promise that an implementation binds it AND accepts
+  # what is pushed there. A push-only consumer that imports this fragment, reads
+  # the URL, and registers nothing has no orphan for the guard below to catch,
+  # and a destination alone never admits a signal — so the derived value itself
+  # fails closed by name instead of advertising a dead or deaf address. An
+  # admitted signal with no pipeline to carry it is the same broken promise from
+  # the other side: the listener would acknowledge what it silently drops.
   derivedUrl =
     option: port:
     if !cfg.realized then
       throw "telemetry: ${option} was read on a host that did not select flake.modules.nixos.telemetry; no implementation binds the local OTLP endpoint. Select the host aspect or drop the read."
-    else if destinationNames == [ ] then
-      throw "telemetry: ${option} was read without any destinations; no local OTLP collector can run without an exporter pipeline. Bind a destination before using the endpoint."
+    else if admittedSignals == [ ] then
+      throw "telemetry: ${option} was read without admitting any OTLP signal; the local endpoint promises an input this host accepts, so declare services.telemetry.otlp.signals (for example [ \"traces\" ]) before reading it. Binding a destination alone admits nothing."
+    else if unservedSignals != [ ] then
+      throw "telemetry: ${option} was read while OTLP admits ${lib.concatStringsSep ", " unservedSignals} with no destination pipeline to carry them; an admitted input is only a realized input once a destination accepts it. Bind a destination accepting the signal or remove it from services.telemetry.otlp.signals."
     else
-      "http://${cfg.otlp.host}:${toString port}";
+      let
+        host =
+          if lib.hasInfix ":" cfg.otlp.host && !lib.hasPrefix "[" cfg.otlp.host then
+            "[${cfg.otlp.host}]"
+          else
+            cfg.otlp.host;
+      in
+      "http://${host}:${toString port}";
 
   orphanReport = lib.concatStringsSep ", " (
     lib.optional (
@@ -137,27 +257,82 @@ in
       host = mkOption {
         type = types.str;
         default = "127.0.0.1";
-        description = "Address the local OTLP receiver binds (loopback for an agent, a tailnet address for a gateway).";
+        description = ''
+          Address the local OTLP producer listener binds. Loopback-only: the
+          producer interface is host-local by construction, and a host that must
+          receive telemetry from other machines binds the explicit additional
+          ingress (`otlp.ingress`) instead. A non-loopback value fails closed by
+          name.
+        '';
       };
-      grpcPort = mkOption {
-        type = types.port;
-        default = 4317;
-        description = "OTLP gRPC receiver port.";
+      signals = mkOption {
+        type = types.listOf (types.enum allSignals);
+        default = [ ];
+        description = ''
+          Signals this host's OTLP input accepts, as a unique set. Empty by
+          default: a destination or a provider selection declares where data
+          goes, never that an input exists, so a host must admit its signals
+          explicitly. Every admitted signal needs a nonempty destination
+          pipeline (otherwise the receiver would acknowledge what it drops), and
+          the local OTLP URLs are only readable once an admitted signal has a destination to carry it.
+        '';
       };
       httpPort = mkOption {
         type = types.port;
         default = 4318;
-        description = "OTLP HTTP receiver port.";
+        description = "OTLP HTTP receiver port for the loopback producer listener.";
+      };
+      grpcPort = mkOption {
+        type = types.port;
+        default = 4317;
+        description = "OTLP gRPC receiver port for the loopback producer listener.";
       };
       httpUrl = mkOption {
         type = types.str;
         readOnly = true;
-        description = "OTLP/HTTP endpoint producers push to; derived from `host` and `httpPort`.";
+        description = "OTLP/HTTP endpoint producers push to; derived from `host` and `httpPort`, and readable only once an admitted signal has a destination pipeline to carry it.";
       };
       grpcUrl = mkOption {
         type = types.str;
         readOnly = true;
-        description = "OTLP/gRPC endpoint producers push to; derived from `host` and `grpcPort`.";
+        description = "OTLP/gRPC endpoint producers push to; derived from `host` and `grpcPort`, and readable only once an admitted signal has a destination pipeline to carry it.";
+      };
+      ingress = mkOption {
+        type = types.nullOr (
+          types.submodule {
+            options = {
+              host = mkOption {
+                type = types.str;
+                description = ''
+                  Address the additional OTLP ingress listener binds — the
+                  consumer's tailnet (or other) bind address. Required and
+                  explicit: there is no automatic address discovery, and a
+                  wildcard or empty value fails closed by name.
+                '';
+              };
+              httpPort = mkOption {
+                type = types.nullOr types.port;
+                default = 4318;
+                description = "OTLP HTTP port for the additional ingress. Null disables the HTTP transport.";
+              };
+              grpcPort = mkOption {
+                type = types.nullOr types.port;
+                default = null;
+                description = "OTLP gRPC port for the additional ingress. Null (the default) disables the gRPC transport.";
+              };
+            };
+          }
+        );
+        default = null;
+        description = ''
+          Optional network-facing OTLP listener for a gateway that receives
+          telemetry from other hosts. Absent by default: a host that admits OTLP
+          signals creates no network listener and no firewall opening. The
+          ingress carries the host's admitted `otlp.signals` — it is not another
+          routing or signal-selection surface — and leaves the loopback producer
+          URLs untouched. The consumer owns interface-specific firewall policy
+          and any authentication in front of it.
+        '';
       };
     };
 
@@ -397,6 +572,66 @@ in
       {
         assertion = cfg.journald.sink.endpoint == null || validSinkUrl cfg.journald.sink.endpoint;
         message = "telemetry: journald sink endpoint '${cfg.journald.sink.endpoint}' must be an http:// or https:// URL.";
+      }
+      {
+        assertion = !cfg.realized || isLoopbackHost cfg.otlp.host;
+        message = "telemetry: services.telemetry.otlp.host is '${cfg.otlp.host}', but the producer listener is loopback-only. Bind the network-facing listener through services.telemetry.otlp.ingress instead.";
+      }
+      {
+        assertion = duplicateSignals == [ ];
+        message = "telemetry: services.telemetry.otlp.signals names ${lib.concatStringsSep ", " (lib.unique duplicateSignals)} more than once; admitted signals are a unique set.";
+      }
+      {
+        assertion = unservedSignals == [ ];
+        message = "telemetry: OTLP admits ${lib.concatStringsSep ", " unservedSignals} with no destination pipeline to carry them; bind a destination accepting the signal or remove it from services.telemetry.otlp.signals. A receiver never acknowledges what it cannot export.";
+      }
+      {
+        assertion =
+          ingressHosts == [ ]
+          || !builtins.any (
+            listener: listener.host == "" || builtins.elem listener.host wildcardHosts
+          ) ingressHosts;
+        message = "telemetry: services.telemetry.otlp.ingress.host must be an explicit bind address, not wildcard or empty; a wildcard ingress would expose the collector on every interface. Set the consumer's tailnet (or other) address.";
+      }
+      {
+        assertion = ingressHosts == [ ] || ingressTransports != [ ];
+        message = "telemetry: services.telemetry.otlp.ingress sets no HTTP or gRPC port; declare at least one transport or remove the ingress.";
+      }
+      {
+        assertion = ingressHosts == [ ] || admittedSignals != [ ];
+        message = "telemetry: services.telemetry.otlp.ingress is configured while services.telemetry.otlp.signals is empty; the ingress carries the host's admitted OTLP signals, so declare at least one signal or remove the ingress.";
+      }
+      {
+        assertion = cfg.otlp.httpPort != cfg.otlp.grpcPort;
+        message = "telemetry: services.telemetry.otlp.httpPort and grpcPort must differ; both bind port ${toString cfg.otlp.httpPort}.";
+      }
+      {
+        assertion =
+          ingress == null
+          || ingress.httpPort == null
+          || ingress.grpcPort == null
+          || ingress.httpPort != ingress.grpcPort;
+        message = "telemetry: services.telemetry.otlp.ingress.httpPort and grpcPort must differ when both transports are enabled.";
+      }
+      {
+        assertion = listenerCollisions == [ ];
+        message = "telemetry: services.telemetry.otlp.ingress binds ${lib.concatStringsSep ", " listenerCollisions}, the same address and transport port as the local producer listener; the two listeners must be distinct.";
+      }
+      {
+        assertion = !cfg.realized || secretNamesMatch;
+        message = "telemetry: secretFiles and secretKeys IDs must match; secretFiles has ${lib.concatStringsSep ", " secretIds} and secretKeys has ${lib.concatStringsSep ", " (builtins.attrNames cfg.secretKeys)}.";
+      }
+      {
+        assertion = !cfg.realized || validSecretIds;
+        message = "telemetry: secret IDs must contain only letters, digits, or underscores; got ${
+          lib.concatStringsSep ", " (
+            builtins.filter (id: builtins.match "[A-Za-z0-9_]+" id == null) secretIds
+          )
+        }.";
+      }
+      {
+        assertion = !cfg.realized || unknownHeaderSecrets == [ ];
+        message = "telemetry: destination header(s) reference unknown secret(s) ${lib.concatStringsSep ", " unknownHeaderSecrets}; declare them in services.telemetry.secretFiles and secretKeys or fix the reference.";
       }
     ];
   };

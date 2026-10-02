@@ -5,10 +5,10 @@
 # consumer's selected implementation carries it to whatever metrics destination
 # it declares.
 #
-# It imports the contract fragment so the registration is valid whether or not
-# the telemetry aspect is co-selected; on a host that did not select telemetry
-# the registration fails closed by name (the fragment's orphan guard) instead
-# of being silently dropped.
+# It imports the reusable contract fragment (lib/telemetry-contract.nix) so the
+# registration is valid whether or not the telemetry aspect is co-selected; on a
+# host that did not select telemetry the registration fails closed by name (the
+# fragment's orphan guard) instead of being silently dropped.
 _: {
   flake.modules.nixos.node-exporter =
     { config, lib, ... }:
@@ -17,7 +17,7 @@ _: {
     in
     {
       imports = [
-        ../telemetry/telemetry/_contract.nix
+        ../../lib/telemetry-contract.nix
         ../notifications/notify/_notify-events.nix
       ];
 
