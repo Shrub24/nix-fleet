@@ -15,6 +15,7 @@
   buildGo127Module,
   callPackage,
   fetchFromGitHub,
+  runCommand,
 }:
 
 let
@@ -28,22 +29,28 @@ let
     hash = "sha256-6WEIbrpctkMN/qjzfCGFT9xhT8Hp9j+atBWOK5Dd7rA=";
   };
 
-  # The two subtrees the binary is made of: the Go module that produces it and
-  # the UI source it embeds. Docs, terraform, helm charts, examples and the
-  # monorepo's other Go modules never reach a build step and are not inputs.
-  transportsSrc = lib.cleanSourceWith {
-    src = "${src}/transports";
-    name = "bifrost-transports-${version}";
-    # Air's hot-reload config is the only thing in the module tree that no build
-    # step reads (the config schema stays: the module's own tests read it).
-    filter = path: _: !(lib.hasSuffix "/.air.toml" path || lib.hasSuffix "/.air.debug.toml" path);
-  };
+  # The two subtrees the binary is made of, split out of the fetched monorepo
+  # at *build* time. Deriving them at evaluation (`lib.cleanSourceWith` over the
+  # fetch output) is an import-from-derivation: the path only exists once the
+  # fetch has run, so `nix flake check --no-build` and any fresh store fail on
+  # it even though the same evaluation succeeds where the output is already
+  # cached. Only these subtrees are needed anyway — `docs/` alone is 559 MiB of
+  # the 626 MiB checkout.
+  transportsSrc = runCommand "bifrost-transports-${version}" { } ''
+    mkdir -p "$out"
+    cp -R --no-preserve=mode,ownership,timestamps ${src}/transports/. "$out/"
+    # Air's hot-reload config is the only thing in the module tree that no
+    # build step reads (the config schema stays: the module's own tests read it).
+    rm -f "$out/.air.toml" "$out/.air.debug.toml"
+  '';
+
+  uiSrc = runCommand "bifrost-ui-${version}" { } ''
+    mkdir -p "$out"
+    cp -R --no-preserve=mode,ownership,timestamps ${src}/ui/. "$out/"
+  '';
 
   ui = callPackage ./ui.nix {
-    src = lib.cleanSourceWith {
-      src = "${src}/ui";
-      name = "bifrost-ui-${version}";
-    };
+    src = uiSrc;
     inherit version;
   };
   goModule = {
