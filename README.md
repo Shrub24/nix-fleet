@@ -99,7 +99,7 @@ The same fleet feature publishes the typed `fleet.services.*.endpoints.*` endpoi
 
 Selection is enablement for every aspect: importing the module applies it, so there is no `enable` flag to remember.
 
-7. **`nix-baseline`** — substituter catalog + daemon tuning (nixpkgs-owned defaults such as `cache.nixos.org` are not restated). Consumers extend through `extraSubstituters`, `extraTrustedPublicKeys`, `extraTrustedSubstituters`. Registers `nix-daemon.failure` (`fromPackage`).
+7. **`nix-baseline`** — latest locked Nix package, batch CPU and low-priority I/O daemon defaults, substituter catalog and tuning (nixpkgs-owned defaults such as `cache.nixos.org` are not restated). Host-sized memory, `cores` and `max-jobs` budgets stay consumer-owned. Consumers extend through `extraSubstituters`, `extraTrustedPublicKeys`, `extraTrustedSubstituters`. Registers `nix-daemon.failure` (`fromPackage`).
 8. **`ssh`** — server hardening (password auth off, `prohibit-password`, firewall default on) + client tuning fragment in `/etc/ssh/ssh_config.d`. Namespace is `services.ssh-baseline`. Registers `sshd.failure`.
 9. **`mosh`** — `programs.mosh` with `openFirewall = false` deliberately: exposure is the consumer's call, and tailnet-only use needs none.
 10. **`nix-gc`** — scheduled store GC; `implementation = "nh" | "fast-nix-gc"`. Registers `nix-gc.failure` either way.

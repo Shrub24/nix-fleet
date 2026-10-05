@@ -1,14 +1,9 @@
-# Shared Nix daemon baseline: the substitution catalog and daemon tuning
-# Selection is enablement.
-# both consumer repos previously duplicated. The catalog is tier-2 shared
-# policy — every option carries a consumer override (mkDefault) so hosts
-# extend or replace entries without fighting the aspect. The niks3-cache
-# aspect's own substituter binding takes precedence over the catalog
-# default when co-selected.
+# Shared Nix package, daemon priorities and substitution policy.
+# Selection is enablement; host resource budgets remain consumer-owned.
 { lib, ... }:
 {
   flake.modules.nixos.nix-baseline =
-    { ... }:
+    { pkgs, ... }:
     {
       imports = [ ../notifications/notify/_notify-events.nix ];
 
@@ -33,6 +28,15 @@
       };
 
       config = {
+        nix.package = lib.mkDefault pkgs.nixVersions.latest;
+        nix.daemonCPUSchedPolicy = lib.mkDefault "batch";
+        nix.daemonIOSchedClass = lib.mkDefault "best-effort";
+        nix.daemonIOSchedPriority = lib.mkDefault 7;
+        systemd.services.nix-daemon.serviceConfig = {
+          CPUWeight = lib.mkDefault 50;
+          IOWeight = lib.mkDefault 50;
+        };
+
         nix.settings = {
           experimental-features = [
             "nix-command"

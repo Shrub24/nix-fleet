@@ -1017,6 +1017,36 @@ let
       builtins.any (lib.hasPrefix "telemetry: scrape source(s) node configured without")
         (admissionFailures [ aspects.node-exporter ]);
 
+  nixBaselineChecks =
+    let
+      evaluated =
+        extra:
+        (fixtureNixosSystem {
+          system = "x86_64-linux";
+          modules = [
+            aspects.nix-baseline
+            extra
+          ];
+        }).config;
+      defaults = evaluated { };
+      overridden = evaluated {
+        nix.daemonCPUSchedPolicy = "idle";
+        nix.daemonIOSchedClass = "idle";
+        systemd.services.nix-daemon.serviceConfig.MemoryHigh = "8G";
+      };
+    in
+    defaults.nix.package.version
+    == inputs.nixpkgs.legacyPackages.x86_64-linux.nixVersions.latest.version
+    && defaults.nix.daemonCPUSchedPolicy == "batch"
+    && defaults.nix.daemonIOSchedClass == "best-effort"
+    && defaults.nix.daemonIOSchedPriority == 7
+    && defaults.systemd.services.nix-daemon.serviceConfig.CPUWeight == 50
+    && defaults.systemd.services.nix-daemon.serviceConfig.IOWeight == 50
+    && !(defaults.systemd.services.nix-daemon.serviceConfig ? MemoryHigh)
+    && overridden.nix.daemonCPUSchedPolicy == "idle"
+    && overridden.nix.daemonIOSchedClass == "idle"
+    && overridden.systemd.services.nix-daemon.serviceConfig.MemoryHigh == "8G";
+
   nodeExporterIdentityChecks =
     let
       identity =
@@ -1242,7 +1272,8 @@ let
           # ssh owns the hardening (sshd) — both wired as drop-ins.
           assertion =
             (config.systemd.services."nix-daemon".onFailure or [ ]) != [ ]
-            && (config.systemd.services.sshd.onFailure or [ ]) != [ ];
+            && (config.systemd.services.sshd.onFailure or [ ]) != [ ]
+            && nixBaselineChecks;
           message = "fixture: the nix-baseline/ssh aspects registered no failure hooks on their units.";
         }
         {
