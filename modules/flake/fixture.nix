@@ -1089,6 +1089,7 @@ let
       ++ (with aspects; [
         alertmanager
         beszel-agent
+        bifrost
         build-account
         nix-baseline
         nix-gc
@@ -1115,6 +1116,14 @@ let
 
       # Non-vacuity guard: every aspect must show its contribution.
       assertions = [
+        {
+          assertion =
+            config.systemd.services.bifrost.serviceConfig.User == "bifrost"
+            && !config.services.bifrost.renderedConfig.config_store.enabled
+            && config.services.notify.events.bifrost.failure != null
+            && config.systemd.services.bifrost.onFailure != [ ];
+          message = "fixture: the Bifrost aspect lost its service, config authority or notify hook.";
+        }
         {
           assertion =
             config.services.beszel.agent.enable && config.services.beszel.agent.environment.KEY or "" != "";
