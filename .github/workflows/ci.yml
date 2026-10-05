@@ -1,5 +1,5 @@
-# nix-fleet's own CI: formatting, flake checks, fixture toplevel builds on
-# every declared system, plus the fleet build pipeline via the reusable
+# nix-fleet's own CI: formatting, all-systems evaluation, native check builds,
+# plus the fleet build pipeline via the reusable
 # workflow (this repo is its own first consumer — the ci builder set is the
 # canonical inventory).
 name: ci
@@ -35,10 +35,10 @@ jobs:
       - name: Evaluate all systems
         run: nix flake check --no-build --no-write-lock-file --all-systems
 
-      - name: Build fixture toplevel (x86_64)
-        # --all-systems evaluates the aarch64 fixture; aarch64 toplevels are
-        # built natively by aarch64 builders/consumers, not here.
-        run: nix build --no-link .#checks.x86_64-linux.fixture-x86-64-linux
+      - name: Build all native checks (x86_64)
+        # Includes the fixture and real-binary runtime checks. The preceding
+        # all-systems evaluation covers ARM; builds here remain native.
+        run: nix flake check --no-write-lock-file
 
   fleet-build:
     # Dogfood: nix-fleet schedules against its own canonical ci set. The

@@ -3,6 +3,15 @@
 How GitHub Actions builds against fleet builders using the same registry the
 hosts use. No builder coordinates live in workflow files or repo variables.
 
+## Validation gates
+
+On every push and pull request, `ci.yml` checks formatting, evaluates all declared
+systems, then builds **all native x86_64 checks** with `nix flake check`. This
+includes the fixture toplevel, Bifrost startup/plugin/module runtime checks and
+telemetry delivery/ingress checks. Adding a native check adds a CI gate without
+editing the workflow. ARM evaluation is covered; ARM builds require an ARM builder.
+The separately dispatch-gated fleet build workflow is not needed for these gates.
+
 ## Model
 
 ```
