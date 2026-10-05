@@ -26,9 +26,14 @@
         ) cfg.plugins
       );
       renderedConfig = cfg.settings // {
-        config_store = (cfg.settings.config_store or { }) // {
-          enabled = false;
-        };
+        config_store =
+          cfg.settings.config_store
+          // lib.optionalAttrs (cfg.settings.config_store.type == "sqlite") {
+            config = {
+              path = "${cfg.dataDir}/config.db";
+            }
+            // (cfg.settings.config_store.config or { });
+          };
         inherit plugins;
       };
       configFile = json.generate "bifrost-config.json" renderedConfig;
@@ -78,14 +83,29 @@
         settings = lib.mkOption {
           type = lib.types.submodule {
             freeformType = json.type;
-            options.config_store.enabled = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = "Must remain false: the module owns startup configuration.";
+            options = {
+              config_store.enabled = lib.mkOption {
+                type = lib.types.bool;
+                default = true;
+                description = "Persistent store required by governance, CEL routing and dashboard authentication.";
+              };
+              config_store.type = lib.mkOption {
+                type = lib.types.enum [
+                  "sqlite"
+                  "postgres"
+                ];
+                default = "sqlite";
+                description = "Store backend; SQLite defaults to config.db in dataDir.";
+              };
+              source_of_truth = lib.mkOption {
+                type = lib.types.str;
+                default = "config.json";
+                description = "Startup reconciliation authority; must remain config.json.";
+              };
             };
           };
           default = { };
-          description = "Mergeable Bifrost config.json. plugins is owned by plugins.* and the config store must remain disabled. Secret values must not appear here.";
+          description = "Mergeable Bifrost config.json. plugins is owned by plugins.* and config.json remains the startup authority. Secret values must not appear here.";
         };
         plugins = lib.mkOption {
           type = lib.types.attrsOf (
@@ -142,8 +162,8 @@
             message = "bifrost: settings.plugins is reserved; register plugins through services.bifrost.plugins.";
           }
           {
-            assertion = !(cfg.settings.config_store.enabled or false);
-            message = "bifrost: config_store.enabled must be false; startup configuration is Nix-owned.";
+            assertion = cfg.settings.source_of_truth == "config.json";
+            message = "bifrost: source_of_truth must be config.json; startup configuration is Nix-owned.";
           }
           {
             assertion =

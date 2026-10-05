@@ -31,13 +31,23 @@ these fields are passed through, not a new fleet plugin scheduler.
 
 `settings` is mergeable JSON-shaped configuration, not a second model of Bifrost's
 provider schema. `renderedConfig` and `renderedConfigFile` expose the effective
-startup document as data and a store file. The module sets
-`config_store.enabled = false` and refuses an explicit `true`. It restores the
-Nix document to `<dataDir>/config.json` before every start, with mode `0400`, and
-restarts the service when the rendered document changes. UI/API edits are not a
-persistent configuration authority; the runtime check exercises provider-change
-refusal and rollback, then restart restoration. This is not a claim that every
-management endpoint is disabled or that the dashboard is a read-only interface.
+startup document as data and a store file. The config store defaults to enabled:
+Bifrost needs it for governance, CEL routing and dashboard authentication.
+The default backend is SQLite at `<dataDir>/config.db`; consumers can override
+`settings.config_store.type` and its `config` object for an existing store.
+`source_of_truth` defaults to `"config.json"` and other values are refused. This
+makes sections present in the Nix document authoritative during startup
+reconciliation; omitted sections leave database rows untouched. Use explicit
+empty collections when removing declaratively managed entities.
+
+The module restores the Nix document to `<dataDir>/config.json` before every
+start, with mode `0400`, and restarts the service when the rendered document
+changes. This is startup authority, not a read-only management API: runtime
+UI/API changes may be accepted and persist in the store until the next startup
+reconciles a declared section. Do not mistake the enabled store for permission
+to make the database the configuration authority. The runtime check boots with
+the governance plugin and a declared CEL routing rule, verifies their routes,
+and tests restart restoration.
 
 Never put credentials in `settings` or `environment`: both enter the Nix store.
 Bind `environmentFile` to a runtime file (normally a consumer-rendered SOPS
@@ -78,8 +88,8 @@ ordinary provider `extra_headers` configuration.
 
 The package/plugin checks prove actual loading and outgoing request bodies. The
 module check uses the generated startup script and command to boot a fresh
-application directory, probe provider mutation refusal, and restart with the Nix
-configuration restored. Fixture mutations verify the named config-store and
+application directory with governance and CEL routing, and restart with the Nix
+configuration restored. Fixture mutations verify the named source-of-truth and
 plugin-ownership assertions; evaluation does not read generated files.
 
 ## Homelab migration

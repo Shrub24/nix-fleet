@@ -56,6 +56,16 @@ in
           environment.FIXTURE_PUBLIC_VALUE = "public";
           environmentFile = "/run/secrets/bifrost.environment";
           settings.framework.pricing = feeds;
+          settings.governance.routing_rules = [
+            {
+              id = "fixture-cel";
+              name = "Fixture CEL routing";
+              enabled = true;
+              cel_expression = "true";
+              targets = [ { weight = 1; } ];
+            }
+          ];
+          plugins.governance = { };
           plugins.voyage-normalizer.path = "${config.packages.bifrost-voyage-plugin}/lib/bifrost/voyage.so";
         };
       };
@@ -74,14 +84,15 @@ in
         && builtins.elem "d ${cfg.dataDir} 0700 bifrost bifrost - -" evaluated.config.systemd.tmpfiles.rules
         && evaluated.config.services.notify.events.bifrost.failure != null
         && cfg.host == "127.0.0.1"
-        && cfg.renderedConfig.config_store.enabled == false
+        && cfg.renderedConfig.config_store.enabled
+        && cfg.renderedConfig.source_of_truth == "config.json"
         &&
-          (builtins.head cfg.renderedConfig.plugins).path
+          (lib.findFirst (plugin: plugin.name == "voyage-normalizer") null cfg.renderedConfig.plugins).path
           == "${config.packages.bifrost-voyage-plugin}/lib/bifrost/voyage.so";
       mutation =
-        builtins.elem "bifrost: config_store.enabled must be false; startup configuration is Nix-owned."
+        builtins.elem "bifrost: source_of_truth must be config.json; startup configuration is Nix-owned."
           (failures {
-            services.bifrost.settings.config_store.enabled = true;
+            services.bifrost.settings.source_of_truth = "split";
           })
         &&
           builtins.elem

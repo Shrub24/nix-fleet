@@ -36,40 +36,13 @@ def main():
             process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
         try:
             wait_ready(process, base + "/health", log_path)
-            config_request = urllib.request.Request(
-                base + "/api/config",
-                data=json.dumps({"client_config": {"drop_excess_requests": True}}).encode(),
-                headers={"Content-Type": "application/json"},
-                method="PUT",
-            )
-            try:
-                urllib.request.urlopen(config_request, timeout=10).close()
-                raise AssertionError("management API accepted a core config mutation")
-            except urllib.error.HTTPError as error:
-                detail = error.read().decode()
-                assert error.code == 500 and "Config store not initialized" in detail, detail
-            body = {
-                "provider": "mutation-probe",
-                "custom_provider_config": {
-                    "base_provider_type": "openai",
-                    "allowed_requests": {"embedding": True, "list_models": False},
-                },
-            }
-            request = urllib.request.Request(
-                base + "/api/providers",
-                data=json.dumps(body).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            try:
-                urllib.request.urlopen(request, timeout=10).close()
-                raise AssertionError("management API accepted a provider mutation")
-            except urllib.error.HTTPError as error:
-                detail = error.read().decode()
-                assert error.code == 500 and "config store not found" in detail, detail
-            with urllib.request.urlopen(base + "/api/providers", timeout=10) as response:
-                assert "mutation-probe" not in response.read().decode(), "refused mutation survived"
-            assert json.loads(target.read_text()) == expected, "API changed startup config"
+            with urllib.request.urlopen(base + "/api/routing/rules", timeout=10) as response:
+                rules = json.loads(response.read())
+                assert "fixture-cel" in json.dumps(rules), rules
+            # Governance must be enabled, not merely bypassed by a health probe.
+            with urllib.request.urlopen(base + "/api/governance/virtual-keys", timeout=10) as response:
+                assert response.status == 200
+            assert json.loads(target.read_text()) == expected, "runtime changed startup config"
         finally:
             process.terminate()
             process.wait(timeout=20)
@@ -83,7 +56,7 @@ def main():
         (output / log.name).write_bytes(log.read_bytes())
     (output / "summary.txt").write_text(
         "generated startup path healthy on fresh state and restart\n"
-        "core config mutation refused; provider mutation refused and rolled back; startup config restored\n"
+        "governance and CEL routing available; startup config restored\n"
     )
 
 

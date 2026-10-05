@@ -1171,7 +1171,8 @@ let
         {
           assertion =
             config.systemd.services.bifrost.serviceConfig.User == "bifrost"
-            && !config.services.bifrost.renderedConfig.config_store.enabled
+            && config.services.bifrost.renderedConfig.config_store.enabled
+            && config.services.bifrost.renderedConfig.source_of_truth == "config.json"
             && config.services.notify.events.bifrost.failure != null
             && config.systemd.services.bifrost.onFailure != [ ];
           message = "fixture: the Bifrost aspect lost its service, config authority or notify hook.";
