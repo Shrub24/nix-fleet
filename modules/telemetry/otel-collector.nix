@@ -37,6 +37,8 @@ _: {
       servesOtlpIngest = telemetry.providers.otlpIngest == "otel-collector";
       servesPrometheusScrape = telemetry.providers.prometheusScrape == "otel-collector";
 
+      # Exporter IDs key persistent queue files. Keep legacy aliases until
+      # an explicit queue drain/migration; renaming strands pending OTLP data.
       exporterComponent =
         protocol:
         {

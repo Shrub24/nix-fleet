@@ -115,6 +115,9 @@ Selecting it **without** `telemetry` is an orphan registration and fails closed
 by name. `services.node-exporter.port` is the only option — one value, so the
 listener and the registration cannot disagree; anything else about the exporter
 is reachable through nixpkgs' own `services.prometheus.exporters.node`.
+The scrape registration defaults `labels.instance` to `hostName:port`, so local
+loopback targets on different hosts do not merge into one series. Consumers may
+override `services.telemetry.scrape.node.labels.instance` normally.
 **Migration, not coexistence.** A consumer that already scrapes every host's
 node exporter over the network from a central store is running a different
 design, and the two must not run together: delete those remote jobs (and the
@@ -341,6 +344,13 @@ below Vector's disk-buffer floor rather than letting the service fail at
 startup.
 
 ## OTLP delivery: persistent, bounded, observable
+
+Exporter IDs are persistent state identities. The adapter retains the legacy
+`otlphttp` and `prometheusremotewrite` aliases despite upstream deprecation
+warnings. A real Collector 0.155 probe showed that renaming `otlphttp/probe` to
+`otlp_http/probe` opens a new queue file and leaves the old backlog undelivered;
+a same-ID restart recovers it. An exporter rename needs an explicit drain or
+state migration, not just a configuration spelling change.
 
 Active OTel exporters do not accept into a volatile batch and hope. Each
 exporter has its own delivery state under the nixpkgs unit's StateDirectory

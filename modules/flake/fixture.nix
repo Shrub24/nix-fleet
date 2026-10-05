@@ -1017,6 +1017,28 @@ let
       builtins.any (lib.hasPrefix "telemetry: scrape source(s) node configured without")
         (admissionFailures [ aspects.node-exporter ]);
 
+  nodeExporterIdentityChecks =
+    let
+      identity =
+        extra:
+        (fixtureNixosSystem {
+          system = "x86_64-linux";
+          modules = [
+            aspects.node-exporter
+            extra
+          ];
+        }).config.services.telemetry.scrape.node.labels.instance;
+    in
+    identity {
+      networking.hostName = "node-probe";
+      services.node-exporter.port = 9200;
+    } == "node-probe:9200"
+    &&
+      identity {
+        networking.hostName = "other-probe";
+        services.telemetry.scrape.node.labels.instance = "consumer-owned";
+      } == "consumer-owned";
+
   # The alerting aspects' own contract: selected but unbound leaves no unit and
   # no registration, an enabled vmalert instance without a datasource or a
   # notifier is refused by name (per instance), and a fully bound one is
@@ -1496,7 +1518,7 @@ let
                   static_configs = [
                     {
                       targets = [ "127.0.0.1:9100" ];
-                      labels = { };
+                      labels.instance = "${config.networking.hostName}:9100";
                     }
                   ];
                 }
@@ -1580,6 +1602,8 @@ let
             && lib.hasInfix "--web.listen-address 127.0.0.1:9100" unit.serviceConfig.ExecStart
             && config.services.telemetry.scrape.node.target == "127.0.0.1"
             && config.services.telemetry.scrape.node.port == 9100
+            && config.services.telemetry.scrape.node.labels.instance == "${config.networking.hostName}:9100"
+            && nodeExporterIdentityChecks
             && config.services.notify.events.prometheus-node-exporter.failure != null
             && unit.onFailure != [ ]
             && nodeExporterAdmissionChecks;

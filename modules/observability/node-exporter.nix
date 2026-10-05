@@ -42,6 +42,7 @@ _: {
         services.telemetry.scrape.node = {
           target = "127.0.0.1";
           inherit (cfg) port;
+          labels.instance = lib.mkDefault "${config.networking.hostName}:${toString cfg.port}";
         };
 
         # This aspect owns the unit, so it registers the failure: a stopped
