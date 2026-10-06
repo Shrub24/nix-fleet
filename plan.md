@@ -169,8 +169,10 @@ on the contract change; none conflict with it.
 - [x] **`nix-baseline` aspect**: substitution catalog + tuning from
       dotfiles' `nix.nix` (duplicated in homelab's foundation.nix):
       cache.shrublab.xyz substituter + keys, connect-timeouts,
-      builders-use-substitutes. Tier-2 shared default; consumers extend
-      via the same options. Adoption independent of v2.
+      builders-use-substitutes. Tier-2 shared default, owned outright by the
+      aspect; consumers append via nix.conf's `extra-substituters` /
+      `extra-trusted-public-keys` or replace with `mkForce`. Adoption
+      independent of v2.
 - [x] **`ssh` + `mosh` aspects**: openssh baseline (password-auth off,
       openFirewall default) + client multiplexing fragment;
       `clientTuning` toggle. Per-host server policy stays consumer-side.

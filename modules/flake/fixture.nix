@@ -1127,6 +1127,48 @@ let
       bound
     ]).config.services.notify.events
       ? "vmalert-bound";
+  # The substitution catalog is a fleet-owned baseline, not an option surface:
+  # a consumer appends through nix.conf's own extra-substituters key, or
+  # replaces the list outright with mkForce. Both seams are exercised here so
+  # neither can rot into an option nothing renders again.
+  nixBaselineSubstitutionSeams =
+    let
+      settingsFor =
+        extra:
+        (admissionEval [
+          aspects.nix-baseline
+          extra
+        ]).config.nix.settings;
+      base = settingsFor { };
+      appended = settingsFor {
+        nix.settings."extra-substituters" = [ "https://appended.invalid" ];
+        nix.settings."extra-trusted-public-keys" = [ "appended.invalid-1:AAAA" ];
+      };
+      replaced = settingsFor {
+        nix.settings.substituters = lib.mkForce [ "https://replaced.invalid" ];
+      };
+    in
+    base.substituters == [
+      # Appended to nixpkgs' own contribution, not restated by the aspect.
+      "https://cache.nixos.org/"
+      "https://nix-community.cachix.org"
+      "https://cache.numtide.com"
+      "https://cache.shrublab.xyz"
+    ]
+    && builtins.all (message: builtins.elem message base."trusted-substituters") [
+      "https://cache.shrublab.xyz"
+      "ssh-ng://eu.nixbuild.net"
+    ]
+    && builtins.any (lib.hasPrefix "cache.nixos.org-1:") base."trusted-public-keys"
+    &&
+      builtins.elem "nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A="
+        base."trusted-public-keys"
+    # Appending is a key of its own, so the baseline list must survive it.
+    && appended.substituters == base.substituters
+    && appended."extra-substituters" == [ "https://appended.invalid" ]
+    && appended."extra-trusted-public-keys" == [ "appended.invalid-1:AAAA" ]
+    # Replacing is explicit and drops the baseline entries rather than unioning.
+    && replaced.substituters == [ "https://replaced.invalid" ];
   fixtureModule =
     {
       config,
@@ -1306,8 +1348,11 @@ let
         {
           assertion =
             config.nix.settings.substituters or [ ] != [ ]
-            && builtins.elem "https://cache.shrublab.xyz" (config.nix.settings.substituters or [ ]);
-          message = "fixture: the nix-baseline aspect did not render the substitution catalog.";
+            && builtins.elem "https://cache.shrublab.xyz" (config.nix.settings.substituters or [ ])
+            # The seams themselves: append, replace, and nixpkgs' own entry
+            # surviving both.
+            && nixBaselineSubstitutionSeams;
+          message = "fixture: the nix-baseline substitution catalog or its consumer override seams regressed.";
         }
         {
           assertion =

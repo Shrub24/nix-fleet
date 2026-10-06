@@ -7,26 +7,6 @@
     {
       imports = [ ../notifications/notify/_notify-events.nix ];
 
-      options.services.nix-baseline = {
-        extraSubstituters = lib.mkOption {
-          type = lib.types.listOf lib.types.str;
-          default = [ ];
-          description = "Additional substituter URLs appended to the shared catalog.";
-        };
-
-        extraTrustedPublicKeys = lib.mkOption {
-          type = lib.types.listOf lib.types.str;
-          default = [ ];
-          description = "Public keys for extraSubstituters (or catalog entries overridden per host).";
-        };
-
-        extraTrustedSubstituters = lib.mkOption {
-          type = lib.types.listOf lib.types.str;
-          default = [ ];
-          description = "Substituters the local (possibly unprivileged) user may instruct the daemon to use.";
-        };
-      };
-
       config = {
         nix.package = lib.mkDefault pkgs.nixVersions.latest;
         nix.daemonCPUSchedPolicy = lib.mkDefault "batch";
@@ -46,6 +26,14 @@
           always-allow-substitutes = lib.mkDefault true;
           builders-use-substitutes = lib.mkDefault true;
 
+          # The fleet's own cache and builder catalog, so it has one owner. This
+          # appends to what nixpkgs already contributes (`cache.nixos.org` and
+          # its key) rather than restating it. Consumers append through
+          # nix.conf's own `extra-substituters` / `extra-trusted-public-keys`
+          # keys, or replace a list with `lib.mkForce`. Deliberately not an
+          # option namespace: `substituters` is already an option, and this
+          # aspect's own `extraSubstituters` was declared here once and read by
+          # nothing, so a host following it silently kept the wrong catalog.
           substituters = lib.mkAfter [
             "https://nix-community.cachix.org"
             "https://cache.numtide.com"
