@@ -234,11 +234,13 @@ CI builder artifacts come from the fleet inventory, not repo variables: a
 consumer flake importing the fleet feature gets `packages.ci` (canonical set;
 per-set bundles as `packages.<set>`) — a directory with `machines` (nix
 machines-file lines), `known_hosts`, and `ssh_config`, rendered from the
-merged inventory at consumer eval time. The `build-push-cache` template
-installs these instead of holding builder coordinates; a
-`FLEET_CI_ON_TAILNET=true` repo variable plus
-`TS_OAUTH_CLIENT_ID`/`TS_OAUTH_CLIENT_SECRET` secrets add the Tailscale join
-for fleet-host builders. Full contract: [docs/contracts/ci.md](docs/contracts/ci.md).
+merged inventory at consumer eval time. The `build-push-cache` reusable
+workflow installs these instead of holding builder coordinates; a
+`FLEET_CI_ON_TAILNET=true` repo variable (bound to the workflow's `tailnet`
+input) plus `TS_OAUTH_CLIENT_ID`/`TS_AUDIENCE` from a Tailscale federated
+identity add the join for fleet-host builders — no long-lived OAuth secret,
+reusing the same `id-token: write` grant niks3 needs. Full contract:
+[docs/contracts/ci.md](docs/contracts/ci.md).
 
 CI-capable cache setup consumer-side:
 

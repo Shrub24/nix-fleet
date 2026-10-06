@@ -70,12 +70,12 @@ jobs:
       # optional:
       # builder_attr: ci           (any fleet.buildProfiles entry; ci default)
       # gha_systems: x86_64-linux  (space-separated; add aarch64-linux for arm)
-      # tailnet: true              (join the tailnet; needs the OAuth secrets)
+      # tailnet: true              (join the tailnet; needs the federated identity)
     secrets:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
       # only when tailnet: true
       # TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-      # TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+      # TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
 ```
 
 The calling job must grant `permissions: { contents: read, id-token: write }`
@@ -83,16 +83,16 @@ The calling job must grant `permissions: { contents: read, id-token: write }`
 rejected at parse time (a startup_failure with zero jobs) if the caller
 grants less than the workflow needs.
 
-| Input                    | Meaning                                                                                                                                                                                                  |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cache_api_url`          | niks3 **API** base URL — serves `/api/cache-config`, requires auth/tailnet. Distinct from the public read domain (which the API returns as `substituter_url`); never point this input at the read domain |
-| `targets`                | flake attrspecs for nix-fast-build                                                                                                                                                                       |
-| `builder_attr`           | which `packages.<attr>` bundle to schedule against (canonical `ci` by default)                                                                                                                           |
-| `gha_systems`            | systems the GHA-local build job matrixes over (arm via `aarch64-linux`)                                                                                                                                  |
-| `tailnet`                | join the tailnet before building (boolean, default false). Explicit because a reusable workflow cannot read the caller's variables                                                                       |
-| `BUILDER_SSH_KEY`        | secret: the coordinator's builder SSH key                                                                                                                                                                |
-| `TS_OAUTH_CLIENT_ID`     | secret: Tailscale OAuth client id, required only when `tailnet` is true                                                                                                                                  |
-| `TS_OAUTH_CLIENT_SECRET` | secret: Tailscale OAuth client secret, required only when `tailnet` is true                                                                                                                              |
+| Input                | Meaning                                                                                                                                                                                                  |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cache_api_url`      | niks3 **API** base URL — serves `/api/cache-config`, requires auth/tailnet. Distinct from the public read domain (which the API returns as `substituter_url`); never point this input at the read domain |
+| `targets`            | flake attrspecs for nix-fast-build                                                                                                                                                                       |
+| `builder_attr`       | which `packages.<attr>` bundle to schedule against (canonical `ci` by default)                                                                                                                           |
+| `gha_systems`        | systems the GHA-local build job matrixes over (arm via `aarch64-linux`)                                                                                                                                  |
+| `tailnet`            | join the tailnet before building (boolean, default false). Explicit because a reusable workflow cannot read the caller's variables                                                                       |
+| `BUILDER_SSH_KEY`    | secret: the coordinator's builder SSH key                                                                                                                                                                |
+| `TS_OAUTH_CLIENT_ID` | secret: Tailscale federated identity client id, required only when `tailnet` is true                                                                                                                     |
+| `TS_AUDIENCE`        | secret: that federated identity's audience (`api.tailscale.com/<client id>`), required only when `tailnet` is true                                                                                       |
 
 **Versioning:** pin to a tag (`@v1`), never `@main`. nix-fleet cuts tagged
 releases; renovate proposes tag bumps with changelogs and a PR acceptance
@@ -113,18 +113,29 @@ Two jobs:
 MagicDNS names in the machines file resolve only inside the tailnet, and
 the niks3 **API** host is tailnet-only — so both jobs join, not just
 fleet-build: gha-build must reach `/api/cache-config` and stream uploads
-to the API host. The step is `tailscale/github-action` with a Tailscale
-OAuth client (the action exchanges the OAuth client for an ephemeral node
-key; GitHub OIDC is not part of it).
+to the API host. The step is `tailscale/github-action` using **workload
+identity federation**: the action exchanges GitHub's OIDC token for a
+short-lived node key, so no long-lived credential exists in any repository,
+and it consumes the same `id-token: write` grant niks3 already needs.
 
 A called workflow inherits neither the caller's secrets nor its variables,
 so both are passed explicitly:
 
 1. Caller **variable** `FLEET_CI_ON_TAILNET=true`, bound to the `tailnet`
    input.
-2. Caller **secrets** `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_CLIENT_SECRET`,
-   forwarded in the call's `secrets:` block (Tailscale OAuth client with
-   tag `tag:ci` authorized in your tailnet ACL).
+2. Caller **secrets** `TS_OAUTH_CLIENT_ID` (the federated identity's client
+   id) and `TS_AUDIENCE` (its audience, which Tailscale generates as
+   `api.tailscale.com/<client id>`), forwarded in the call's `secrets:`
+   block.
+
+The tailnet side is a **trust credential** on the admin console's Trust
+credentials page: Credential → OpenID Connect, issuer _GitHub Actions_,
+narrowed by a custom `sub` claim to the repository, with the writable
+`auth_keys` scope and the `tag:ci` tag — which must also exist in the
+policy's `tagOwners`. Tailscale documents the client id and audience as
+**not secrets**; they are secrets here only because both are action inputs.
+A federated identity belongs to no user, so it must tag its nodes:
+`tags: tag:ci` is not optional.
 
 Both join steps are gated on the `tailnet` input, which defaults to false —
 external-only profiles with a public-reachable API (nixbuild-only CI) need
@@ -137,7 +148,7 @@ no Tailscale at all.
 - Runner user must be a trusted user for the builders-use-substitutes path
   to substitute optimally; correctness doesn't depend on it.
 - `SSH_KEY_SECRET` naming and builder-side authorization of the coordinator
-  key are consumer policy; the template shapes the mechanism, not the trust.
+  key are consumer policy; the workflow shapes the mechanism, not the trust.
 
 ## What the consumer must provide (checklist)
 

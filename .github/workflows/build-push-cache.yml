@@ -32,11 +32,11 @@
 #         targets: .#nixosConfigurations.myhost.config.system.build.toplevel
 #         builder_attr: ci            # optional, canonical profile by default
 #         gha_systems: x86_64-linux   # optional, add aarch64-linux for arm
-#         tailnet: true               # optional; needs the two secrets below
+#         tailnet: true               # optional; needs the federated identity
 #       secrets:
 #         BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_KEY }}
 #         TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-#         TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+#         TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
 #
 # CALLER REQUIREMENT: the calling job MUST grant `id-token: write` +
 # `contents: read` (permissions cannot be elevated by a called workflow —
@@ -102,10 +102,10 @@ on:
         description: "Coordinator's builder SSH key (authorized by builders' nixbuild account)"
         required: false
       TS_OAUTH_CLIENT_ID:
-        description: "Tailscale OAuth client id; required only when tailnet is true"
+        description: "Tailscale federated identity client id; required only when tailnet is true"
         required: false
-      TS_OAUTH_CLIENT_SECRET:
-        description: "Tailscale OAuth client secret; required only when tailnet is true"
+      TS_AUDIENCE:
+        description: "Audience of that federated identity (api.tailscale.com/<client id>); required only when tailnet is true"
         required: false
 
 concurrency:
@@ -133,11 +133,14 @@ jobs:
         # MagicDNS names in the registry's machines file resolve only inside
         # the tailnet. External-only profiles pass tailnet: false; the
         # registry's ssh_config/known_hosts carry everything else.
+        # Workload identity federation: the action exchanges GitHub's OIDC
+        # token (from the caller's id-token: write) for a node key, so no
+        # long-lived OAuth secret exists anywhere.
         if: ${{ inputs.tailnet }}
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          audience: ${{ secrets.TS_AUDIENCE }}
           tags: tag:ci
 
       - name: Install Nix
@@ -226,11 +229,12 @@ jobs:
         # gha-build fetches /api/cache-config and streams uploads to the
         # API host — both unreachable without the tailnet. Same gate as
         # fleet-build; pass tailnet: false for public-reachable deployments.
+        # Same federated identity as fleet-build: no OAuth secret.
         if: ${{ inputs.tailnet }}
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          audience: ${{ secrets.TS_AUDIENCE }}
           tags: tag:ci
 
       - name: Install Nix
