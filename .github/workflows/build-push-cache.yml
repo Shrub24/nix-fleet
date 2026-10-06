@@ -2,17 +2,11 @@
 #
 # Model: ONE coordinator runs nix-fast-build, which evaluates locally and
 # distributes builds to nix remote builders (nix's own builders = ssh-ng://
-# fan-out, multiple hosts, results return to the coordinator's store). The
-# coordinator then pushes what it holds to niks3 once — server-side
-# deduplication makes overlap with anything builders pushed themselves
-# harmless. nix-fast-build's --niks3-server does the same thing via
-# `niks3 push` after the build; auth is GitHub OIDC — the refresher loop
-# below mints tokens bound to the cache audience into the file niks3
-# re-reads periodically (nix-fast-build itself never sees OIDC).
-#
-# GHA-local builds (capacity permitting) stay on niks3-action, which
-# registers a post-build-hook and streams uploads with GitHub OIDC; both
-# paths converge on the same deduplicating server.
+# fan-out, multiple hosts, results return to the coordinator's store).
+# Each remote builder publishes through its existing niks3 post-build-hook.
+# GHA-local builds use niks3-action's native hook with GitHub OIDC.
+# No path collection or --niks3-server upload: publication belongs to hooks.
+# Any coordinator that builds locally needs the runner hook too.
 #
 # BUILDER CONFIGURATION COMES FROM THE FLEET INVENTORY — the workflow holds
 # no builder coordinates. nix-fleet (inputs.nix-fleet.flakeModules.fleet)
@@ -230,13 +224,8 @@ jobs:
             >> "$GITHUB_OUTPUT"
 
       - name: Start OIDC token refresher for niks3 push
-        # niks3-action's auth-token-script output is daemon-mode-only, so we
-        # mint directly: GitHub exposes ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN to
-        # jobs with id-token: write; a background loop refreshes
-        # $XDG_CONFIG_HOME/niks3/auth-token (niks3 re-reads the file
-        # periodically) so the coordinator's `niks3 push` via
-        # nix-fast-build --niks3-server always carries a current token bound
-        # to the cache audience.
+        # Legacy token refresh; the build command below does not consume it.
+        # Publication belongs to native hooks, not --niks3-server.
         run: |
           mkdir -p ~/.config/niks3
           cat > /tmp/refresh-oidc.sh <<'REFRESH'
@@ -258,10 +247,9 @@ jobs:
         # across the registry's builders AND the runner's own local store
         # (default max-jobs — the runner is just another builder; GHA local
         # capacity participates, and its aarch64 runners cover arm builds
-        # fleet hosts cannot). Builders with the niks3 post-build-hook push
-        # their work as it lands; results returning to the runner are pushed
-        # by --niks3-server. niks3's server-side dedup/queueing makes the
-        # overlap a no-op.
+        # fleet hosts cannot). Remote builders publish through their hooks.
+        # Returned paths are not uploaded by the coordinator; local builds
+        # require the same runner hook configured in gha-build.
         env:
           NIX_CONFIG: |
             builders = @/tmp/nix-builders

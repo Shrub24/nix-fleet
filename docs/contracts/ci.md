@@ -24,14 +24,21 @@ fleet inventory (nix-fleet, canonical)   GHA runner
 
 nix-fast-build: evaluates locally, fans out across inventory builders AND the
 runner's own store (default max-jobs — the runner is just another builder;
-its aarch64 runners cover arm builds fleet hosts can't). Cache publication:
-builders push via their own niks3 post-build-hook; the coordinator pushes
-fetched-back paths via niks3 push; server-side dedup makes overlap a no-op.
+its aarch64 runners cover arm builds fleet hosts can't).
 ```
 
 Degradation is native nix: an unreachable builder drops out of scheduling and
 work lands on remaining builders plus the runner's local store. The inventory
 and the workflow carry no failover logic.
+
+## Cache publication
+
+Each builder publishes through its native niks3 `post-build-hook`. GHA-local
+builds use `Mic92/niks3-action`, which configures the runner's hook and GitHub
+OIDC authentication. In hook mode, substituted or remotely returned paths are
+not local builds and do not trigger an upload. There is no coordinator
+path-collection or `nix-fast-build --niks3-server` publication step.
+Any coordinator allowed to build locally must also have the runner hook installed.
 
 ## The artifacts output
 
@@ -103,10 +110,9 @@ Three jobs:
 - **prepare** — normalizes the runner matrix and resolves the public Tailscale
   identity once, before either build job joins the tailnet.
 - **fleet-build** — coordinator: joins tailnet (optional), installs the
-  registry bundle, fetches cache config, starts the OIDC token refresher
-  (GitHub OIDC → `$XDG_CONFIG_HOME/niks3/auth-token`, re-read by niks3;
-  nix-fast-build itself never sees OIDC), then `nix-fast-build
---skip-cached` with `builders = @/tmp/nix-builders`.
+  registry bundle and cache substitution settings, then runs `nix-fast-build
+--skip-cached` with `builders = @/tmp/nix-builders`. Remote builders publish
+  through their existing hooks.
 - **gha-build** — runner-local builds streaming through niks3-action's
   post-build-hook with GitHub OIDC. Same dedup server.
 
