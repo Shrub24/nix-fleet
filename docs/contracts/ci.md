@@ -141,6 +141,32 @@ Both join steps are gated on the `tailnet` input, which defaults to false —
 external-only profiles with a public-reachable API (nixbuild-only CI) need
 no Tailscale at all.
 
+### Cache authorization (niks3 side)
+
+Publishing is authorized by the cache, not by this workflow: the cache's
+`oidc.providers` must trust the claims these jobs mint. niks3 ANDs every
+bound claim — a bound claim missing from the token is itself a rejection,
+reported as `required claim "…" not found` — and ORs the patterns inside one
+claim. The claims worth binding:
+
+- `repository` — the calling repository, name form (`OWNER/REPO`).
+- `repository_owner_id` — the numeric owner id. Prefer this over
+  `repository_owner`: GitHub's immutable-subject rollout rewrites `sub` to
+  `repo:OWNER@OWNER_ID/REPO@REPO_ID:…` for repositories created on or after
+  2026-07-15, and claim globs are anchored, so a `sub` pattern beginning with
+  the owner _name_ diverges before its first wildcard and can never match such
+  a token. nix-fleet is on the immutable form while its sibling repos are not,
+  so a name-shaped `sub` rule silently excludes exactly one repository.
+- `ref` — the branch or tag the run came from (`refs/heads/main`,
+  `refs/pull/N/merge`, `refs/tags/v1`). Narrowing this is how a cache keeps
+  unmerged branches out.
+- `job_workflow_ref` — this entry point and its ref, e.g.
+  `Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@refs/heads/main`,
+  or `@refs/tags/v1` for a consumer pinned to a tag. Binding it is what makes
+  the cache trust this workflow rather than any workflow in the repository —
+  and since a missing bound claim is rejected, inlining these steps instead of
+  calling the workflow is denied by design.
+
 ## First-live-run caveats (honest state)
 
 - The `nix build .#packages.x86_64-linux.ci` step assumes x86_64
