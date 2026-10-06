@@ -28,7 +28,7 @@
 #     build-push-cache:
 #       uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v1
 #       with:
-#         cache_api_url: https://niks3.tailnet.example.com
+#         cache_api_url: https://niks3.tailnet.example.com   # optional; the fleet contract supplies it
 #         targets: .#nixosConfigurations.myhost.config.system.build.toplevel
 #         builder_attr: ci            # optional, canonical profile by default
 #         gha_systems: x86_64-linux   # optional, add aarch64-linux for arm
@@ -63,8 +63,8 @@ on:
         required: false
         default: ""
       cache_api_url:
-        description: "niks3 server base URL"
-        required: true
+        description: "niks3 server base URL; empty resolves it from the fleet contract"
+        required: false
         default: ""
       tailnet:
         description: "Join the tailnet before building"
@@ -78,7 +78,7 @@ on:
         type: string
         required: false
       cache_api_url:
-        description: "niks3 server base URL (must be reachable; empty fails the fetch-cache-config step loudly)"
+        description: 'niks3 server base URL; empty resolves packages.<system>.cache-api-url (fleet.services."niks3-write")'
         type: string
         required: false
         default: ""
@@ -164,11 +164,24 @@ jobs:
           printf '%s\n' "${{ secrets.BUILDER_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
+      - name: Resolve cache API URL
+        # The fleet contract already carries this coordinate
+        # (fleet.services."niks3-write"), so the input is an override rather
+        # than something every repository restates.
+        id: cache-url
+        run: |
+          url='${{ inputs.cache_api_url }}'
+          if [ -z "$url" ]; then
+            bundle=$(nix build --no-link --print-out-paths .#packages.x86_64-linux.cache-api-url)
+            url=$(cat "$bundle")
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
       - name: Fetch cache config
         # Same endpoint the action uses: substituter, public keys, audience.
         id: cache
         run: |
-          curl -sS "${{ inputs.cache_api_url }}/api/cache-config?issuer=https://token.actions.githubusercontent.com" \
+          curl -sS "${{ steps.cache-url.outputs.url }}/api/cache-config?issuer=https://token.actions.githubusercontent.com" \
             | jq -r '"substituter=" + .substituter_url, "public_keys=" + (.public_keys | join(" ")), "audience=" + .oidc_audience' \
             >> "$GITHUB_OUTPUT"
 
@@ -240,10 +253,22 @@ jobs:
       - name: Install Nix
         uses: NixOS/nix-installer-action@main
 
+      - name: Resolve cache API URL
+        # Same contract-derived coordinate as fleet-build; the matrix system
+        # picks the package attribute.
+        id: cache-url
+        run: |
+          url='${{ inputs.cache_api_url }}'
+          if [ -z "$url" ]; then
+            bundle=$(nix build --no-link --print-out-paths ".#packages.${{ matrix.system }}.cache-api-url")
+            url=$(cat "$bundle")
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
       - name: Configure cache (substituter + OIDC post-build-hook)
         uses: Mic92/niks3-action@v1
         with:
-          server-url: ${{ inputs.cache_api_url }}
+          server-url: ${{ steps.cache-url.outputs.url }}
 
       - name: Build (locally, streaming uploads)
         run: nix run nixpkgs#nix-fast-build -- --no-nom --skip-cached --flake .# ${{ inputs.targets }}

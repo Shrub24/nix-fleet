@@ -46,6 +46,16 @@ let
     via = "tailnet";
   };
 
+  # The CI cache coordinate the build-push-cache workflow defaults to must be
+  # derived from the contract, not a literal that happens to match it: the
+  # mutation moves the record and the resolved URL has to move with it.
+  cacheApiUrl = config.flake.lib.serviceEndpoints.cacheApiUrl config.fleet;
+  cacheApiUrlMutated = config.flake.lib.serviceEndpoints.cacheApiUrl (
+    lib.recursiveUpdate config.fleet {
+      services."niks3-write".endpoints.api.tailnet.port = 5752;
+    }
+  );
+
   # A destination/fanout/secret mistake must fail closed by name at the
   # contract level (it must hold for any implementation), so the reject checks
   # force the rendered collector settings, the contract's resolved fanout, and
@@ -1246,6 +1256,11 @@ let
             && resolvedDocsMcp.host == "home-forge"
             && resolvedDocsMcp.port == 6280;
           message = "fixture: the fleet service resolver lost the canonical docs-mcp route.";
+        }
+        {
+          assertion =
+            cacheApiUrl == "http://oci-melb-1:5751" && cacheApiUrlMutated == "http://oci-melb-1:5752";
+          message = "fixture: the CI cache URL is not derived from the niks3-write record.";
         }
         {
           assertion = config.systemd.services.notify.serviceConfig.ExecStart != null;

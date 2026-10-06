@@ -51,7 +51,9 @@ jobs:
       id-token: write
     uses: ./.github/workflows/build-push-cache.yml
     with:
-      cache_api_url: ${{ vars.FLEET_NIKS3_API_URL }}
+      # cache_api_url is deliberately absent: empty resolves the canonical
+      # fleet.services."niks3-write" record, which is the point of the
+      # contract. Pass it here only to point a run at a different cache.
       builder_attr: ci
       # The toggle stays a repository variable for this repo's own runs; the
       # reusable workflow takes it as an input rather than reading our vars.

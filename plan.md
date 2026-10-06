@@ -204,12 +204,12 @@ on the contract change; none conflict with it.
 
 ## CI live-run prerequisites (user-side)
 
-- [ ] Set repo variable `FLEET_NIKS3_API_URL` (tailnet API host) + secret
-      `FLEET_BUILDER_SSH_KEY`; authorize the key for the `nixbuild`
-      account on builders; `FLEET_CI_ON_TAILNET=true` +
+- [ ] Set secret `FLEET_BUILDER_SSH_KEY`; authorize the key for the
+      `nixbuild` account on builders; `FLEET_CI_ON_TAILNET=true` +
       `TS_OAUTH_CLIENT_ID`/`TS_AUDIENCE` from a Tailscale federated
-      identity (writable `auth_keys` scope, tag `tag:ci`, `sub` claim
-      narrowed to the repo).
+      identity (writable `auth_keys` scope, tag `tag:ci`, claims narrowed
+      to the repo). No cache coordinate: an empty `cache_api_url`
+      resolves the canonical `fleet.services."niks3-write"` record.
 
 ## Deferred / future waves
 

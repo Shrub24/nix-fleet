@@ -60,4 +60,17 @@ in
   inherit resolveEndpoint;
   canonicalServices = import ./service-inventory.nix;
   url = fleet: selection: (resolveEndpoint fleet selection).url;
+
+  # The fleet write cache's API base URL, resolved from the canonical
+  # `niks3-write` record the same way a consumer would. The build-push-cache
+  # workflow defaults its `cache_api_url` input here, so the coordinate is not
+  # restated in every repository; a consumer that declares its own record still
+  # wins, because this reads the merged contract.
+  cacheApiUrl =
+    fleet:
+    (resolveEndpoint fleet {
+      service = "niks3-write";
+      endpoint = "api";
+      via = "tailnet";
+    }).url;
 }
