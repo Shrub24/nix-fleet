@@ -149,7 +149,13 @@ bound claim — a bound claim missing from the token is itself a rejection,
 reported as `required claim "…" not found` — and ORs the patterns inside one
 claim. The claims worth binding:
 
-- `repository` — the calling repository, name form (`OWNER/REPO`).
+- `repository` — the calling repository. Documented as name form
+  (`OWNER/REPO`), and the immutable-subject rollout is documented as
+  `sub`-scoped; `repository` and `repository_id` are independent claims, so if
+  a token ever carries the id form the fix is to bind `repository_id`. A
+  mismatching claim is rejected by name along with the value niks3 saw, so the
+  first real run settles which form applies instead of it having to be
+  inferred from documentation.
 - `repository_owner_id` — the numeric owner id. Prefer this over
   `repository_owner`: GitHub's immutable-subject rollout rewrites `sub` to
   `repo:OWNER@OWNER_ID/REPO@REPO_ID:…` for repositories created on or after
