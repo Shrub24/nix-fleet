@@ -236,10 +236,11 @@ per-set bundles as `packages.<set>`) — a directory with `machines` (nix
 machines-file lines), `known_hosts`, and `ssh_config`, rendered from the
 merged inventory at consumer eval time. The `build-push-cache` reusable
 workflow installs these instead of holding builder coordinates; a
-`FLEET_CI_ON_TAILNET=true` repo variable (bound to the workflow's `tailnet`
-input) plus `TS_OAUTH_CLIENT_ID`/`TS_AUDIENCE` from a Tailscale federated
-identity add the join for fleet-host builders — no long-lived OAuth secret,
-reusing the same `id-token: write` grant niks3 needs. Full contract:
+tailnet join is enabled by default, using public `fleet.ci.tailscale` metadata
+rendered as `packages.<system>.ci-tailscale` — no repository variables or
+long-lived OAuth secret. Only the coordinator private key is a repository
+secret; its public half is `fleet.ci.sshPublicKey`. The join reuses the same
+`id-token: write` grant niks3 needs. Full contract:
 [docs/contracts/ci.md](docs/contracts/ci.md).
 
 CI-capable cache setup consumer-side:

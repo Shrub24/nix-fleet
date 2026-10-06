@@ -71,12 +71,11 @@ jobs:
       # optional:
       # builder_attr: ci           (any fleet.buildProfiles entry; ci default)
       # gha_systems: x86_64-linux  (space-separated; add aarch64-linux for arm)
-      # tailnet: true              (join the tailnet; needs the federated identity)
+      # tailnet: false             (disable the default tailnet join)
+      # ts_client_id: ${{ vars.TS_OAUTH_CLIENT_ID }}  (public override)
+      # ts_audience: ${{ vars.TS_AUDIENCE }}          (public override)
     secrets:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
-      # only when tailnet: true
-      # TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-      # TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
 ```
 
 The calling job must grant `permissions: { contents: read, id-token: write }`
@@ -84,23 +83,25 @@ The calling job must grant `permissions: { contents: read, id-token: write }`
 rejected at parse time (a startup_failure with zero jobs) if the caller
 grants less than the workflow needs.
 
-| Input                | Meaning                                                                                                                                                                                                                                                                                                                                                                            |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cache_api_url`      | niks3 **API** base URL — serves `/api/cache-config`, requires auth/tailnet. Optional: empty resolves `packages.<system>.cache-api-url`, i.e. the canonical `fleet.services."niks3-write"` tailnet origin, so the coordinate is not restated per repository. Distinct from the public read domain (which the API returns as `substituter_url`); never point this at the read domain |
-| `targets`            | flake attrspecs for nix-fast-build                                                                                                                                                                                                                                                                                                                                                 |
-| `builder_attr`       | which `packages.<attr>` bundle to schedule against (canonical `ci` by default)                                                                                                                                                                                                                                                                                                     |
-| `gha_systems`        | systems the GHA-local build job matrixes over (arm via `aarch64-linux`)                                                                                                                                                                                                                                                                                                            |
-| `tailnet`            | join the tailnet before building (boolean, default false). Explicit because a reusable workflow cannot read the caller's variables                                                                                                                                                                                                                                                 |
-| `BUILDER_SSH_KEY`    | secret: the coordinator's builder SSH key                                                                                                                                                                                                                                                                                                                                          |
-| `TS_OAUTH_CLIENT_ID` | secret: Tailscale federated identity client id, required only when `tailnet` is true                                                                                                                                                                                                                                                                                               |
-| `TS_AUDIENCE`        | secret: that federated identity's audience (`api.tailscale.com/<client id>`), required only when `tailnet` is true                                                                                                                                                                                                                                                                 |
+| Input             | Meaning                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cache_api_url`   | niks3 **API** base URL — serves `/api/cache-config`, requires auth/tailnet. Optional: empty resolves `packages.<system>.cache-api-url`, i.e. the canonical `fleet.services."niks3-write"` tailnet origin, so the coordinate is not restated per repository. Distinct from the public read domain (which the API returns as `substituter_url`); never point this at the read domain |
+| `targets`         | flake attrspecs for nix-fast-build                                                                                                                                                                                                                                                                                                                                                 |
+| `builder_attr`    | which `packages.<attr>` bundle to schedule against (canonical `ci` by default)                                                                                                                                                                                                                                                                                                     |
+| `gha_systems`     | systems the GHA-local build job matrixes over (arm via `aarch64-linux`)                                                                                                                                                                                                                                                                                                            |
+| `tailnet`         | Join the tailnet before building (boolean, default true); set false for public-only deployments                                                                                                                                                                                                                                                                                    |
+| `BUILDER_SSH_KEY` | secret: the coordinator's builder SSH key                                                                                                                                                                                                                                                                                                                                          |
+| `ts_client_id`    | Public client ID override; empty resolves the fleet CI identity                                                                                                                                                                                                                                                                                                                    |
+| `ts_audience`     | Public audience override; empty resolves the fleet default, or derives the audience from an overridden client ID                                                                                                                                                                                                                                                                   |
 
 **Versioning:** pin to a tag (`@v1`), never `@main`. nix-fleet cuts tagged
 releases; renovate proposes tag bumps with changelogs and a PR acceptance
 gate, so consumers opt into changes deliberately.
 
-Two jobs:
+Three jobs:
 
+- **prepare** — normalizes the runner matrix and resolves the public Tailscale
+  identity once, before either build job joins the tailnet.
 - **fleet-build** — coordinator: joins tailnet (optional), installs the
   registry bundle, fetches cache config, starts the OIDC token refresher
   (GitHub OIDC → `$XDG_CONFIG_HOME/niks3/auth-token`, re-read by niks3;
@@ -119,28 +120,32 @@ identity federation**: the action exchanges GitHub's OIDC token for a
 short-lived node key, so no long-lived credential exists in any repository,
 and it consumes the same `id-token: write` grant niks3 already needs.
 
-A called workflow inherits neither the caller's secrets nor its variables,
-so both are passed explicitly:
+The `tailnet` input defaults to true. Before either build job joins, the
+prepare job resolves public identity metadata from the checked-out consumer's
+`packages.x86_64-linux.ci-tailscale`. It installs Nix before resolving that
+artifact; bootstrap flake inputs must therefore be reachable without the
+tailnet. Both build jobs use the same resolved identity.
 
-1. Caller **variable** `FLEET_CI_ON_TAILNET=true`, bound to the `tailnet`
-   input.
-2. Caller **secrets** `TS_OAUTH_CLIENT_ID` (the federated identity's client
-   id) and `TS_AUDIENCE` (its audience, which Tailscale generates as
-   `api.tailscale.com/<client id>`), forwarded in the call's `secrets:`
-   block.
+The identity comes from `fleet.ci.tailscale.clientId` and `audience`, not GitHub
+secrets. An ordinary consumer assignment overrides the shared Client ID; its
+audience follows automatically. A consumer may override the audience too.
+Workflow inputs `ts_client_id` and `ts_audience` override those artifact values;
+a client-only input derives `api.tailscale.com/<client id>`. A caller may bind
+these inputs to repository Variables, but none are required for the shared
+identity. `tailnet: false` skips metadata resolution and both join steps.
 
 The tailnet side is a **trust credential** on the admin console's Trust
 credentials page: Credential → OpenID Connect, issuer _GitHub Actions_,
-narrowed by a custom `sub` claim to the repository, with the writable
-`auth_keys` scope and the `tag:ci` tag — which must also exist in the
-policy's `tagOwners`. Tailscale documents the client id and audience as
-**not secrets**; they are secrets here only because both are action inputs.
+with claim rules selecting the allowed repositories and reusable workflow,
+the writable `auth_keys` scope and the `tag:ci` tag. One credential serves all
+three repositories. Tailscale documents the client id and audience as **not
+secrets**; they are public fleet metadata.
 A federated identity belongs to no user, so it must tag its nodes:
 `tags: tag:ci` is not optional.
 
-Both join steps are gated on the `tailnet` input, which defaults to false —
-external-only profiles with a public-reachable API (nixbuild-only CI) need
-no Tailscale at all.
+Both join steps are gated on the `tailnet` input, which defaults to true —
+external-only profiles with a public-reachable API can explicitly select
+`tailnet: false`.
 
 ### Cache authorization (niks3 side)
 
@@ -176,26 +181,160 @@ claim. The claims worth binding:
 
 ## First-live-run caveats (honest state)
 
-- The `nix build .#packages.x86_64-linux.ci` step assumes x86_64
-  coordinator runners; arm coordinators need the system swapped.
+- The prepare job's `ci-tailscale` resolution and the coordinator's `ci`
+  bundle both use `packages.x86_64-linux`. ARM coordinators need these
+  attributes changed too; `gha_systems` only selects the runner-local matrix.
 - Runner user must be a trusted user for the builders-use-substitutes path
   to substitute optimally; correctness doesn't depend on it.
 - `SSH_KEY_SECRET` naming and builder-side authorization of the coordinator
   key are consumer policy; the workflow shapes the mechanism, not the trust.
 
-## What the consumer must provide (checklist)
+## CI repository provisioning
 
-1. `flakeModules.fleet` import (hosts.md, builders.md) — canonical inventory
-   - shared profiles arrive with it; add only consumer-local profiles/builders
-2. A `fleet.buildProfiles.ci` naming the builders CI may use (canonical `ci`
-   exists; extend or add a local profile)
-3. A niks3 endpoint with an OIDC provider bound
-   (`services.niks3-cache.oidc.providers`, see README). No URL is passed in:
-   an empty `cache_api_url` resolves the canonical `niks3-write` record, so a
-   consumer that overrides that record gets its own coordinate for free
-4. Coordinator SSH key authorized on fleet builders (builder-side policy)
-5. Optionally, when the builders are tailnet-only: `FLEET_CI_ON_TAILNET` plus
-   `TS_OAUTH_CLIENT_ID` and `TS_AUDIENCE` from a Tailscale federated identity
+Normal validation needs no repository secrets, variables or environment. The
+following provisions the dispatch-gated build/cache path.
+
+### GitHub repository settings
+
+Under **Settings → Secrets and variables → Actions**, configure each caller
+repository (`nix-fleet`, `nix-homelab`, `nix-dotfiles`) that uses the workflow:
+
+| Name                    | Location          | Value                                                             |
+| ----------------------- | ----------------- | ----------------------------------------------------------------- |
+| `FLEET_BUILDER_SSH_KEY` | Repository secret | Complete private coordinator SSH key, including its header/footer |
+
+No repository variables are required. Tailnet joins default on and the shared
+public Client ID/Audience come from fleet. There is no `TS_OAUTH_CLIENT_SECRET`,
+cache upload token or required `FLEET_NIKS3_API_URL` variable. Remove the old
+`TS_OAUTH_CLIENT_ID`/`TS_AUDIENCE` repository secrets and `FLEET_CI_ON_TAILNET`
+variable after updating the caller and reusable workflow; they are no longer
+read. For a different identity, pass `ts_client_id`/`ts_audience` as inputs,
+optionally sourced from Variables rather than Secrets.
+
+The caller must grant `contents: read` and `id-token: write` and forward only
+`BUILDER_SSH_KEY`. Select the build targets and profile in the caller;
+importing an updated `flakeModules.fleet` supplies the canonical `ci` bundle,
+`cache-api-url` and `ci-tailscale` packages. Update both the flake pin and the
+workflow reference together: an older flake lacks the new metadata artifact.
+Override `cache_api_url` only for a different cache. An entirely substituted
+build may need no SSH key, but remote cache misses require it.
+
+### Coordinator key and builder trust
+
+Generate a dedicated, non-interactive key locally, not on a GitHub runner:
+
+```sh
+ssh-keygen -t ed25519 -C 'fleet-ci coordinator' -f ~/.ssh/fleet-ci -N ''
+gh secret set FLEET_BUILDER_SSH_KEY --repo Shrub24/nix-fleet < ~/.ssh/fleet-ci
+```
+
+Repeat the secret upload for each caller repository. One key can serve all
+three; per-repository keys reduce the scope of a compromise but require
+separate public-key authorization and rotation.
+
+Authorize the public half on **every selected builder**, in its consumer
+configuration. Select the `build-account` aspect and add the key to
+`users.users.nixbuild.openssh.authorizedKeys.keys`; `endpoint.user` defaults to
+`nixbuild`, independently of the host's human `managementUser`. The shared key
+is declared as `fleet.ci.sshPublicKey`; close over the consumer's flake-level
+fleet configuration when binding the NixOS account:
+
+```nix
+users.users.nixbuild.openssh.authorizedKeys.keys = [ config.fleet.ci.sshPublicKey ];
+```
+
+Here `config` is the flake-parts configuration, not the NixOS configuration.
+Publication does not authorize any account by itself. A public key needs no
+SOPS encryption. Verify SSH access and Nix remote-store permissions for that
+account before dispatch.
+The account must be able to build, not merely accept an SSH login.
+
+For profiles containing the metered `nixbuild.net` builder, register the same
+public key with the nixbuild.net account too. The canonical `ci` profile does
+not include it; `arm-expensive` does. No nixbuild API token is required.
+
+Keep a recoverable copy of the private key in your own secret storage. SOPS in
+a consumer repo is an optional backup/distribution choice, not a prerequisite
+for GitHub Actions: the runner reads the repository secret directly and needs
+no SOPS decryption key. Never commit private material to nix-fleet. To revoke
+access, remove the public key from the builders and nixbuild.net, then replace
+the affected GitHub secrets.
+
+### Tailscale authorization
+
+Create one GitHub Actions OIDC trust credential in Tailscale with writable
+`auth_keys` scope and permission to issue `tag:ci` nodes. Restrict its claims
+to the intended repositories and the reusable workflow, for example
+`job_workflow_ref = Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@*`;
+use tighter workflow refs where practical. Avoid assuming all repositories
+have the same name-shaped `sub` (see cache authorization above).
+
+The shared Client ID and derived Audience are already recorded in fleet; no
+GitHub-side copy is required. In tailnet policy, define `tag:ci` ownership and grant these nodes access to:
+
+- TCP 22 on the selected fleet builders;
+- the resolved `niks3-write` API endpoint (currently TCP 5751).
+
+Check broader existing grants: adding a narrow grant does not remove an
+existing broad permission. Tailscale admits the runner device; the SSH key
+separately authenticates it to the builder account.
+
+### Cache authorization
+
+On the cache host, bind a GitHub Actions OIDC provider through
+`services.niks3-cache.oidc.providers`, with write scope, the cache's configured
+audience and the repository/owner/ref/workflow restrictions described above.
+The workflow discovers the audience through `/api/cache-config` and obtains
+short-lived tokens itself. No GitHub cache credential is provisioned.
+
+The current homelab policy permits the three fleet repos on `main` through
+this reusable workflow. A tag-pinned workflow ref is distinct from the run's
+`ref`: publishing a run on a release tag needs an explicit cache-policy change
+if only `refs/heads/main` is authorized.
+
+### Repository settings or a `ci` environment?
+
+Use **repository-level secrets/variables** for ordinary builds and cache
+publication. An environment named `ci` adds no isolation merely by existing.
+Use an environment when you want required reviewers, deployment branch/tag
+restrictions or a distinct credential boundary before privileged jobs run.
+
+The current reusable workflow declares no environment. GitHub does not support
+`environment` on the caller's reusable-workflow job, and environment secrets
+cannot be forwarded from that caller. To adopt an environment, the actual
+jobs inside `build-push-cache.yml` must select it (normally through a new
+optional input); an environment secret then takes precedence over a passed
+secret with the same name. Do not place the current key only in an environment
+and expect the existing workflow to find it.
+
+Selecting an environment also changes the default OIDC subject context to
+`environment:<name>`. Recheck subject-based Tailscale/cache rules before doing
+so; explicit `ref` and `job_workflow_ref` claims remain separate controls.
+See GitHub's [reusable-workflow environment warning](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows)
+and [OIDC subject reference](https://docs.github.com/en/actions/reference/security/oidc).
+
+### Which public values belong in fleet?
+
+Cache URL, builder coordinates and the shared CI identity are derived from
+fleet rather than copied into repository settings. The identity is public CI
+metadata (`fleet.ci`), not a `fleet.services` endpoint:
+
+- `fleet.ci.tailscale.clientId`: shared Client ID, consumer-overridable;
+- `fleet.ci.tailscale.audience`: defaults to the selected client's audience;
+- `fleet.ci.sshPublicKey`: public coordinator key for explicit consumer authorization.
+
+`packages.<system>.ci-tailscale` renders the first two fields as JSON. The
+workflow defaults to joining the tailnet; a caller can still select
+`tailnet: false`. The private SSH key never belongs in public fleet metadata.
+
+### First dispatch
+
+Run the workflow from an authorized branch after provisioning. Confirm both
+build jobs join the tailnet, fetch `/api/cache-config`, authenticate to a
+builder for an uncached build and publish to niks3. A fully cached run does
+not prove builder SSH access. niks3 names a rejected or missing claim; use that
+evidence rather than guessing the token's subject form. Normal validation CI
+being green does not certify this dispatch-only path.
 
 ## Intent (why CI reads the inventory)
 

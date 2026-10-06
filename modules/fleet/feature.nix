@@ -271,6 +271,32 @@ let
           "$knownHostsPath" > $out/known_hosts
       '';
 
+  ciMetadataCheck =
+    let
+      evaluate =
+        extra:
+        (lib.evalModules {
+          modules = [
+            ./schema.nix
+            ./inventory.nix
+            extra
+          ];
+        }).config.fleet.ci.tailscale;
+      defaults = evaluate { };
+      overridden = evaluate { fleet.ci.tailscale.clientId = "consumer-ci"; };
+      customAudience = evaluate {
+        fleet.ci.tailscale = {
+          clientId = "consumer-ci";
+          audience = "consumer-audience";
+        };
+      };
+    in
+    defaults.clientId != ""
+    && defaults.audience == "api.tailscale.com/${defaults.clientId}"
+    && overridden.clientId == "consumer-ci"
+    && overridden.audience == "api.tailscale.com/consumer-ci"
+    && customAudience.audience == "consumer-audience";
+
   fleetModule = {
     imports = [
       ./schema.nix
@@ -280,12 +306,34 @@ let
     config = {
       perSystem =
         { pkgs, ... }:
+        let
+          ciTailscale = pkgs.writeText "ci-tailscale.json" (builtins.toJSON config.fleet.ci.tailscale);
+        in
         {
+          checks.ci-tailscale =
+            pkgs.runCommand "ci-tailscale-check"
+              {
+                nativeBuildInputs = [
+                  (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
+                  pkgs.bash
+                  pkgs.jq
+                  pkgs.openssh
+                ];
+                coordinatorPublicKey = config.fleet.ci.sshPublicKey;
+                passAsFile = [ "coordinatorPublicKey" ];
+              }
+              ''
+                ssh-keygen -lf "$coordinatorPublicKeyPath"
+                python ${../../tests/ci/tailscale_check.py} ${../../.github/workflows/build-push-cache.yml} ${ciTailscale}
+                touch "$out"
+              '';
+
           checks.fleet-render =
             assert assertRegistry sample;
             assert assertRegistry config.fleet;
             assert schedulingRejection;
             assert serviceCheck;
+            assert ciMetadataCheck;
             # Scheduling path (sampleSpecs) and trust path (trustSpecs) both
             # render here; the trust selection includes a NON-builder. The
             # separation itself is pinned by the schedulingRejection binding
@@ -370,6 +418,7 @@ let
             builtins.mapAttrs (name: _: ciArtifacts { inherit pkgs; } name) config.fleet.buildProfiles
             // {
               cache-api-url = pkgs.writeText "cache-api-url" (serviceEndpoints.cacheApiUrl config.fleet);
+              ci-tailscale = ciTailscale;
             };
         };
     };

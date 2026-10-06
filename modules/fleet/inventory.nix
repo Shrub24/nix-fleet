@@ -3,8 +3,10 @@
 # their own local policy. SSH host keys are read from each host's own
 # /etc/ssh/ssh_host_ed25519_key.pub, never from a live scan; eu.nixbuild.net's
 # key is from its official docs.
-_: {
+{ lib, ... }: {
   fleet = {
+    ci.tailscale.clientId = lib.mkDefault "TBEGqn2XcF11CNTRL-kZYrJds6Kn11CNTRL";
+    ci.sshPublicKey = lib.mkDefault "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH0V4p/SIytnhU5E3dLGTpNgEfmbWfLkGIbNvFZi5Tem";
     hosts = {
       home-forge = {
         managementUser = "dev";

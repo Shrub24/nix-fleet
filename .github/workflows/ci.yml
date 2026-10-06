@@ -55,10 +55,5 @@ jobs:
       # fleet.services."niks3-write" record, which is the point of the
       # contract. Pass it here only to point a run at a different cache.
       builder_attr: ci
-      # The toggle stays a repository variable for this repo's own runs; the
-      # reusable workflow takes it as an input rather than reading our vars.
-      tailnet: ${{ vars.FLEET_CI_ON_TAILNET == 'true' }}
     secrets:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
-      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-      TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}

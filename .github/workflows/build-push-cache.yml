@@ -32,11 +32,11 @@
 #         targets: .#nixosConfigurations.myhost.config.system.build.toplevel
 #         builder_attr: ci            # optional, canonical profile by default
 #         gha_systems: x86_64-linux   # optional, add aarch64-linux for arm
-#         tailnet: true               # optional; needs the federated identity
+#         tailnet: false              # optional; default true
+#         ts_client_id: ${{ vars.TS_OAUTH_CLIENT_ID }} # optional public override
+#         ts_audience: ${{ vars.TS_AUDIENCE }}         # optional public override
 #       secrets:
-#         BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_KEY }}
-#         TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-#         TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
+#         BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
 #
 # CALLER REQUIREMENT: the calling job MUST grant `id-token: write` +
 # `contents: read` (permissions cannot be elevated by a called workflow —
@@ -70,7 +70,15 @@ on:
         description: "Join the tailnet before building"
         type: boolean
         required: false
-        default: false
+        default: true
+      ts_client_id:
+        description: "Public Tailscale client ID; empty resolves the fleet CI identity"
+        required: false
+        default: ""
+      ts_audience:
+        description: "Public Tailscale audience; empty resolves the fleet CI identity"
+        required: false
+        default: ""
   workflow_call:
     inputs:
       targets:
@@ -93,19 +101,23 @@ on:
         required: false
         default: "x86_64-linux"
       tailnet:
-        description: "Join the tailnet before building. The caller decides this; a reusable workflow must not read the caller's variables implicitly."
+        description: "Join the tailnet before building; disable for public-only deployments"
         type: boolean
         required: false
-        default: false
+        default: true
+      ts_client_id:
+        description: "Public Tailscale client ID; empty resolves packages.x86_64-linux.ci-tailscale"
+        type: string
+        required: false
+        default: ""
+      ts_audience:
+        description: "Public Tailscale audience; empty uses the selected client's audience"
+        type: string
+        required: false
+        default: ""
     secrets:
       BUILDER_SSH_KEY:
         description: "Coordinator's builder SSH key (authorized by builders' nixbuild account)"
-        required: false
-      TS_OAUTH_CLIENT_ID:
-        description: "Tailscale federated identity client id; required only when tailnet is true"
-        required: false
-      TS_AUDIENCE:
-        description: "Audience of that federated identity (api.tailscale.com/<client id>); required only when tailnet is true"
         required: false
 
 concurrency:
@@ -117,13 +129,45 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       systems: ${{ steps.norm.outputs.systems }}
+      ts-client-id: ${{ steps.tailscale.outputs.client-id }}
+      ts-audience: ${{ steps.tailscale.outputs.audience }}
     steps:
+      - name: Check out repository
+        if: ${{ inputs.tailnet && inputs.ts_client_id == '' }}
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        if: ${{ inputs.tailnet && inputs.ts_client_id == '' }}
+        uses: NixOS/nix-installer-action@main
+
+      - name: Resolve public Tailscale identity
+        if: ${{ inputs.tailnet }}
+        id: tailscale
+        env:
+          CLIENT_ID: ${{ inputs.ts_client_id }}
+          AUDIENCE: ${{ inputs.ts_audience }}
+        run: |
+          if [ -z "$CLIENT_ID" ]; then
+            metadata=$(nix build --no-link --print-out-paths .#packages.x86_64-linux.ci-tailscale)
+            CLIENT_ID=$(jq -er '.clientId' "$metadata")
+            if [ -z "$AUDIENCE" ]; then
+              AUDIENCE=$(jq -er '.audience' "$metadata")
+            fi
+          elif [ -z "$AUDIENCE" ]; then
+            AUDIENCE="api.tailscale.com/$CLIENT_ID"
+          fi
+          [[ "$CLIENT_ID" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::ci: invalid Tailscale client ID"; exit 1; }
+          [[ -n "$AUDIENCE" && "$AUDIENCE" != *[[:space:]]* ]] || { echo "::error::ci: invalid Tailscale audience"; exit 1; }
+          echo "client-id=$CLIENT_ID" >> "$GITHUB_OUTPUT"
+          echo "audience=$AUDIENCE" >> "$GITHUB_OUTPUT"
+
       - id: norm
         run: |
           SYSTEMS=$(echo "${{ inputs.gha_systems }}" | tr ' ' '\n' | jq -R . | jq -sc .)
           echo "systems=$SYSTEMS" >> "$GITHUB_OUTPUT"
 
   fleet-build:
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -139,8 +183,8 @@ jobs:
         if: ${{ inputs.tailnet }}
         uses: tailscale/github-action@v4
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          audience: ${{ secrets.TS_AUDIENCE }}
+          oauth-client-id: ${{ needs.prepare.outputs.ts-client-id }}
+          audience: ${{ needs.prepare.outputs.ts-audience }}
           tags: tag:ci
 
       - name: Install Nix
@@ -246,8 +290,8 @@ jobs:
         if: ${{ inputs.tailnet }}
         uses: tailscale/github-action@v4
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          audience: ${{ secrets.TS_AUDIENCE }}
+          oauth-client-id: ${{ needs.prepare.outputs.ts-client-id }}
+          audience: ${{ needs.prepare.outputs.ts-audience }}
           tags: tag:ci
 
       - name: Install Nix

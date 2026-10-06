@@ -5,9 +5,24 @@
 # fleet.services (cross-fleet service endpoint facts).
 # Tier 2 (shared default): mechanism defaults below (endpoint user, tuning).
 # Tier 3 (consumer-local): everything else a consumer keeps in its own tree.
-{ lib, ... }:
+{ lib, config, ... }:
 {
   options.fleet = {
+    ci.sshPublicKey = lib.mkOption {
+      type = lib.types.strMatching "ssh-ed25519 [A-Za-z0-9+/=]+( .*)?";
+      description = "Public CI coordinator SSH key. Consumers explicitly authorize it on selected builders; inventory membership grants no access.";
+    };
+    ci.tailscale = {
+      clientId = lib.mkOption {
+        type = lib.types.strMatching "[A-Za-z0-9_-]+";
+        description = "Public client ID of the shared CI federated identity; consumers may override it.";
+      };
+      audience = lib.mkOption {
+        type = lib.types.strMatching "[^[:space:]]+";
+        default = "api.tailscale.com/${config.fleet.ci.tailscale.clientId}";
+        description = "Public OIDC audience; defaults to the audience for the selected client ID.";
+      };
+    };
     hosts = lib.mkOption {
       type = lib.types.attrsOf (
         lib.types.submodule {
