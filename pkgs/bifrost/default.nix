@@ -16,17 +16,21 @@
   callPackage,
   fetchFromGitHub,
   runCommand,
+  writeShellApplication,
+  python3,
+  nix-update,
+  nixVersions,
 }:
 
 let
   # transports/version at the pinned revision.
-  version = "2.2.5";
+  version = "2.2.6";
 
   src = fetchFromGitHub {
     owner = "maximhq";
     repo = "bifrost";
-    rev = "77d08f241cfa10d09ea37d6b00ef9f2c363a3ede"; # tag transports/v2.2.5
-    hash = "sha256-6WEIbrpctkMN/qjzfCGFT9xhT8Hp9j+atBWOK5Dd7rA=";
+    rev = "8b4fce4f1709d66f9208d02f50552da522535f9e"; # tag transports/v2.2.6
+    hash = "sha256-vgdsNg48Cd4qoOwFyQ9ahnC6darTyAGV4/LkQSiBXzk=";
   };
 
   # The two subtrees the binary is made of, split out of the fetched monorepo
@@ -57,7 +61,7 @@ let
     src = transportsSrc;
 
     # Locked module cache for the pinned go.mod/go.sum.
-    vendorHash = "sha256-kflMpFZlYOGotkj70AOO8fyA5WZOdRi2y0uj97QeBv8=";
+    vendorHash = "sha256-y9q3wdnWEfKekZWVrmbL+bvomWLNAmydx2ld08C2D5Y=";
 
     # go-sqlite3 compiles the SQLite amalgamation it carries, so CGO is
     # required and no SQLite build input is needed.
@@ -145,6 +149,17 @@ let
 in
 bifrost.overrideAttrs (old: {
   passthru = (old.passthru or { }) // {
-    inherit mkPlugin;
+    inherit mkPlugin ui;
+    updateScript = lib.getExe (writeShellApplication {
+      name = "bifrost-update";
+      runtimeInputs = [
+        python3
+        nix-update
+        nixVersions.latest
+      ];
+      text = ''
+        exec python3 ${./update.py}
+      '';
+    });
   };
 })

@@ -2,6 +2,7 @@
 """Run the module's generated startup path and test its configuration authority."""
 
 import json
+import os
 import shlex
 import socket
 import stat
@@ -27,20 +28,31 @@ def main():
     command[command.index("-port") + 1] = str(port)
     base = f"http://127.0.0.1:{port}"
     logs = []
+    setup_token = "bifrost-module-check-setup-token"
+    headers = {"X-Bifrost-Setup-Token": setup_token}
+    environment = dict(os.environ, BIFROST_SETUP_TOKEN=setup_token)
     for cycle in range(2):
         subprocess.run(["bash", "-e", "-c", launch["preStart"]], check=True)
         assert json.loads(target.read_text()) == expected, "startup config was not restored"
         assert stat.S_IMODE(target.stat().st_mode) == 0o400, "config permissions drifted"
         log_path = app / f"cycle-{cycle}.log"
         with log_path.open("wb") as log:
-            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=environment)
         try:
             wait_ready(process, base + "/health", log_path)
-            with urllib.request.urlopen(base + "/api/routing/rules", timeout=10) as response:
+            try:
+                urllib.request.urlopen(base + "/api/routing/rules", timeout=10)
+            except urllib.error.HTTPError as error:
+                assert error.code == 401, error.code
+            else:
+                raise AssertionError("anonymous routing API access was allowed")
+            request = urllib.request.Request(base + "/api/routing/rules", headers=headers)
+            with urllib.request.urlopen(request, timeout=10) as response:
                 rules = json.loads(response.read())
                 assert "fixture-cel" in json.dumps(rules), rules
             # Governance must be enabled, not merely bypassed by a health probe.
-            with urllib.request.urlopen(base + "/api/governance/virtual-keys", timeout=10) as response:
+            request = urllib.request.Request(base + "/api/governance/virtual-keys", headers=headers)
+            with urllib.request.urlopen(request, timeout=10) as response:
                 assert response.status == 200
             assert json.loads(target.read_text()) == expected, "runtime changed startup config"
         finally:

@@ -65,7 +65,7 @@ _: {
           '';
 
       # Prove the packaged hook in a packaged gateway: the real .so must load
-      # into the real v2.2.5 binary and the outgoing embedding bodies must carry
+      # into the real packaged binary and the outgoing embedding bodies must carry
       # the normalization (and leave other providers alone).
       checks.bifrost-voyage-plugin =
         pkgs.runCommand "bifrost-voyage-plugin-check"

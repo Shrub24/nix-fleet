@@ -63,6 +63,21 @@ to accessible files or feeds; package checks use local fixture feeds without
 changing production defaults. Keep authentication and remote-access policy
 explicit in the consumer; the module does not bootstrap an administrator account.
 
+From Bifrost 2.2.6, the management API is locked when dashboard authentication
+is not active. For initial setup, bind `BIFROST_SETUP_TOKEN` through
+`environmentFile` and supply it in `X-Bifrost-Setup-Token` (or exchange it for a
+setup session in the dashboard). With active dashboard authentication, use the
+normal admin session instead; the setup token no longer authenticates requests.
+Without either, management routes are refused, even on loopback.
+
+Fresh 2.2.6 deployments also require inference credentials by default. Bind
+caller virtual keys and provider grants explicitly; disabling
+`settings.client_config.enforce_auth_on_inference` is a consumer policy choice,
+not a fleet default. MCP OAuth deployments must bind
+`settings.oauth2_server_config.issuer_url` before adopting 2.2.6. Review the
+[pinned upstream migration notes](https://github.com/maximhq/bifrost/blob/8b4fce4f1709d66f9208d02f50552da522535f9e/transports/changelog.md)
+when updating an existing deployment.
+
 ## Service and state
 
 Defaults: `host = "127.0.0.1"`, `port = 8080`, `dataDir = "/var/lib/bifrost"`,

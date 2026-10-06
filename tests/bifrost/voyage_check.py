@@ -64,7 +64,7 @@ def request(base, model, fields, extra_params=None):
     import urllib.request
 
     body = {"model": model, "input": "plugin contract probe", **fields}
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "x-bf-vk": "sk-bf-voyage-check-fixture"}
     if extra_params is not None:
         body["extra_params"] = extra_params
         headers["x-bf-passthrough-extra-params"] = "true"
@@ -125,6 +125,18 @@ def main():
                 }
             },
             "providers": {"voyage": custom, "other": custom},
+            "governance": {
+                "virtual_keys": [{
+                    "id": "fixture-vk",
+                    "name": "fixture-vk",
+                    "value": "sk-bf-voyage-check-fixture",
+                    "is_active": True,
+                    "provider_configs": [
+                        {"provider": name, "allowed_models": [model], "allow_all_keys": True}
+                        for name, model in [("voyage", "voyage-4"), ("other", "model-1")]
+                    ],
+                }],
+            },
             "plugins": [
                 {
                     "enabled": True,
