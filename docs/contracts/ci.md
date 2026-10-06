@@ -70,8 +70,12 @@ jobs:
       # optional:
       # builder_attr: ci           (any fleet.buildProfiles entry; ci default)
       # gha_systems: x86_64-linux  (space-separated; add aarch64-linux for arm)
+      # tailnet: true              (join the tailnet; needs the OAuth secrets)
     secrets:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
+      # only when tailnet: true
+      # TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      # TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
 ```
 
 The calling job must grant `permissions: { contents: read, id-token: write }`
@@ -79,13 +83,16 @@ The calling job must grant `permissions: { contents: read, id-token: write }`
 rejected at parse time (a startup_failure with zero jobs) if the caller
 grants less than the workflow needs.
 
-| Input             | Meaning                                                                                                                                                                                                  |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cache_api_url`   | niks3 **API** base URL — serves `/api/cache-config`, requires auth/tailnet. Distinct from the public read domain (which the API returns as `substituter_url`); never point this input at the read domain |
-| `targets`         | flake attrspecs for nix-fast-build                                                                                                                                                                       |
-| `builder_attr`    | which `packages.<attr>` bundle to schedule against (canonical `ci` by default)                                                                                                                           |
-| `gha_systems`     | systems the GHA-local build job matrixes over (arm via `aarch64-linux`)                                                                                                                                  |
-| `BUILDER_SSH_KEY` | secret: the coordinator's builder SSH key                                                                                                                                                                |
+| Input                    | Meaning                                                                                                                                                                                                  |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cache_api_url`          | niks3 **API** base URL — serves `/api/cache-config`, requires auth/tailnet. Distinct from the public read domain (which the API returns as `substituter_url`); never point this input at the read domain |
+| `targets`                | flake attrspecs for nix-fast-build                                                                                                                                                                       |
+| `builder_attr`           | which `packages.<attr>` bundle to schedule against (canonical `ci` by default)                                                                                                                           |
+| `gha_systems`            | systems the GHA-local build job matrixes over (arm via `aarch64-linux`)                                                                                                                                  |
+| `tailnet`                | join the tailnet before building (boolean, default false). Explicit because a reusable workflow cannot read the caller's variables                                                                       |
+| `BUILDER_SSH_KEY`        | secret: the coordinator's builder SSH key                                                                                                                                                                |
+| `TS_OAUTH_CLIENT_ID`     | secret: Tailscale OAuth client id, required only when `tailnet` is true                                                                                                                                  |
+| `TS_OAUTH_CLIENT_SECRET` | secret: Tailscale OAuth client secret, required only when `tailnet` is true                                                                                                                              |
 
 **Versioning:** pin to a tag (`@v1`), never `@main`. nix-fleet cuts tagged
 releases; renovate proposes tag bumps with changelogs and a PR acceptance
@@ -108,15 +115,20 @@ the niks3 **API** host is tailnet-only — so both jobs join, not just
 fleet-build: gha-build must reach `/api/cache-config` and stream uploads
 to the API host. The step is `tailscale/github-action` with a Tailscale
 OAuth client (the action exchanges the OAuth client for an ephemeral node
-key; GitHub OIDC is not part of it):
+key; GitHub OIDC is not part of it).
 
-1. Repo **variable**: `FLEET_CI_ON_TAILNET=true`
-2. Repo **secrets**: `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_CLIENT_SECRET`
-   (Tailscale OAuth client with tag `tag:ci` authorized in your tailnet ACL)
+A called workflow inherits neither the caller's secrets nor its variables,
+so both are passed explicitly:
 
-The join steps skip themselves when the variable is unset — external-only
-profiles with a public-reachable API (nixbuild-only CI) need no
-Tailscale at all.
+1. Caller **variable** `FLEET_CI_ON_TAILNET=true`, bound to the `tailnet`
+   input.
+2. Caller **secrets** `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_CLIENT_SECRET`,
+   forwarded in the call's `secrets:` block (Tailscale OAuth client with
+   tag `tag:ci` authorized in your tailnet ACL).
+
+Both join steps are gated on the `tailnet` input, which defaults to false —
+external-only profiles with a public-reachable API (nixbuild-only CI) need
+no Tailscale at all.
 
 ## First-live-run caveats (honest state)
 

@@ -32,8 +32,11 @@
 #         targets: .#nixosConfigurations.myhost.config.system.build.toplevel
 #         builder_attr: ci            # optional, canonical profile by default
 #         gha_systems: x86_64-linux   # optional, add aarch64-linux for arm
+#         tailnet: true               # optional; needs the two secrets below
 #       secrets:
 #         BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_KEY }}
+#         TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+#         TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
 #
 # CALLER REQUIREMENT: the calling job MUST grant `id-token: write` +
 # `contents: read` (permissions cannot be elevated by a called workflow —
@@ -63,6 +66,11 @@ on:
         description: "niks3 server base URL"
         required: true
         default: ""
+      tailnet:
+        description: "Join the tailnet before building"
+        type: boolean
+        required: false
+        default: false
   workflow_call:
     inputs:
       targets:
@@ -84,9 +92,20 @@ on:
         type: string
         required: false
         default: "x86_64-linux"
+      tailnet:
+        description: "Join the tailnet before building. The caller decides this; a reusable workflow must not read the caller's variables implicitly."
+        type: boolean
+        required: false
+        default: false
     secrets:
       BUILDER_SSH_KEY:
         description: "Coordinator's builder SSH key (authorized by builders' nixbuild account)"
+        required: false
+      TS_OAUTH_CLIENT_ID:
+        description: "Tailscale OAuth client id; required only when tailnet is true"
+        required: false
+      TS_OAUTH_CLIENT_SECRET:
+        description: "Tailscale OAuth client secret; required only when tailnet is true"
         required: false
 
 concurrency:
@@ -112,10 +131,9 @@ jobs:
 
       - name: Join tailnet (fleet-host builders)
         # MagicDNS names in the registry's machines file resolve only inside
-        # the tailnet. External-only profiles skip this step; the
+        # the tailnet. External-only profiles pass tailnet: false; the
         # registry's ssh_config/known_hosts carry everything else.
-        # Skips itself when TS_OAUTH_CLIENT_ID is unset in the repo.
-        if: ${{ vars.FLEET_CI_ON_TAILNET == 'true' }}
+        if: ${{ inputs.tailnet }}
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
@@ -207,8 +225,8 @@ jobs:
       - name: Join tailnet (cache API is tailnet-only)
         # gha-build fetches /api/cache-config and streams uploads to the
         # API host — both unreachable without the tailnet. Same gate as
-        # fleet-build; skipped for public-reachable API deployments.
-        if: ${{ vars.FLEET_CI_ON_TAILNET == 'true' }}
+        # fleet-build; pass tailnet: false for public-reachable deployments.
+        if: ${{ inputs.tailnet }}
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
