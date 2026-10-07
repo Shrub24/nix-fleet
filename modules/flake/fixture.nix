@@ -1057,6 +1057,28 @@ let
     && overridden.nix.daemonIOSchedClass == "idle"
     && overridden.systemd.services.nix-daemon.serviceConfig.MemoryHigh == "8G";
 
+  tailscaleAutoconnectChecks =
+    let
+      units =
+        extra:
+        (fixtureNixosSystem {
+          system = "x86_64-linux";
+          modules = [
+            inputs.sops-nix.nixosModules.sops
+            aspects.tailscale
+            extra
+          ];
+        }).config.systemd.units;
+      unbound = units { };
+      bound = units { services.tailscale.secretFiles.auth = ./fixture.nix; };
+    in
+    # Unbound, no autoconnect unit exists at all; a unit holding only the
+    # ordering drop-in has no ExecStart and warns on every boot. Bound, the
+    # unit carries nixpkgs' script and the sops ordering together.
+    !(unbound ? "tailscaled-autoconnect.service")
+    && lib.hasInfix "ExecStart=" bound."tailscaled-autoconnect.service".text
+    && lib.hasInfix "sops-install-secrets.service" bound."tailscaled-autoconnect.service".text;
+
   nixGcChecks =
     let
       evaluated =
@@ -1374,6 +1396,10 @@ let
           assertion =
             (config.systemd.services."nix-gc".onFailure or [ ]) != [ ]
             || (config.systemd.services."nh-clean".onFailure or [ ]) != [ ];
+        }
+        {
+          assertion = tailscaleAutoconnectChecks;
+          message = "fixture: the tailscale aspect renders an autoconnect unit without an auth key, or lost its ordering when bound.";
         }
         {
           assertion = nixGcChecks;

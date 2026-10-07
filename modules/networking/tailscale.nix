@@ -65,13 +65,6 @@ _: {
               restartIfChanged = false;
               stopIfChanged = false;
             };
-
-            tailscaled-autoconnect = {
-              restartIfChanged = false;
-              stopIfChanged = false;
-              wants = [ "sops-install-secrets.service" ];
-              after = [ "sops-install-secrets.service" ];
-            };
           };
 
           # Same idiom as the maintenance aspects: registration is unconditional
@@ -97,6 +90,16 @@ _: {
         }
 
         (lib.mkIf authKeyReady {
+          # nixpkgs defines this unit only when authKeyFile is set, so the
+          # ordering lives under the same condition: defined alone it renders a
+          # unit with no ExecStart, which systemd warns about on every boot.
+          systemd.services.tailscaled-autoconnect = {
+            restartIfChanged = false;
+            stopIfChanged = false;
+            wants = [ "sops-install-secrets.service" ];
+            after = [ "sops-install-secrets.service" ];
+          };
+
           sops.secrets.tailscale_auth_key = {
             sopsFile = cfg.secretFiles.auth;
             key = cfg.secretKeys.auth;
