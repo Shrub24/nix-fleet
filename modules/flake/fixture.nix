@@ -1057,6 +1057,57 @@ let
     && overridden.nix.daemonIOSchedClass == "idle"
     && overridden.systemd.services.nix-daemon.serviceConfig.MemoryHigh == "8G";
 
+  nixGcChecks =
+    let
+      evaluated =
+        extra:
+        (fixtureNixosSystem {
+          system = "x86_64-linux";
+          modules = [
+            aspects.nix-gc
+            { services.nix-gc.implementation = "fast-nix-gc"; }
+            extra
+          ];
+        }).config;
+      fast = evaluated { };
+      tuned = evaluated {
+        services.nix-gc = {
+          ensureFree = null;
+          roots.prune = false;
+          optimise.enable = false;
+        };
+      };
+      nh =
+        (fixtureNixosSystem {
+          system = "x86_64-linux";
+          modules = [ aspects.nix-gc ];
+        }).config;
+      argv = fast.systemd.services.nix-gc-roots.serviceConfig.ExecStart;
+    in
+    # Threshold-driven collection: hourly, frees only the shortfall, spares
+    # fresh builds, and leaves generation retention to nh so two rules cannot
+    # disagree.
+    fast.services.fast-nix-gc.dates == [ "hourly" ]
+    && fast.services.fast-nix-gc.ensureFree == "15%"
+    && fast.services.fast-nix-gc.keepRecent == "1d"
+    && fast.services.fast-nix-gc.deleteOlderThan == null
+    # Root pruning never collects (--no-gc) and keeps live result links.
+    && lib.hasInfix " --no-gc " argv
+    && lib.hasInfix " --keep-since 7d " argv
+    && fast.systemd.services.nix-gc-roots.before == [ "fast-nix-gc.service" ]
+    && fast.services.fast-nix-optimise.enable
+    && fast.services.notify.events ? "nix-gc-roots"
+    && fast.services.notify.events ? "fast-nix-optimise"
+    && fast.services.fast-nix-optimise.dates == [ "weekly" ]
+    # Each default is switchable, and the nh path is untouched.
+    && tuned.services.fast-nix-gc.ensureFree == null
+    && tuned.services.fast-nix-gc.deleteOlderThan == "30d"
+    && !(tuned.systemd.services ? nix-gc-roots)
+    && !tuned.services.fast-nix-optimise.enable
+    && nh.programs.nh.clean.enable
+    && !nh.services.fast-nix-gc.enable
+    && !nh.services.fast-nix-optimise.enable;
+
   nodeExporterIdentityChecks =
     let
       identity =
@@ -1323,6 +1374,10 @@ let
           assertion =
             (config.systemd.services."nix-gc".onFailure or [ ]) != [ ]
             || (config.systemd.services."nh-clean".onFailure or [ ]) != [ ];
+        }
+        {
+          assertion = nixGcChecks;
+          message = "fixture: the nix-gc defaults (threshold collection, root pruning, optimise) or their overrides regressed.";
         }
         {
           # Ownership policy: an aspect that owns a unit registers its

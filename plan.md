@@ -181,7 +181,7 @@ on the contract change; none conflict with it.
 - [x] **`nix-gc` aspect generalization**: `implementation` switch
       (nh | fast-nix-gc), upstream-first import, ONE notify failure
       registration either way, `noVacuum` option (builders). Remaining:
-      live-timing decision + fast-nix-optimise optional service.
+      Done: threshold-driven timing (`ensureFree`) and optimise (contract in docs/contracts/nix-gc.md).
 - [ ] **Reusable-workflow adoption notes**: consumers call
       `build-push-cache.yml@v1` (tag cut at 0180d5ec) — stub + inputs in
       docs/contracts/ci.md; renovate bumps via tags.
@@ -216,5 +216,4 @@ on the contract change; none conflict with it.
 - [ ] **shrub/spectre canonical records**: sparse host records + host keys;
       input by the nix-dotfiles agent once the v2 contract settles.
 - [ ] **syncthing device IDs**: stays consumer-side (service credentials).
-- [ ] **fast-nix-optimise**: optional second service on builders (bundled
-      with nix-gc work).
+- [x] **fast-nix-optimise**: weekly, with the fast-nix-gc implementation.
