@@ -27,9 +27,21 @@
     port = 7411;
     basePath = "/v1";
   };
-  # The gateway receiver for producers outside a host's local NixOS evaluation.
+  # The trace gateway agents forward to (OTLP/HTTP, tailnet ingress).
   otel-collector.endpoints.otlp.tailnet = {
-    host = "oci-melb-1";
+    host = "home-forge";
     port = 4318;
+  };
+  # Store write routes: the full ingest path is the base path, so a consumer
+  # resolves one URL per lane and appends nothing.
+  victoriametrics.endpoints.remote-write.tailnet = {
+    host = "home-forge";
+    port = 8428;
+    basePath = "/api/v1/write";
+  };
+  victorialogs.endpoints.jsonline.tailnet = {
+    host = "home-forge";
+    port = 9428;
+    basePath = "/insert/jsonline";
   };
 }

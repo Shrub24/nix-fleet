@@ -45,15 +45,17 @@ selected route throws a named `fleet: service ...` error. An endpoint with no
 route, invalid host reference, empty public URL, or non-absolute base path
 fails fleet validation during `nix flake check`.
 
-| Service        | Endpoint   | Tailnet host | Port  | Base path |
-| -------------- | ---------- | ------------ | ----- | --------- |
-| omniroute      | api        | home-forge   | 20128 | `/`       |
-| hindsight      | api        | home-forge   | 8888  | `/`       |
-| docs-mcp       | mcp        | home-forge   | 6280  | `/mcp`    |
-| ntfy           | api        | la-admin-1   | 2586  | `/`       |
-| niks3-write    | api        | oci-melb-1   | 5751  | `/`       |
-| bifrost        | embeddings | oci-melb-1   | 7411  | `/v1`     |
-| otel-collector | otlp       | oci-melb-1   | 4318  | `/`       |
+| Service         | Endpoint     | Tailnet host | Port  | Base path          |
+| --------------- | ------------ | ------------ | ----- | ------------------ |
+| omniroute       | api          | home-forge   | 20128 | `/`                |
+| hindsight       | api          | home-forge   | 8888  | `/`                |
+| docs-mcp        | mcp          | home-forge   | 6280  | `/mcp`             |
+| ntfy            | api          | la-admin-1   | 2586  | `/`                |
+| niks3-write     | api          | oci-melb-1   | 5751  | `/`                |
+| bifrost         | embeddings   | oci-melb-1   | 7411  | `/v1`              |
+| otel-collector  | otlp         | home-forge   | 4318  | `/`                |
+| victoriametrics | remote-write | home-forge   | 8428  | `/api/v1/write`    |
+| victorialogs    | jsonline     | home-forge   | 9428  | `/insert/jsonline` |
 
 `docs-mcp` is the remote instance. A dotfiles-local localhost instance is
 consumer-local; docs-mcp may call bifrost's cross-host embeddings endpoint.

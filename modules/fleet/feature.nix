@@ -188,9 +188,23 @@ let
         [
           "otel-collector"
           "otlp"
-          "http://oci-melb-1:4318"
+          "http://home-forge:4318"
           4318
-          "oci-melb-1"
+          "home-forge"
+        ]
+        [
+          "victoriametrics"
+          "remote-write"
+          "http://home-forge:8428/api/v1/write"
+          8428
+          "home-forge"
+        ]
+        [
+          "victorialogs"
+          "jsonline"
+          "http://home-forge:9428/insert/jsonline"
+          9428
+          "home-forge"
         ]
       ];
     in

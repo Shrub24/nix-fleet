@@ -1,5 +1,9 @@
 # Telemetry (host-local)
 
+[Fleet observability policy](observability.md) defines the required host lanes,
+the agent → gateway topology and their rationale. This document specifies the
+host-local mechanism; its safe opt-in defaults are not the fleet adoption policy.
+
 Scope: one NixOS host's telemetry. A **single** public aspect,
 `flake.modules.nixos.telemetry`, owns the implementation-agnostic
 `services.telemetry` contract: a service registers a Prometheus scrape source,
@@ -303,9 +307,12 @@ prometheus-remote-write cannot carry
 
 ## Local log shipping: journald
 
-Log shipping is **opt-in per host** and has its own typed sink: a machine that
-selected telemetry for metrics or traces must not start shipping its journal as
-a side effect.
+Log shipping is **explicitly enabled in the mechanism** and has its own typed
+sink: selecting telemetry for metrics or traces must not export a journal as a
+side effect. The [fleet policy](observability.md#journal-shipping-required-policy-explicit-mechanism)
+requires shipping an operational-unit allowlist on every managed NixOS host,
+including workstations. Consumers set `journald.enable = true` and a nonempty
+`includeUnits`; an empty list ships every unit and does not meet that baseline.
 
 ```nix
 services.telemetry.journald = {
@@ -631,39 +638,43 @@ gateway uses the gateway's network ingress address, not a loopback URL.
 
 ## Remote backends and the fleet catalog
 
-Destination targets are consumer policy, not a fleet contract. Point
-`services.telemetry.destinations.<name>.endpoint` at the backend explicitly. A
-consumer that owns canonical service-endpoint facts can derive the URL in its
-own flake-level wrapper — the NixOS module cannot read flake-level fleet config:
+Destination selection, credentials and fan-out are consumer policy. Shared
+service coordinates are canonical fleet facts in [the service catalog](services.md),
+not duplicated consumer literals. Consumers derive those URLs in their own
+flake-level wrappers — a NixOS module cannot read flake-level fleet config:
 
 ```nix
 # consumer flake-level module closing over config.fleet
 endpoint = (inputs.nix-fleet.lib.serviceEndpoints.resolveEndpoint config.fleet {
-  service = "latitude";
+  service = "otel-collector";
   endpoint = "otlp";
   via = "tailnet";
 }).url;
 ```
 
-The canonical `otel-collector.otlp` route names OCI's gateway listener for
-cross-host producers outside a host's NixOS evaluation. Host-local producers
-continue using `services.telemetry.otlp.httpUrl`.
+The canonical `otel-collector.otlp` route names the **home-forge gateway**.
+Agents resolve that route for their single trace forwarding destination.
+Host-local producers continue using `services.telemetry.otlp.httpUrl`, never
+that remote gateway address. Metrics and journals use their direct store routes.
+The catalog declares coordinates; it does not attest that a listener has been
+deployed or that a backend has received a trace.
 
-**Catalog transition is gated by deployment.** A planned relocation does not
-move the published coordinates. The sequence for the home-forge gateway is:
+**Deployment acceptance is separate from catalog declaration.** A resolved
+address is not proof of a working gateway. For the home-forge rollout:
 
 1. deploy the home-forge listener and verify local ingest, remote ingest and each
    backend independently (separately authorized consumer work);
-2. only then publish home-forge coordinates for the **existing**
-   `otel-collector.otlp` endpoint — no rename combined with the move;
+2. reconcile the **existing** `otel-collector.otlp` endpoint with that placement
+   and publish the catalog change — no rename combined with the move;
 3. relock consumers and replace each agent's direct backend trace legs with the
    single named gateway destination (removing the old legs, or traces are
    exported twice);
 4. exercise an agent-to-gateway outage and a single-backend outage in
    deployment, inspecting origin identity and queue pressure.
 
-No canonical coordinate is changed, and no consumer service is moved, solely on
-the basis of a plan.
+A catalog update does not move or enable a consumer service. Do not report the
+rollout as delivering until the live acceptance gates pass, and retain or drain
+pending data before retiring an old listener.
 
 ## Adoption and rollback
 
