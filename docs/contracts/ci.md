@@ -23,8 +23,9 @@ fleet inventory (nix-fleet, canonical)   GHA runner
 └─ join tailnet (fleet-host builders) ─►  MagicDNS resolves hostnames
 
 nix-fast-build: evaluates locally, fans out across inventory builders AND the
-runner's own store (default max-jobs — the runner is just another builder;
-its aarch64 runners cover arm builds fleet hosts can't).
+runner's own store (default max-jobs). One configurable coordinator requests
+both target architectures; Nix sends foreign-architecture builds to compatible
+remote builders, without cross-compilation.
 ```
 
 Degradation is native nix: an unreachable builder drops out of scheduling and
@@ -70,14 +71,18 @@ a stub:
 ```yaml
 jobs:
   build-push-cache:
+    permissions:
+      contents: read
+      id-token: write
     uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v1
     with:
       # cache_api_url: https://niks3.tailnet.example.com   (optional; the fleet
       #                                                     contract supplies it)
       targets: .#nixosConfigurations.myhost.config.system.build.toplevel
       # optional:
-      # builder_attr: ci           (any fleet.buildProfiles entry; ci default)
-      # gha_systems: x86_64-linux  (space-separated; add aarch64-linux for arm)
+      # builder_attr: ci           (any fleet.buildProfiles entry; empty = local-only)
+      # runner_system: x86_64-linux (ARM coordinator default)
+      # systems: x86_64-linux       (both target architectures default)
       # tailnet: false             (disable the default tailnet join)
       # ts_client_id: ${{ vars.TS_OAUTH_CLIENT_ID }}  (public override)
       # ts_audience: ${{ vars.TS_AUDIENCE }}          (public override)
@@ -93,9 +98,8 @@ grants less than the workflow needs.
 | Input             | Meaning                                                                                                                                                                                                                                                                                                                                                                            |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `cache_api_url`   | niks3 **API** base URL — serves `/api/cache-config`, requires auth/tailnet. Optional: empty resolves `packages.<system>.cache-api-url`, i.e. the canonical `fleet.services."niks3-write"` tailnet origin, so the coordinate is not restated per repository. Distinct from the public read domain (which the API returns as `substituter_url`); never point this at the read domain |
-| `targets`         | flake attrspecs for nix-fast-build                                                                                                                                                                                                                                                                                                                                                 |
-| `builder_attr`    | which `packages.<attr>` bundle to schedule against (canonical `ci` by default)                                                                                                                                                                                                                                                                                                     |
-| `gha_systems`     | systems the GHA-local build job matrixes over (arm via `aarch64-linux`)                                                                                                                                                                                                                                                                                                            |
+| `targets`         | single flake selection for nix-fast-build; default `.#checks`, scoped to `systems`                                                                                                                                                                                                                                                                                                 |
+| `builder_attr`    | which `packages.<attr>` bundle to schedule against (`ci` by default); explicitly empty means local-only, with no builder bundle or SSH key setup                                                                                                                                                                                                                                   |
 | `tailnet`         | Join the tailnet before building (boolean, default true); set false for public-only deployments                                                                                                                                                                                                                                                                                    |
 | `BUILDER_SSH_KEY` | secret: the coordinator's builder SSH key                                                                                                                                                                                                                                                                                                                                          |
 | `ts_client_id`    | Public client ID override; empty resolves the fleet CI identity                                                                                                                                                                                                                                                                                                                    |
@@ -105,32 +109,71 @@ grants less than the workflow needs.
 releases; renovate proposes tag bumps with changelogs and a PR acceptance
 gate, so consumers opt into changes deliberately.
 
-Three jobs:
+Two jobs:
 
-- **prepare** — normalizes the runner matrix and resolves the public Tailscale
-  identity once, before either build job joins the tailnet.
-- **fleet-build** — coordinator: joins tailnet (optional), installs the
-  registry bundle and cache substitution settings, then runs `nix-fast-build
---skip-cached` with `builders = @/tmp/nix-builders`. Remote builders publish
-  through their existing hooks.
-- **gha-build** — runner-local builds streaming through niks3-action's
-  post-build-hook with GitHub OIDC. Same dedup server.
+- **prepare** — resolves the public Tailscale identity once.
+- **build** — one coordinator, selected by `runner_system` (default
+  `aarch64-linux` on `ubuntu-24.04-arm`; `x86_64-linux` uses `ubuntu-latest`).
+  It installs the selected builder profile when nonempty, configures
+  `Mic92/niks3-action`, and runs `nix-fast-build` once with `--systems`.
+  Empty `builder_attr` clears remote builders; otherwise Nix distributes work
+  according to that profile. Local builds publish through the action; remote
+  builds through builder hooks. No separate local-build job or custom refresher.
 
-### Tailscale join (both jobs)
+The workflow declares `contents: read` and `id-token: write` for direct dispatch.
+Reusable callers must grant the same permissions. Direct dispatch reads the
+repository's `FLEET_BUILDER_SSH_KEY`; reusable callers pass `BUILDER_SSH_KEY`.
 
-MagicDNS names in the machines file resolve only inside the tailnet, and
-the niks3 **API** host is tailnet-only — so both jobs join, not just
-fleet-build: gha-build must reach `/api/cache-config` and stream uploads
-to the API host. The step is `tailscale/github-action` using **workload
+### Architecture selection
+
+These inputs answer separate questions:
+
+| Input           | Default                      | Selects                                         |
+| --------------- | ---------------------------- | ----------------------------------------------- |
+| `runner_system` | `aarch64-linux`              | The GHA coordinator architecture                |
+| `systems`       | `x86_64-linux aarch64-linux` | Target architectures evaluated under `.#checks` |
+| `builder_attr`  | `ci`                         | Remote builder capacity; empty means local-only |
+
+The coordinator architecture does not constrain remote execution. One ARM
+coordinator can build ARM locally and delegate x86 work to compatible fleet
+builders. The `ci` profile provides both architectures. Foreign-architecture
+work cannot fall back to the coordinator if all compatible remote builders are
+unavailable. Local-only consumers should select the same single system for
+`runner_system` and `systems`.
+
+For an x86-only consumer such as dotfiles:
+
+```yaml
+with:
+  runner_system: x86_64-linux
+  systems: x86_64-linux
+  builder_attr: ci # use "" for local-only
+```
+
+`targets` is one flake selection, defaulting to `.#checks`, not a list of
+positional targets. `systems` selects system branches under that workload; it
+does not change a host-specific derivation's architecture.
+
+A future wrapper can call this reusable workflow twice with disjoint workloads,
+runner architectures and profiles. That orchestration is deferred. One
+coordinator avoids repeated setup/evaluation and shares its build/store state;
+most ARM and x86 derivations are nevertheless different and do not deduplicate.
+
+### Tailscale join
+
+The build job joins because both fleet builder names and the canonical niks3 API
+require tailnet access, including in local-only mode. Set `tailnet: false` only
+when the selected builders and cache API are publicly reachable.
+The step is `tailscale/github-action` using **workload
 identity federation**: the action exchanges GitHub's OIDC token for a
 short-lived node key, so no long-lived credential exists in any repository,
 and it consumes the same `id-token: write` grant niks3 already needs.
 
-The `tailnet` input defaults to true. Before either build job joins, the
+The `tailnet` input defaults to true. Before the build job joins, the
 prepare job resolves public identity metadata from the checked-out consumer's
 `packages.x86_64-linux.ci-tailscale`. It installs Nix before resolving that
 artifact; bootstrap flake inputs must therefore be reachable without the
-tailnet. Both build jobs use the same resolved identity.
+tailnet. The build job uses that resolved identity.
 
 The identity comes from `fleet.ci.tailscale.clientId` and `audience`, not GitHub
 secrets. An ordinary consumer assignment overrides the shared Client ID; its
@@ -138,7 +181,7 @@ audience follows automatically. A consumer may override the audience too.
 Workflow inputs `ts_client_id` and `ts_audience` override those artifact values;
 a client-only input derives `api.tailscale.com/<client id>`. A caller may bind
 these inputs to repository Variables, but none are required for the shared
-identity. `tailnet: false` skips metadata resolution and both join steps.
+identity. `tailnet: false` skips metadata resolution and the join step.
 
 The tailnet side is a **trust credential** on the admin console's Trust
 credentials page: Credential → OpenID Connect, issuer _GitHub Actions_,
@@ -149,7 +192,7 @@ secrets**; they are public fleet metadata.
 A federated identity belongs to no user, so it must tag its nodes:
 `tags: tag:ci` is not optional.
 
-Both join steps are gated on the `tailnet` input, which defaults to true —
+The join step is gated on the `tailnet` input, which defaults to true —
 external-only profiles with a public-reachable API can explicitly select
 `tailnet: false`.
 
@@ -187,13 +230,12 @@ claim. The claims worth binding:
 
 ## First-live-run caveats (honest state)
 
-- The prepare job's `ci-tailscale` resolution and the coordinator's `ci`
-  bundle both use `packages.x86_64-linux`. ARM coordinators need these
-  attributes changed too; `gha_systems` only selects the runner-local matrix.
+- Prepare resolves `ci-tailscale` on x86_64; the build job resolves the builder
+  bundle and cache URL through `packages.<runner_system>` on its native runner.
 - Runner user must be a trusted user for the builders-use-substitutes path
   to substitute optimally; correctness doesn't depend on it.
-- `SSH_KEY_SECRET` naming and builder-side authorization of the coordinator
-  key are consumer policy; the workflow shapes the mechanism, not the trust.
+- Builder-side authorization of the coordinator key is consumer policy;
+  publishing `fleet.ci.sshPublicKey` grants no access on its own.
 
 ## CI repository provisioning
 

@@ -6,15 +6,15 @@
 # Each remote builder publishes through its existing niks3 post-build-hook.
 # GHA-local builds use niks3-action's native hook with GitHub OIDC.
 # No path collection or --niks3-server upload: publication belongs to hooks.
-# Any coordinator that builds locally needs the runner hook too.
+# The coordinator installs niks3-action for its own local builds.
 #
 # BUILDER CONFIGURATION COMES FROM THE FLEET INVENTORY — the workflow holds
 # no builder coordinates. nix-fleet (inputs.nix-fleet.flakeModules.fleet)
 # is the canonical authority; the consumer flake renders its selected
 # builder profile as `packages.ci` (canonical) or `packages.<profile>`
 # (consumer-local sets) — machines file, known_hosts, ssh_config — and this
-# workflow installs those artifacts. The only selection the workflow makes
-# is the builder-set name.
+# workflow installs those artifacts. Consumers select the coordinator
+# architecture, target systems and builder profile.
 #
 # REUSABLE WORKFLOW: call it from a ~10-line consumer stub —
 #
@@ -24,8 +24,9 @@
 #       with:
 #         cache_api_url: https://niks3.tailnet.example.com   # optional; the fleet contract supplies it
 #         targets: .#nixosConfigurations.myhost.config.system.build.toplevel
-#         builder_attr: ci            # optional, canonical profile by default
-#         gha_systems: x86_64-linux   # optional, add aarch64-linux for arm
+#         builder_attr: ci            # optional; empty means local-only
+#         runner_system: x86_64-linux # optional; ARM coordinator by default
+#         systems: x86_64-linux       # optional; both architectures by default
 #         tailnet: false              # optional; default true
 #         ts_client_id: ${{ vars.TS_OAUTH_CLIENT_ID }} # optional public override
 #         ts_audience: ${{ vars.TS_AUDIENCE }}         # optional public override
@@ -49,13 +50,30 @@
 # out of nix's scheduling and work lands on the remaining builders and the
 # runner's own store — the inventory carries no failover logic.
 name: build-push-cache
+permissions:
+  contents: read
+  id-token: write
 on:
   workflow_dispatch:
     inputs:
-      targets:
-        description: "Flake attrspecs to build (space-separated)"
+      runner_system:
+        description: "Coordinator architecture"
+        type: choice
+        options: [aarch64-linux, x86_64-linux]
         required: false
-        default: ""
+        default: "aarch64-linux"
+      systems:
+        description: "Target systems (space-separated); independent of coordinator architecture"
+        required: false
+        default: "x86_64-linux aarch64-linux"
+      builder_attr:
+        description: "Builder profile package; empty disables remote builders"
+        required: false
+        default: "ci"
+      targets:
+        description: "Flake selection to build (defaults to .#checks)"
+        required: false
+        default: ".#checks"
       cache_api_url:
         description: "niks3 server base URL; empty resolves it from the fleet contract"
         required: false
@@ -75,25 +93,31 @@ on:
         default: ""
   workflow_call:
     inputs:
-      targets:
-        description: "Flake attrspecs to build (space-separated)"
+      runner_system:
+        description: "Coordinator architecture: aarch64-linux or x86_64-linux"
         type: string
         required: false
+        default: "aarch64-linux"
+      systems:
+        description: "Target systems (space-separated); independent of coordinator architecture"
+        type: string
+        required: false
+        default: "x86_64-linux aarch64-linux"
+      targets:
+        description: "Flake selection to build (defaults to .#checks)"
+        type: string
+        required: false
+        default: ".#checks"
       cache_api_url:
         description: 'niks3 server base URL; empty resolves packages.<system>.cache-api-url (fleet.services."niks3-write")'
         type: string
         required: false
         default: ""
       builder_attr:
-        description: "fleet.builderSets entry to schedule against (attr of packages.<attr>)"
+        description: "Builder profile package; empty disables remote builders"
         type: string
         required: false
         default: "ci"
-      gha_systems:
-        description: "Systems the GHA-local build job matrixes over"
-        type: string
-        required: false
-        default: "x86_64-linux"
       tailnet:
         description: "Join the tailnet before building; disable for public-only deployments"
         type: boolean
@@ -110,6 +134,9 @@ on:
         required: false
         default: ""
     secrets:
+      FLEET_BUILDER_SSH_KEY:
+        description: "Repository coordinator key used by direct dispatch; reusable callers normally pass BUILDER_SSH_KEY"
+        required: false
       BUILDER_SSH_KEY:
         description: "Coordinator's builder SSH key (authorized by builders' nixbuild account)"
         required: false
@@ -122,7 +149,8 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     outputs:
-      systems: ${{ steps.norm.outputs.systems }}
+      systems: ${{ steps.systems.outputs.systems }}
+      runner: ${{ steps.systems.outputs.runner }}
       ts-client-id: ${{ steps.tailscale.outputs.client-id }}
       ts-audience: ${{ steps.tailscale.outputs.audience }}
     steps:
@@ -155,14 +183,28 @@ jobs:
           echo "client-id=$CLIENT_ID" >> "$GITHUB_OUTPUT"
           echo "audience=$AUDIENCE" >> "$GITHUB_OUTPUT"
 
-      - id: norm
+      - name: Select coordinator and target systems
+        id: systems
+        env:
+          RUNNER_SYSTEM: ${{ inputs.runner_system }}
+          SYSTEMS: ${{ inputs.systems }}
         run: |
-          SYSTEMS=$(echo "${{ inputs.gha_systems }}" | tr ' ' '\n' | jq -R . | jq -sc .)
-          echo "systems=$SYSTEMS" >> "$GITHUB_OUTPUT"
+          case "$RUNNER_SYSTEM" in
+            aarch64-linux) runner=ubuntu-24.04-arm ;;
+            x86_64-linux) runner=ubuntu-latest ;;
+            *) echo "::error::ci: unsupported runner_system '$RUNNER_SYSTEM'"; exit 1 ;;
+          esac
+          systems=$(printf '%s' "$SYSTEMS" | jq -Rsc 'split(" ") | map(select(length > 0)) | unique')
+          if ! echo "$systems" | jq -e 'length > 0 and all(.[]; . == "x86_64-linux" or . == "aarch64-linux")' > /dev/null; then
+            echo "::error::ci: systems must contain x86_64-linux or aarch64-linux"
+            exit 1
+          fi
+          echo "systems=$(echo "$systems" | jq -r 'join(" ")')" >> "$GITHUB_OUTPUT"
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
 
-  fleet-build:
+  build:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.prepare.outputs.runner }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -185,21 +227,25 @@ jobs:
         uses: NixOS/nix-installer-action@main
 
       - name: Install fleet builder artifacts from the registry
+        if: ${{ inputs.builder_attr != '' }}
         # Builds the consumer's rendered profile bundle (nix eval only) and
         # installs machines/known_hosts/ssh_config. The workflow never
         # stores builder coordinates; the registry is the SSOT.
         run: |
           BUNDLE=$(nix build --no-link --print-out-paths \
-            ".#packages.x86_64-linux.${{ inputs.builder_attr }}")
+            ".#packages.${{ inputs.runner_system }}.${{ inputs.builder_attr }}")
           mkdir -p ~/.ssh
           sudo cp "$BUNDLE/known_hosts" /etc/ssh/ssh_known_hosts
           cat "$BUNDLE/ssh_config" >> ~/.ssh/config
           cp "$BUNDLE/machines" /tmp/nix-builders
 
       - name: Set up coordinator SSH key
+        if: ${{ inputs.builder_attr != '' }}
+        env:
+          BUILDER_KEY: ${{ secrets.BUILDER_SSH_KEY || secrets.FLEET_BUILDER_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.BUILDER_SSH_KEY }}" > ~/.ssh/id_ed25519
+          printf '%s\n' "$BUILDER_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Resolve cache API URL
@@ -210,89 +256,7 @@ jobs:
         run: |
           url='${{ inputs.cache_api_url }}'
           if [ -z "$url" ]; then
-            bundle=$(nix build --no-link --print-out-paths .#packages.x86_64-linux.cache-api-url)
-            url=$(cat "$bundle")
-          fi
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-
-      - name: Fetch cache config
-        # Same endpoint the action uses: substituter, public keys, audience.
-        id: cache
-        run: |
-          curl -sS "${{ steps.cache-url.outputs.url }}/api/cache-config?issuer=https://token.actions.githubusercontent.com" \
-            | jq -r '"substituter=" + .substituter_url, "public_keys=" + (.public_keys | join(" ")), "audience=" + .oidc_audience' \
-            >> "$GITHUB_OUTPUT"
-
-      - name: Start OIDC token refresher for niks3 push
-        # Legacy token refresh; the build command below does not consume it.
-        # Publication belongs to native hooks, not --niks3-server.
-        run: |
-          mkdir -p ~/.config/niks3
-          cat > /tmp/refresh-oidc.sh <<'REFRESH'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          while true; do
-            token=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${{ steps.cache.outputs.audience }}" | jq -r .value)
-            printf '%s' "$token" > "$HOME/.config/niks3/auth-token"
-            sleep 180
-          done
-          REFRESH
-          chmod +x /tmp/refresh-oidc.sh
-          /tmp/refresh-oidc.sh &
-          echo "REFRESHER_PID=$!" >> "$GITHUB_ENV"
-
-      - name: Evaluate and distribute builds to fleet builders
-        # Fan-out via nix's builders mechanism: nix schedules derivations
-        # across the registry's builders AND the runner's own local store
-        # (default max-jobs — the runner is just another builder; GHA local
-        # capacity participates, and its aarch64 runners cover arm builds
-        # fleet hosts cannot). Remote builders publish through their hooks.
-        # Returned paths are not uploaded by the coordinator; local builds
-        # require the same runner hook configured in gha-build.
-        env:
-          NIX_CONFIG: |
-            builders = @/tmp/nix-builders
-            substituters = ${{ steps.cache.outputs.substituter }}
-            trusted-public-keys = ${{ steps.cache.outputs.public_keys }}
-        run: |
-          nix run nixpkgs#nix-fast-build -- \
-            --no-nom --skip-cached \
-            --flake .# ${{ inputs.targets }}
-
-  gha-build:
-    needs: prepare
-    strategy:
-      matrix:
-        system: ${{ fromJSON(needs.prepare.outputs.systems) }}
-    runs-on: ${{ matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Join tailnet (cache API is tailnet-only)
-        # gha-build fetches /api/cache-config and streams uploads to the
-        # API host — both unreachable without the tailnet. Same gate as
-        # fleet-build; pass tailnet: false for public-reachable deployments.
-        # Same federated identity as fleet-build: no OAuth secret.
-        if: ${{ inputs.tailnet }}
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ needs.prepare.outputs.ts-client-id }}
-          audience: ${{ needs.prepare.outputs.ts-audience }}
-          tags: tag:ci
-
-      - name: Install Nix
-        uses: NixOS/nix-installer-action@main
-
-      - name: Resolve cache API URL
-        # Same contract-derived coordinate as fleet-build; the matrix system
-        # picks the package attribute.
-        id: cache-url
-        run: |
-          url='${{ inputs.cache_api_url }}'
-          if [ -z "$url" ]; then
-            bundle=$(nix build --no-link --print-out-paths ".#packages.${{ matrix.system }}.cache-api-url")
+            bundle=$(nix build --no-link --print-out-paths ".#packages.${{ inputs.runner_system }}.cache-api-url")
             url=$(cat "$bundle")
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
@@ -302,5 +266,17 @@ jobs:
         with:
           server-url: ${{ steps.cache-url.outputs.url }}
 
-      - name: Build (locally, streaming uploads)
-        run: nix run nixpkgs#nix-fast-build -- --no-nom --skip-cached --flake .# ${{ inputs.targets }}
+      - name: Build with the selected builder profile
+        env:
+          BUILDER_ATTR: ${{ inputs.builder_attr }}
+          SYSTEMS: ${{ needs.prepare.outputs.systems }}
+          TARGETS: ${{ inputs.targets }}
+        run: |
+          builders=""
+          if [ -n "$BUILDER_ATTR" ]; then
+            builders="@/tmp/nix-builders"
+          fi
+          export NIX_CONFIG="${NIX_CONFIG:-}
+          builders = $builders"
+          nix run nixpkgs#nix-fast-build -- \
+            --skip-cached --systems "$SYSTEMS" --flake "${TARGETS:-.#checks}"

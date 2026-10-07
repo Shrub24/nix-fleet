@@ -210,29 +210,27 @@ same types.
 
 ## CI
 
-``.github/workflows/build-push-cache.yml` is a **reusable workflow**
-(`workflow_call`) — consumers call it with `uses:`and pin a version tag;
-renovate proposes tag bumps behind a PR gate with changelogs.`.github/templates/`keeps the readable source of the workflows (the
-consumer contract detail lives in [docs/contracts/ci.md](docs/contracts/ci.md));`.github/workflows/ci.yml` instantiates them for this repository —
-nix-fleet is its own first consumer.
+`.github/workflows/build-push-cache.yml` is a reusable workflow
+(`workflow_call`) with a direct-dispatch entry point. Consumers call it with
+`uses:` and pin a version tag; `.github/workflows/ci.yml` calls it for this
+repository. The full interface lives in [docs/contracts/ci.md](docs/contracts/ci.md).
 
-- **`nvfetcher-refresh`** — scheduled source-metadata regeneration, flake
-  validation, PR on change.
-- **`build-push-cache`** — coordinated fleet build + cache push. One
-  coordinator runs `nix-fast-build`: it evaluates locally, fans builds out
-  to nix remote builders (the `builders =` mechanism, multiple hosts, results
-  return to the coordinator), and pushes realised paths with `niks3 push`
-  (server-side deduplication makes overlap harmless). GitHub-runner builds
-  run through `niks3-action`, which registers a post-build-hook and streams
-  uploads with GitHub OIDC — bind `services.niks3-cache.oidc.providers`
-  consumer-side for that path. The coordinator push reads the token
-  file niks3 re-reads periodically; on GHA an inline refresher loop mints
-  fresh OIDC tokens bound to the cache audience (no long-lived secrets), and
-  non-GHA coordinators use a fleet-issued push token in the same env var.
+One coordinator runs `nix-fast-build` against `.#checks`. `runner_system`
+selects its architecture (ARM by default); `systems` selects the workload
+architectures (x86_64 and ARM by default). `builder_attr` selects a rendered
+remote-builder profile (`ci` by default); explicitly empty means local-only.
+An x86-only consumer sets both `runner_system` and `systems` to `x86_64-linux`.
+
+Remote builders publish through their native niks3 post-build-hooks. The GHA
+coordinator uses `Mic92/niks3-action` for cache configuration and local build
+publication with GitHub OIDC. There is no separate coordinator uploader or
+custom token refresher. Both direct dispatch and reusable callers require
+`contents: read` and `id-token: write`; cache authorization remains consumer
+policy in `services.niks3-cache.oidc.providers`.
 
 CI builder artifacts come from the fleet inventory, not repo variables: a
-consumer flake importing the fleet feature gets `packages.ci` (canonical set;
-per-set bundles as `packages.<set>`) — a directory with `machines` (nix
+consumer flake importing the fleet feature gets `packages.ci` (canonical profile;
+per-profile bundles as `packages.<profile>`) — a directory with `machines` (nix
 machines-file lines), `known_hosts`, and `ssh_config`, rendered from the
 merged inventory at consumer eval time. The `build-push-cache` reusable
 workflow installs these instead of holding builder coordinates; a
