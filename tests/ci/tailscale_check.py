@@ -39,6 +39,13 @@ for event in ("workflow_call", "workflow_dispatch"):
     assert workflow["on"][event]["inputs"]["builder_attr"]["default"] == "ci"
 builder_step = next(step for step in build_steps if step["name"] == "Install fleet builder artifacts from the registry")
 assert builder_step["if"] == "${{ inputs.builder_attr != '' }}"
+preflight = next(step for step in build_steps if step["name"] == "Verify the selected builders answer before scheduling")
+assert preflight["if"] == "${{ inputs.builder_attr != '' }}"
+assert preflight["env"]["SYSTEMS"] == "${{ needs.prepare.outputs.systems }}"
+assert preflight["env"]["COORDINATOR"] == "${{ inputs.runner_system }}"
+key_step = next(step for step in build_steps if step["name"] == "Set up coordinator SSH key")
+assert build_steps.index(key_step) < build_steps.index(preflight) < build_steps.index(build_steps[-1])
+preflight_script = preflight["run"]
 prepare = workflow["jobs"]["prepare"]
 bootstrap = prepare["steps"][:2]
 assert bootstrap[0]["uses"].startswith("actions/checkout@")
@@ -163,4 +170,53 @@ with tempfile.TemporaryDirectory() as directory:
             actual = dict(line.split("=", 1) for line in output.read_text().splitlines())
             assert actual == expected
 
-print("CI identity, OIDC permissions, coordinator architecture and target systems, profile selection and checks defaults passed")
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    stub = root / "ssh"
+    stub.write_text(
+        f'#!{shutil.which("bash")}\n'
+        'for arg in "$@"; do case "$arg" in *@*) host=${arg#*@} ;; esac; done\n'
+        'if grep -qx "$host" "$REACHABLE"; then exit 0; fi\n'
+        'echo "stub: no route to $host" >&2\n'
+        "exit 255\n"
+    )
+    stub.chmod(0o755)
+    machines = Path("/tmp/nix-builders")
+    machines.write_text(
+        "ssh-ng://nixbuild@home-forge x86_64-linux - 4 2 big-parallel,kvm,nixos-test -\n"
+        "ssh-ng://nixbuild@oci-melb-1 aarch64-linux - 4 2 big-parallel -\n"
+    )
+    reachable = root / "reachable"
+    for selected, coordinator, answering, expected in (
+        # Both systems, both builders answering.
+        ("x86_64-linux aarch64-linux", "aarch64-linux", ["home-forge", "oci-melb-1"], 0),
+        # The ARM coordinator cannot cover x86_64 once its builder is silent.
+        ("x86_64-linux aarch64-linux", "aarch64-linux", ["oci-melb-1"], 1),
+        # An x86_64 coordinator covers its own system locally.
+        ("x86_64-linux aarch64-linux", "x86_64-linux", ["oci-melb-1"], 0),
+        ("x86_64-linux", "aarch64-linux", ["oci-melb-1"], 1),
+        # A silent builder for a system nothing else can produce.
+        ("aarch64-linux", "x86_64-linux", [], 1),
+        # The coordinator's own system needs no builder at all.
+        ("aarch64-linux", "aarch64-linux", [], 0),
+        # A silent builder whose system is not requested only warns.
+        ("aarch64-linux", "aarch64-linux", ["home-forge"], 0),
+    ):
+        reachable.write_text("\n".join(answering) + "\n")
+        result = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", preflight_script],
+            env={
+                **os.environ,
+                "PATH": f"{root}:{os.environ['PATH']}",
+                "SYSTEMS": selected,
+                "COORDINATOR": coordinator,
+                "REACHABLE": str(reachable),
+            },
+            text=True,
+            capture_output=True,
+        )
+        assert (result.returncode == 0) == (expected == 0), result.stderr + result.stdout
+        if expected != 0:
+            assert "no reachable builder serves" in result.stdout, result.stdout
+
+print("CI identity, OIDC permissions, coordinator architecture and target systems, profile selection, builder reachability and checks defaults passed")

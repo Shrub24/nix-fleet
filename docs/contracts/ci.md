@@ -119,6 +119,9 @@ Two jobs:
   Empty `builder_attr` clears remote builders; otherwise Nix distributes work
   according to that profile. Local builds publish through the action; remote
   builds through builder hooks. No separate local-build job or custom refresher.
+  Before scheduling, the job dials every builder in the rendered profile and
+  fails when a requested system would have nowhere to build — a silent builder
+  otherwise surfaces deep inside the build as a bare `platform mismatch`.
 
 The workflow declares `contents: read` and `id-token: write` for direct dispatch.
 Reusable callers must grant the same permissions. Direct dispatch reads the
@@ -318,14 +321,45 @@ use tighter workflow refs where practical. Avoid assuming all repositories
 have the same name-shaped `sub` (see cache authorization above).
 
 The shared Client ID and derived Audience are already recorded in fleet; no
-GitHub-side copy is required. In tailnet policy, define `tag:ci` ownership and grant these nodes access to:
+GitHub-side copy is required. In tailnet policy, define `tag:ci` ownership and
+grant these nodes access to:
 
-- TCP 22 on the selected fleet builders;
+- the selected fleet builders, on whichever SSH path those hosts serve (see
+  below);
 - the resolved `niks3-write` API endpoint (currently TCP 5751).
 
 Check broader existing grants: adding a narrow grant does not remove an
-existing broad permission. Tailscale admits the runner device; the SSH key
-separately authenticates it to the builder account.
+existing broad permission.
+
+**Which SSH server answers decides what authorizes the build.** A builder with
+`services.tailscale.sshServe = true` (the fleet aspect's default) runs
+`tailscale set --ssh`, and tailscaled then intercepts every tailnet connection
+to port 22 on that host: sshd and its `authorized_keys` are never reached, and
+neither is the host firewall — which is why such a builder works even with port
+22 closed at the provider. The tailnet `ssh` rule is the whole authorization
+there, and it must name the account the machines file dials:
+
+```json
+{
+  "action": "accept",
+  "src": ["tag:ci"],
+  "dst": ["tag:homelab"],
+  "users": ["nixbuild"]
+}
+```
+
+`users` lists accounts that must already exist on the host — Tailscale never
+creates one — so the builder has to be deployed with the build account before a
+dispatch can succeed, and `autogroup:nonroot` is only correct if every non-root
+account on that host should be reachable. On this path the coordinator key is
+not used for fleet builders at all; it remains necessary for public builders
+such as `nixbuild.net`.
+
+A builder with `sshServe = false` falls back to plain sshd: then a `tcp:22`
+grant plus the coordinator key in that account's `authorized_keys` is what
+admits the runner, and the host firewall must allow TCP 22 on its tailscale
+interface. Choose one shape per host; there is no per-source bypass of
+Tailscale SSH.
 
 ### Cache authorization
 

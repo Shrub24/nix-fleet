@@ -248,6 +248,48 @@ jobs:
           printf '%s\n' "$BUILDER_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
+      - name: Verify the selected builders answer before scheduling
+        if: ${{ inputs.builder_attr != '' }}
+        # A builder that cannot be dialled surfaces deep inside the build as a
+        # bare "platform mismatch". Prove dial-in here, name the host, and fail
+        # only when a requested system is left with nowhere to build — the
+        # coordinator covers its own system locally.
+        env:
+          SYSTEMS: ${{ needs.prepare.outputs.systems }}
+          COORDINATOR: ${{ inputs.runner_system }}
+        run: |
+          set -euo pipefail
+          # machines line: <uri> <systems> <key> <maxjobs> <speedfactor> <features> <mandatory>
+          reachable=""
+          while read -r uri systems _rest; do
+            if [ -z "$uri" ]; then
+              continue
+            fi
+            host=${uri#ssh-ng://}
+            host=${host#ssh://}
+            if ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$host" true; then
+              echo "builder ok: $host ($systems)"
+              reachable="$reachable ${systems//,/ }"
+            else
+              echo "::warning::ci: builder '$host' did not answer ssh (serves $systems)"
+            fi
+          done < /tmp/nix-builders
+
+          uncovered=""
+          for system in $SYSTEMS; do
+            if [ "$system" = "$COORDINATOR" ]; then
+              continue
+            fi
+            case " $reachable " in
+              *" $system "*) ;;
+              *) uncovered="$uncovered $system" ;;
+            esac
+          done
+          if [ -n "$uncovered" ]; then
+            echo "::error::ci: no reachable builder serves:$uncovered (coordinator is $COORDINATOR)"
+            exit 1
+          fi
+
       - name: Resolve cache API URL
         # The fleet contract already carries this coordinate
         # (fleet.services."niks3-write"), so the input is an override rather

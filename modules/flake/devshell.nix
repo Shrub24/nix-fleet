@@ -13,6 +13,8 @@ _: {
           nixfmt
           treefmt
           nix-output-monitor
+          actionlint
+          (python3.withPackages (pythonPackages: [ pythonPackages.pyyaml ]))
         ];
         NIX_CONFIG = "experimental-features = nix-command flakes";
       };

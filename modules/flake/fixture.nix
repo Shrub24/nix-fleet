@@ -737,16 +737,21 @@ let
   # The scrape provider: the default vmagent translating every registered job,
   # and the two fanout mistakes failing closed by NAME (an unrelated evaluation
   # error would not count).
-  vmagentHost =
-    telemetryConfig:
+  # One host platform serves the pure-evaluation probes below: they assert on
+  # rendered config, which does not vary by architecture. A check that *runs* an
+  # artifact must evaluate its own system instead — a foreign-platform script is
+  # an Exec format error at run time, not a test failure (see guardScriptFor).
+  vmagentHostFor =
+    system: telemetryConfig:
     (fixtureNixosSystem {
-      system = "x86_64-linux";
+      inherit system;
       modules = [
         inputs.sops-nix.nixosModules.sops
         aspects.telemetry
         { services.telemetry = telemetryConfig; }
       ];
     }).config;
+  vmagentHost = vmagentHostFor "x86_64-linux";
   vmagentFanoutFailures =
     telemetryConfig:
     map (assertion: assertion.message) (
@@ -967,11 +972,13 @@ let
     && !((vmagentHost hostileHeader).systemd.services ? vmagent);
   # The credential guard the vmagent unit runs, taken from the unit's own
   # rendered ExecStartPre rather than re-derived here, so the check below tests
-  # the artifact that ships.
-  guardScript =
+  # the artifact that ships. Evaluated for the checking system because the script
+  # embeds the coreutils path it calls.
+  guardScriptFor =
+    system:
     let
       pre =
-        (vmagentHost {
+        (vmagentHostFor system {
           scrape.app = {
             target = "127.0.0.1";
             port = 9187;
@@ -2455,7 +2462,7 @@ in
           }
           ''
             set -euo pipefail
-            guard=${guardScript}
+            guard=${guardScriptFor system}
 
             refuse() {
               if VMAGENT_probe="$1" "$guard" VMAGENT_probe 2>refusal.txt; then
