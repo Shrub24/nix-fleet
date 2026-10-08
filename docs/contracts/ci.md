@@ -235,8 +235,10 @@ claim. The claims worth binding:
 
 - Prepare resolves `ci-tailscale` on x86_64; the build job resolves the builder
   bundle and cache URL through `packages.<runner_system>` on its native runner.
-- Runner user must be a trusted user for the builders-use-substitutes path
-  to substitute optimally; correctness doesn't depend on it.
+- Coordinator-side trust for substitution is separate from builder-side
+  dispatch trust: the selected `build-account` aspect adds its account to the
+  builder's `nix.settings.trusted-users`, allowing unsigned build inputs to be
+  imported. SSH login alone does not establish this permission.
 - Builder-side authorization of the coordinator key is consumer policy;
   publishing `fleet.ci.sshPublicKey` grants no access on its own.
 
@@ -298,7 +300,16 @@ Here `config` is the flake-parts configuration, not the NixOS configuration.
 Publication does not authorize any account by itself. A public key needs no
 SOPS encryption. Verify SSH access and Nix remote-store permissions for that
 account before dispatch.
-The account must be able to build, not merely accept an SSH login.
+The `build-account` aspect also grants the configured account trusted Nix daemon
+access. This is required to import freshly generated unsigned build inputs and
+is effectively root-level Nix authority, not just permission to run a build.
+Consumers select the aspect and restrict who can authenticate; they do not add
+a duplicate `trusted-users` binding. Keep signature verification enabled for
+cache substitution and keep the cache's private signing key off coordinators.
+
+Verify this boundary with a small uncached remote build whose input was built
+locally: successful `ssh ... true` proves login only, and a fully substituted
+build never exercises unsigned-input import.
 
 For profiles containing the metered `nixbuild.net` builder, register the same
 public key with the nixbuild.net account too. The canonical `ci` profile does

@@ -83,12 +83,25 @@ fleet.buildProfiles.arm-expensive = {
 
 ## Consumer adoption (tier 3)
 
-Select the capability aspect on builder hosts (creates the dispatch account):
+Select the capability aspect on builder hosts (creates the dispatch account and
+grants the Nix daemon trust required for remote builds):
 
 ```nix
 # host composition: importing the aspect IS enabling it
 imports = [ inputs.nix-fleet.modules.nixos.build-account ];
 ```
+
+The aspect adds `services.build-account.name` (default `nixbuild`) to
+`nix.settings.trusted-users`. Fresh coordinator-built inputs are unsigned;
+without this trust, `ssh-ng` can log in but their import fails with
+`lacks a signature by a trusted key`. Renaming the account moves the binding
+with it; consumers do not repeat it.
+
+Nix daemon trust is effectively root-level authority, even though the account
+has no sudo membership. Selecting the aspect grants that authority; consumers
+control host selection and SSH/Tailscale authorization. Restrict access to
+trusted coordinators and workflows. Cache signatures remain required for
+substitution; the cache's private signing key does not belong on coordinators.
 
 Wire scheduling in your own flake-level module — this replaces
 `config.fleet.realization` entirely:
@@ -126,12 +139,12 @@ unchanged.
 ## Prerequisites when scheduling is enabled
 
 - **Dial account**: `endpoint.user` defaults to `nixbuild` — the dedicated
-  dispatch account from the build-account aspect (no shell, revocable,
-  isolated from general-purpose users). Not `dev`: dispatch does not need a
-  human account.
-- **The coordinator's key must be authorized on every selected builder**
-  (`users.users.nixbuild.openssh.authorizedKeys` — consumer policy).
-  Selecting a profile never _reaches_ the builders.
+  dispatch account from the build-account aspect, with a working shell and
+  trusted Nix daemon access. Not `dev`: dispatch does not need a human account.
+- **The coordinator must be authorized on every selected builder** through
+  consumer-owned SSH keys (`users.users.nixbuild.openssh.authorizedKeys`) or a
+  Tailscale SSH rule allowing the dispatch account. Selecting a profile grants
+  neither network reachability nor login authorization.
 - **Self-scheduling**: nothing excludes the evaluating host from its own
   profile. A host scheduling a profile containing itself dials itself —
   keep such hosts out or accept the self-entry deliberately.

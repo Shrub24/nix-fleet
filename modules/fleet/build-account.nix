@@ -1,11 +1,7 @@
-# The builder-side dispatch account: isolated dial-in identity for remote
-# Selection is enablement.
-# build dispatch — no login shell, empty authorized keys by default. This is
-# the mechanism half of the old realization; the fleet convention is that
-# remote coordinators dial builder hosts as this account (see
-# fleet.hosts.<id>.capabilities.nixBuilder.endpoint.user). Its authorized
-# keys are consumer policy: the aspect owns the identity, the consumer owns
-# who may use it.
+# Selecting this aspect creates the remote-build dispatch account and grants
+# trusted Nix daemon access (effectively root-level authority). ssh-ng needs it
+# to import fresh unsigned build inputs. Consumers own placement and SSH or
+# Tailscale authorization; the aspect leaves authorized keys empty.
 _: {
   flake.modules.nixos.build-account =
     {
@@ -24,6 +20,7 @@ _: {
       };
 
       config = {
+        nix.settings.trusted-users = [ config.services.build-account.name ];
         users.users.${config.services.build-account.name} = {
           isSystemUser = true;
           group = config.services.build-account.name;

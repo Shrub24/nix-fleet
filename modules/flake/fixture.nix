@@ -1064,6 +1064,31 @@ let
     && overridden.nix.daemonIOSchedClass == "idle"
     && overridden.systemd.services.nix-daemon.serviceConfig.MemoryHigh == "8G";
 
+  buildAccountTrustChecks =
+    let
+      evaluated =
+        modules:
+        (fixtureNixosSystem {
+          system = "x86_64-linux";
+          inherit modules;
+        }).config;
+      defaults = evaluated [ aspects.build-account ];
+      renamed = evaluated [
+        aspects.build-account
+        {
+          services.build-account.name = "dispatcher";
+          nix.settings.trusted-users = [ "existing-coordinator" ];
+        }
+      ];
+      unselected = evaluated [ ];
+    in
+    lib.elem "nixbuild" defaults.nix.settings.trusted-users
+    && lib.elem "dispatcher" renamed.nix.settings.trusted-users
+    && lib.elem "existing-coordinator" renamed.nix.settings.trusted-users
+    && lib.elem "root" renamed.nix.settings.trusted-users
+    && !(lib.elem "nixbuild" renamed.nix.settings.trusted-users)
+    && !(lib.elem "nixbuild" unselected.nix.settings.trusted-users);
+
   tailscaleAutoconnectChecks =
     let
       units =
@@ -1870,6 +1895,10 @@ let
         {
           assertion = config.users.users ? "nixbuild" && config.users.users.nixbuild.isSystemUser;
           message = "fixture: the build-account aspect created no dispatch account.";
+        }
+        {
+          assertion = buildAccountTrustChecks;
+          message = "fixture: the build-account aspect lost dispatch trust, broke account renaming or list merging, or trusted an unselected account.";
         }
         {
           # The alerting path end to end: vmalert renders the consumer's rule
