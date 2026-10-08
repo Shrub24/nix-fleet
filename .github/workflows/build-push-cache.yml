@@ -319,6 +319,44 @@ jobs:
             builders="@/tmp/nix-builders"
           fi
           export NIX_CONFIG="${NIX_CONFIG:-}
-          builders = $builders"
+          builders = $builders
+          max-jobs = 1"
+          # Stream diagnostics: a runner shutdown may prevent artifact upload.
+          python3 -u - <<'PY' &
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import time
+
+          while True:
+              memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
+              vm = dict(line.split() for line in Path("/proc/vmstat").read_text().splitlines())
+              disk = shutil.disk_usage("/nix/store")
+              print(
+                  f"ci resources {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}: "
+                  f"MemAvailable={memory['MemAvailable'].strip()} "
+                  f"MemTotal={memory['MemTotal'].strip()} "
+                  f"SwapFree={memory['SwapFree'].strip()} "
+                  f"SwapTotal={memory['SwapTotal'].strip()} "
+                  f"oom_kill={vm['oom_kill']} "
+                  f"store_free_MiB={disk.free // 2**20} load={os.getloadavg()}"
+              )
+              subprocess.run([
+                  "ps", "-C", "nix-eval-jobs,nix,nix-daemon,nix-fast-build",
+                  "-o", "pid,ppid,comm,rss,pcpu", "--sort=-rss",
+              ], check=False)
+              time.sleep(15)
+          PY
+          monitor_pid=$!
+          stop_resources() {
+            if kill -0 "$monitor_pid"; then
+              kill "$monitor_pid"
+            fi
+            wait "$monitor_pid" || true
+          }
+          trap stop_resources EXIT
+
           nix run nixpkgs#nix-fast-build -- \
+            --eval-workers 2 --eval-max-memory-size 2048 --max-jobs 4 \
             --skip-cached --systems "$SYSTEMS" --flake "${TARGETS:-.#checks}"

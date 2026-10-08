@@ -23,7 +23,7 @@ fleet inventory (nix-fleet, canonical)   GHA runner
 └─ join tailnet (fleet-host builders) ─►  MagicDNS resolves hostnames
 
 nix-fast-build: evaluates locally, fans out across inventory builders AND the
-runner's own store (default max-jobs). One configurable coordinator requests
+runner's own store (bounded local scheduling). One configurable coordinator requests
 both target architectures; Nix sends foreign-architecture builds to compatible
 remote builders, without cross-compilation.
 ```
@@ -40,6 +40,29 @@ OIDC authentication. In hook mode, substituted or remotely returned paths are
 not local builds and do not trigger an upload. There is no coordinator
 path-collection or `nix-fast-build --niks3-server` publication step.
 Any coordinator allowed to build locally must also have the runner hook installed.
+
+### Coordinator resource budgets
+
+The build step uses two evaluation workers with a 2048 MiB memory restart
+threshold per worker, instead of the tool's four workers at 4096 MiB each. This reduces
+concurrent evaluation pressure; the threshold is not a hard RSS limit and does
+not interrupt an individual evaluation as soon as it crosses the threshold.
+
+Local Nix scheduling uses `max-jobs = 1`, with no `cores` override. The workflow
+explicitly permits four concurrent nix-fast-build requests, so its worker pool
+does not inherit the local one-job setting. The local limit applies per Nix
+invocation: separate requests can each build locally, so this is not a
+runner-wide one-build cap. Remote slots remain those in the selected machines
+profile. These are concurrency budgets, not coordinator-wide cgroup limits.
+
+During the build, a 15-second heartbeat streams available memory, swap, the
+host's cumulative `oom_kill` counter, free store space, load and Nix-process RSS
+(in KiB) directly into the Actions log. A rise in `oom_kill` establishes a host
+OOM event, not which process caused it. The monitor is stopped on build exit
+without changing the build's exit status. Direct logs survive better than a
+post-run artifact when the runner is terminated. A SIGTERM/exit 143 alone does
+not establish resource exhaustion; enable GitHub's debug logging on the rerun
+for runner-service diagnostics too.
 
 ## The artifacts output
 

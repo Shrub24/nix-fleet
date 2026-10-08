@@ -332,6 +332,7 @@ let
                   pkgs.bash
                   pkgs.jq
                   pkgs.openssh
+                  pkgs.procps
                 ];
                 coordinatorPublicKey = config.fleet.ci.sshPublicKey;
                 passAsFile = [ "coordinatorPublicKey" ];

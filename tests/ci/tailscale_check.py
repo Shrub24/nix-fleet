@@ -104,6 +104,19 @@ with tempfile.TemporaryDirectory() as directory:
     resolve("hostile\nclient", "custom-audience", None, False)
     resolve("override-ci", "hostile\naudience", None, False)
 
+# Exercise a real sample without waiting for the next heartbeat.
+resource_script = build_script.split("python3 -u - <<'PY' &\n", 1)[1].split("\nPY\n", 1)[0]
+resource_result = subprocess.run(
+    [sys.executable, "-c", "import sys, time; time.sleep = lambda _: sys.exit(0); exec(sys.stdin.read())"],
+    input=resource_script,
+    text=True,
+    capture_output=True,
+    timeout=10,
+)
+assert resource_result.returncode == 0, resource_result.stderr
+for field in ("ci resources", "MemAvailable=", "SwapFree=", "oom_kill=", "store_free_MiB=", "RSS"):
+    assert field in resource_result.stdout, resource_result.stdout
+
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
     stub = root / "nix"
@@ -111,13 +124,15 @@ with tempfile.TemporaryDirectory() as directory:
         f'#!{shutil.which("bash")}\n'
         'printf "%s\\n" "$NIX_CONFIG" > "$CAPTURE_CONFIG"\n'
         'printf "%s\\n" "$@" > "$CAPTURE_ARGS"\n'
+        'exit "${BUILD_EXIT:-0}"\n'
     )
     stub.chmod(0o755)
-    for profile, system, targets, builders, selection in (
-        ("", "x86_64-linux", "", "", ".#checks"),
-        ("", "aarch64-linux", "", "", ".#checks"),
-        ("ci", "x86_64-linux", ".#checks", "@/tmp/nix-builders", ".#checks"),
-        ("ci", "x86_64-linux aarch64-linux", ".#checks", "@/tmp/nix-builders", ".#checks"),
+    for profile, system, targets, builders, selection, build_exit in (
+        ("", "x86_64-linux", "", "", ".#checks", 0),
+        ("", "aarch64-linux", "", "", ".#checks", 0),
+        ("ci", "x86_64-linux", ".#checks", "@/tmp/nix-builders", ".#checks", 0),
+        ("ci", "x86_64-linux aarch64-linux", ".#checks", "@/tmp/nix-builders", ".#checks", 0),
+        ("ci", "x86_64-linux", ".#checks", "@/tmp/nix-builders", ".#checks", 42),
     ):
         config_file = root / "config"
         args_file = root / "args"
@@ -132,17 +147,21 @@ with tempfile.TemporaryDirectory() as directory:
                 "NIX_CONFIG": "post-build-hook = /action/hook",
                 "CAPTURE_CONFIG": str(config_file),
                 "CAPTURE_ARGS": str(args_file),
+                "BUILD_EXIT": str(build_exit),
             },
             text=True,
             capture_output=True,
+            timeout=10,
         )
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == build_exit, result.stderr
         assert config_file.read_text().splitlines() == [
             "post-build-hook = /action/hook",
             f"builders = {builders}",
+            "max-jobs = 1",
         ]
         assert args_file.read_text().splitlines() == [
-            "run", "nixpkgs#nix-fast-build", "--", "--skip-cached", "--systems", system, "--flake", selection,
+            "run", "nixpkgs#nix-fast-build", "--", "--eval-workers", "2",
+            "--eval-max-memory-size", "2048", "--max-jobs", "4", "--skip-cached", "--systems", system, "--flake", selection,
         ]
 
 with tempfile.TemporaryDirectory() as directory:
