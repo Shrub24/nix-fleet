@@ -1,103 +1,120 @@
 # Store cleanup (`nix-gc`)
 
 `flake.modules.nixos.nix-gc` owns scheduled Nix store cleanup. Selection is
-enablement; schedules and retention are options. It registers its own units'
-failures with [notify](README.md) when that aspect is co-selected; success is not
-reported, since a scheduled cleanup has no news worth sending.
+enablement: importing the aspect is the whole configuration, and every value it
+sets is a plain default on the upstream option, so a host overrides one directly
+when its storage differs. The aspect registers its own units' failures with
+[notify](README.md) when that aspect is co-selected.
 
-## Collectors
-
-`services.nix-gc.implementation` selects one:
-
-| Value          | Behaviour                                                                                                      |
-| -------------- | -------------------------------------------------------------------------------------------------------------- |
-| `nh` (default) | `nh clean all` on a daily timer, ending in the stock collector. Retention is `extraArgs` (default `--keep 3`). |
-| `fast-nix-gc`  | Threshold-driven CSR-graph collector, with root pruning and optimise (below).                                  |
-
-`fast-nix-gc` reads the store database once instead of querying per path, and
-serves the gc-roots socket while running, so concurrent builds register temp
-roots without blocking on `gc.lock`. That removes the GC-versus-build race on
-busy builders.
-
-## The fast-nix-gc contract
+## The fleet's cleanup
 
 Three units, each with one job:
 
-| Unit                | Default | Job                                                                         |
-| ------------------- | ------- | --------------------------------------------------------------------------- |
-| `fast-nix-gc`       | hourly  | Free only the shortfall below `ensureFree`; do nothing above it.            |
-| `nix-gc-roots`      | daily   | `nh clean all --no-gc`: prune stale generations and gcroots, never collect. |
-| `fast-nix-optimise` | weekly  | Hardlink dedup of pre-existing paths, ordered after collection.             |
+| Unit                | Timer  | Job                                                                  |
+| ------------------- | ------ | -------------------------------------------------------------------- |
+| `nh-clean`          | daily  | `nh clean all --keep 3 --keep-since 7d --keep-one --no-gc`           |
+| `fast-nix-gc`       | hourly | Collect everything unreferenced that is older than `keepRecent` (1d) |
+| `fast-nix-optimise` | weekly | Hardlink dedup of paths written before `auto-optimise-store`         |
 
-### Why threshold-driven
+Pruning is ordered `before` the collector, so when both timers fire the
+collector sees the pruned roots.
 
-A calendar collector empties the store on a schedule whether or not space is
-needed, so the next build rebuilds or re-substitutes what it just deleted.
-`ensureFree = "15%"` (a percentage of the store filesystem, or a size such as
-`"50G"`) makes the hourly timer cheap: above the threshold the run exits at once;
-below it, only the shortfall is collected. `keepRecent = "1d"` additionally pins
-paths registered within that period so a fresh build result is never the victim.
-`ensureFree = null` restores unconditional collection on every run.
+The collector is installed on every host that selects the aspect: the tool that
+runs hourly is the same one an operator reaches for by hand when a store needs
+attention.
 
-This is the fleet's answer to storage ballooning between runs. It is not a
-guarantee: one build can fill a disk between two hourly runs.
+## Why collection is unconditional
 
-### Why roots are pruned separately
+A free-space threshold sounds frugal and is not. Deferring collection until the
+store filesystem is 15% free means the store grows to fill the disk before
+anything is deleted, and the run that finally triggers has the most work to do
+at the worst moment. The fleet instead collects every hour and deletes
+everything unreferenced, so the store hovers near its real working set instead
+of near the disk's capacity.
 
-Collection never removes what a live root pins. The usual cause of a growing
+`keepRecent = "1d"` is the counterweight: paths registered in the last day are
+held, so a build's dependencies are never collected while it is still the
+newest thing on the machine. Raising it trades disk for rebuild avoidance;
+setting it to null makes each run the strictest possible statement about what
+is still needed.
+
+This is not a guarantee that a disk cannot fill — one build can do that between
+two hourly runs. It removes the slow leak, not the spike.
+
+## Why the collector is `fast-nix-gc`
+
+Two properties, both about not fighting builds:
+
+- It reads the store database once instead of querying per path, which is what
+  makes an hourly schedule cheap enough to be unconditional.
+- It serves the gc-roots socket while running, so a concurrent build registers
+  its temporary roots instead of blocking on `gc.lock`.
+
+## Why roots are pruned separately
+
+Collection never removes what a live root pins, and the usual cause of a growing
 store is not missing collection but forgotten roots: `result` links, direnv
-environments and old profile generations. `nix-gc-roots` runs nh with `--no-gc`
-so pruning and collection are independent, and fast-nix-gc then sees the pruned
-roots. The pruning unit is ordered `before` the collector.
+environments and old profile generations. `nh-clean` therefore runs with
+`--no-gc`: it deletes old generations and stale gcroots and never collects, and
+`fast-nix-gc` does the collecting.
 
-Its retention is `roots.keep` (default 3 generations) and `roots.keepSince`
-(default `7d`). nh's own `--keep-since` default is `0h`, which can remove live
-`result` links, so the aspect always passes an explicit value; `--keep-one` keeps
-one direnv root per project. nh owns generation retention on this path, so
-`generationsOlderThan` defaults to null; setting both makes two rules that can
-disagree.
+Retention belongs to nh on this path — `--keep 3 --keep-since 7d --keep-one` —
+so `services.fast-nix-gc.deleteOlderThan` stays at its null default. Setting
+both would put two generation-retention rules in the same configuration.
+`--keep-since 7d` is explicit because nh's own default is `0h`, which can remove
+a live `result` link.
 
-### Optimise
+## Why optimise is still scheduled
 
-`nix-baseline` already sets `auto-optimise-store`, which dedups each path as it
-is written. The periodic pass only catches paths written before that was on, and
-does nothing useful on a filesystem that dedups itself (btrfs, ZFS). It is a
-safety net, on by default with `fast-nix-gc` and switchable with
-`optimise.enable`. It takes only a shared `gc.lock`, so it does not block builds,
-and the module warns if it is combined with `nix.optimise.automatic`.
+`nix-baseline` sets `auto-optimise-store`, which dedups each path as it is
+written, so the periodic pass only catches paths written before that was on. It
+is a safety net rather than a space strategy, and it does nothing useful on a
+filesystem that dedups itself (btrfs, ZFS). It takes only a shared `gc.lock`, so
+it does not block builds.
 
-## Options
+## Overriding
 
-`implementation`, `dates`, `ensureFree`, `keepRecent`, `generationsOlderThan`,
-`noVacuum`, `fastNixGcPackage`, `roots.{prune,dates,keep,keepSince}`,
-`optimise.{enable,dates}`. Options specific to `fast-nix-gc` warn or do nothing
-under `nh`.
+There is no `services.nix-gc` namespace. The fleet's values are defaults on the
+options that own them, so a host states its difference and nothing else:
+
+```nix
+# A host whose data filesystem already dedups.
+services.fast-nix-optimise.enable = false;
+
+# A host that keeps long-lived results and can afford the disk.
+programs.nh.clean.extraArgs = "--keep 10 --keep-since 30d --keep-one --no-gc";
+
+# A host that wants a free-space threshold after all.
+services.fast-nix-gc.ensureFree = "50G";
+services.fast-nix-gc.dates = "daily";
+```
 
 ## Footguns
 
-- **Do not rely on the daemon's `min-free`/`max-free` instead.** They run the
+- **Do not reach for the daemon's `min-free`/`max-free` instead.** They run the
   stock collector inside the daemon and stall the build that triggered it.
   Setting `min-free` without `max-free` can collect every unreferenced path,
   because `max-free` defaults to unbounded. Thresholds depend on disk size, so
   the fleet baseline sets none; a small-disk host may set both as a last-resort
   backstop.
-- **A full disk can defeat collection.** Deletion runs in batches whose write-ahead
-  log grows roughly 10 KiB per dead path, and `nix-daemon` pins the log, so a
-  collection started on a nearly full disk can fail. Keep the default chunk size.
-  On never-idle builders set `noVacuum = true`.
-- **`ensureFree` warns when it falls short.** Paths reachable from live roots or
-  pinned by `keepRecent` are not freed; the shortfall is logged, and a failed
-  unit reaches notify. The answer is pruning roots, not a lower threshold.
+- **A full disk can defeat collection.** Deletion runs in batches whose
+  write-ahead log grows roughly 10 KiB per dead path, and `nix-daemon` pins the
+  log, so a collection started on a nearly full disk can fail. Keep the default
+  chunk size; on never-idle builders set `services.fast-nix-gc.noVacuum = true`.
 - **Pruning is destructive to unrooted work.** A project whose only root is an
-  old `result` link loses it after `roots.keepSince`. Hosts that keep long-lived
-  results should raise it or set `roots.prune = false`.
-- **Only the pruned profiles are covered.** Roots outside the usual gcroot
-  directories need `services.fast-nix-gc.gcRootsDirs`.
+  old `result` link loses it after seven days. Hosts that keep long-lived
+  results should extend `--keep-since`.
+- **Only the usual gcroot directories are covered.** Roots elsewhere need
+  `services.fast-nix-gc.gcRootsDirs`.
 
 ## Ownership
 
-nix-fleet owns the mechanism, the defaults above and their rationale. Consumers
-own the thresholds that depend on a machine (disk size, any `min-free` backstop),
-retention that differs from the fleet's, and which hosts select the aspect.
+nix-fleet owns the mechanism, the schedule above and its rationale. Consumers
+own what depends on a machine: retention for long-lived results, optimise on a
+filesystem that dedups itself, any `min-free` backstop, and which hosts select
+the aspect.
+
 Verify a host by evaluation: `checks.<system>.nix-gc-defaults` asserts the
-defaults, that pruning never collects, and that each default can be switched off.
+defaults — unconditional hourly collection, separate pruning that never
+collects, weekly optimise, one failure registration per unit — and that a host
+override on the upstream option takes effect.

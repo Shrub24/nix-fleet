@@ -178,10 +178,14 @@ on the contract change; none conflict with it.
       `clientTuning` toggle. Per-host server policy stays consumer-side.
 - [x] **tailscale notify**: tailscaled registers failure (fromPackage);
       autoconnect deliberately unregistered (retry exits are normal).
-- [x] **`nix-gc` aspect generalization**: `implementation` switch
-      (nh | fast-nix-gc), upstream-first import, ONE notify failure
-      registration either way, `noVacuum` option (builders). Remaining:
-      Done: threshold-driven timing (`ensureFree`) and optimise (contract in docs/contracts/nix-gc.md).
+- [x] **`nix-gc` aspect**: one fleet cleanup — daily `nh clean all --no-gc`
+      root pruning, unconditional hourly `fast-nix-gc` collection, weekly
+      optimise. Every value is a default on the upstream option, so a host
+      overrides it directly; the `services.nix-gc` namespace and its
+      `implementation` switch are gone (contract in docs/contracts/nix-gc.md).
+- [ ] **`nix-gc` consumer migration**: dotfiles and homelab still set
+      `services.nix-gc.*`; both move to the upstream options (dotfiles:
+      `services.fast-nix-optimise.enable = false`).
 - [ ] **Reusable-workflow adoption notes**: consumers call
       `build-push-cache.yml@v1` (tag cut at 0180d5ec) — stub + inputs in
       docs/contracts/ci.md; renovate bumps via tags.
@@ -216,4 +220,4 @@ on the contract change; none conflict with it.
 - [ ] **shrub/spectre canonical records**: sparse host records + host keys;
       input by the nix-dotfiles agent once the v2 contract settles.
 - [ ] **syncthing device IDs**: stays consumer-side (service credentials).
-- [x] **fast-nix-optimise**: weekly, with the fast-nix-gc implementation.
+- [x] **fast-nix-optimise**: weekly, alongside the fleet's collector.

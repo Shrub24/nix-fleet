@@ -1441,48 +1441,42 @@ let
               inherit system;
               modules = [
                 aspects.nix-gc
-                { services.nix-gc.implementation = "fast-nix-gc"; }
                 extra
               ];
             }).config;
-          fast = evaluated { };
+          defaults = evaluated { };
           tuned = evaluated {
-            services.nix-gc = {
-              ensureFree = null;
-              roots.prune = false;
-              optimise.enable = false;
-            };
+            services.fast-nix-gc.dates = "daily";
+            services.fast-nix-optimise.enable = false;
           };
-          nh =
-            (fixtureNixosSystem {
-              inherit system;
-              modules = [ aspects.nix-gc ];
-            }).config;
-          argv = fast.systemd.services.nix-gc-roots.serviceConfig.ExecStart;
         in
-        # Threshold-driven collection: hourly, frees only the shortfall, spares
-        # fresh builds, and leaves generation retention to nh so two rules cannot
-        # disagree.
-        fast.services.fast-nix-gc.dates == [ "hourly" ]
-        && fast.services.fast-nix-gc.ensureFree == "15%"
-        && fast.services.fast-nix-gc.keepRecent == "1d"
-        && fast.services.fast-nix-gc.deleteOlderThan == null
-        # Root pruning never collects (--no-gc) and keeps live result links.
-        && lib.hasInfix " --no-gc " argv
-        && lib.hasInfix " --keep-since 7d " argv
-        && fast.systemd.services.nix-gc-roots.before == [ "fast-nix-gc.service" ]
-        && fast.services.fast-nix-optimise.enable
-        && fast.services.notify.events ? "nix-gc-roots"
-        && fast.services.notify.events ? "fast-nix-optimise"
-        && fast.services.fast-nix-optimise.dates == [ "weekly" ]
-        # Each default is switchable, and the nh path is untouched.
-        && tuned.services.fast-nix-gc.ensureFree == null
-        && tuned.services.fast-nix-gc.deleteOlderThan == "30d"
-        && !(tuned.systemd.services ? nix-gc-roots)
-        && !tuned.services.fast-nix-optimise.enable
-        && nh.programs.nh.clean.enable
-        && !nh.services.fast-nix-gc.enable
-        && !nh.services.fast-nix-optimise.enable;
+        # Collection is unconditional: with no free-space threshold every run
+        # collects everything unreferenced rather than waiting for the store to
+        # reach a watermark. A day of grace spares freshly built paths.
+        defaults.services.fast-nix-gc.enable
+        && defaults.services.fast-nix-gc.automatic
+        && defaults.services.fast-nix-gc.dates == [ "hourly" ]
+        && defaults.services.fast-nix-gc.ensureFree == null
+        && defaults.services.fast-nix-gc.keepRecent == "1d"
+        && defaults.services.fast-nix-gc.deleteOlderThan == null
+        # Pruning never collects, and runs first when both timers fire.
+        && defaults.programs.nh.clean.enable
+        && lib.hasInfix "--no-gc" defaults.programs.nh.clean.extraArgs
+        && lib.hasInfix "--keep-since 7d" defaults.programs.nh.clean.extraArgs
+        && defaults.systemd.services.nh-clean.before == [ "fast-nix-gc.service" ]
+        # Optimise stays a weekly safety net for pre-auto-optimise paths.
+        && defaults.services.fast-nix-optimise.enable
+        && defaults.services.fast-nix-optimise.dates == [ "weekly" ]
+        # Every unit the aspect owns registers its own failure.
+        && defaults.services.notify.events ? "nh-clean"
+        && defaults.services.notify.events ? "fast-nix-gc"
+        && defaults.services.notify.events ? "fast-nix-optimise"
+        # The collector is installed as the manual tool for the same store.
+        && lib.elem defaults.services.fast-nix-gc.package defaults.environment.systemPackages
+        # The fleet's values are defaults on the upstream options, so a host
+        # overrides them directly instead of through a fleet namespace.
+        && tuned.services.fast-nix-gc.dates == [ "daily" ]
+        && !tuned.services.fast-nix-optimise.enable;
 
       nodeExporterIdentityChecks =
         let
@@ -1629,7 +1623,7 @@ let
         ok = nixBaselineSubstitutionSeams;
       };
       nix-gc-defaults = {
-        message = "nix-gc: threshold collection, root pruning, optimise or their overrides regressed";
+        message = "nix-gc: unconditional collection, root pruning, optimise or their overrides regressed";
         ok = nixGcChecks;
       };
       alerting-admission = {
@@ -1829,13 +1823,10 @@ let
           message = "fixture: the niks3-publisher aspect did not wire the upload client.";
         }
         {
-          assertion = config.systemd.services ? "nix-gc" || config.programs.nh.clean.enable;
-          message = "fixture: the nix-gc aspect produced no cleanup unit.";
-        }
-        {
           assertion =
-            (config.systemd.services."nix-gc".onFailure or [ ]) != [ ]
-            || (config.systemd.services."nh-clean".onFailure or [ ]) != [ ];
+            (config.systemd.services."nh-clean".onFailure or [ ]) != [ ]
+            && (config.systemd.services."fast-nix-gc".onFailure or [ ]) != [ ];
+          message = "fixture: the nix-gc aspect lost a cleanup unit or its failure hook.";
         }
         {
           # Ownership policy: an aspect that owns a unit registers its
