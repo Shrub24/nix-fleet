@@ -19,6 +19,13 @@ Three units, each with one job:
 Pruning is ordered `before` the collector, so when both timers fire the
 collector sees the pruned roots.
 
+Turning a unit off is the override this contract invites, and it leaves no
+trace: the failure registration and the `before` ordering follow the same
+`enable` flag that decides whether the unit exists. Without that,
+disabling one unit would either leave notify rejecting a registration for a
+unit that is not there, or declare `nh-clean` on its own — a unit with no
+`ExecStart`.
+
 The collector is installed on every host that selects the aspect: the tool that
 runs hourly is the same one an operator reaches for by hand when a store needs
 attention.
@@ -117,4 +124,6 @@ the aspect.
 Verify a host by evaluation: `checks.<system>.nix-gc-defaults` asserts the
 defaults — unconditional hourly collection, separate pruning that never
 collects, weekly optimise, one failure registration per unit — and that a host
-override on the upstream option takes effect.
+override on the upstream option takes effect. It also asserts the off case:
+with every unit disabled there is no registration left and no rendered unit,
+and notify raises no "registered but has no systemd service implementation".

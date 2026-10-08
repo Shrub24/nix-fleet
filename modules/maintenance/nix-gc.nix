@@ -54,14 +54,32 @@
       # store space on a live host.
       environment.systemPackages = [ config.services.fast-nix-gc.package ];
 
-      # When both timers fire at the same moment, collection must see the
-      # roots nh just pruned.
-      systemd.services.nh-clean.before = [ "fast-nix-gc.service" ];
-
-      services.notify.events = {
-        "nh-clean".failure = { };
-        "fast-nix-gc".failure = { };
-        "fast-nix-optimise".failure = { };
+      # The ordering drop-in and the three failure registrations follow the
+      # units they describe, because both fail loudly against a unit that is not
+      # there: notify rejects a registration whose unit has no service
+      # implementation, and an ordering drop-in on its own would create a
+      # phantom `nh-clean` unit with no ExecStart (the same failure as the
+      # unconditional `tailscaled-autoconnect`). Turning a unit off is the
+      # override this aspect's contract invites, so it must leave no trace.
+      # `mkIf` sits on `systemd.services` itself, not on `nh-clean.before`: a
+      # conditional drop-in would still declare the unit. `optionalAttrs` rather
+      # than `mkIf` keeps each registration a plain definition, as the
+      # alertmanager aspect does.
+      systemd.services = lib.mkIf config.programs.nh.clean.enable {
+        # When both timers fire at the same moment, collection must see the
+        # roots nh just pruned.
+        nh-clean.before = [ "fast-nix-gc.service" ];
       };
+
+      services.notify.events =
+        lib.optionalAttrs config.programs.nh.clean.enable {
+          "nh-clean".failure = { };
+        }
+        // lib.optionalAttrs config.services.fast-nix-gc.enable {
+          "fast-nix-gc".failure = { };
+        }
+        // lib.optionalAttrs config.services.fast-nix-optimise.enable {
+          "fast-nix-optimise".failure = { };
+        };
     };
 }

@@ -50,6 +50,8 @@
 
 ## N
 
+- [notify.md](notify.md) — a registration and a drop-in follow the unit they describe
+
 ## O
 
 ## P

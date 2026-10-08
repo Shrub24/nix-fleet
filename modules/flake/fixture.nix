@@ -1440,13 +1440,26 @@ let
             (fixtureNixosSystem {
               inherit system;
               modules = [
+                inputs.sops-nix.nixosModules.sops
                 aspects.nix-gc
+                # The notify aspect owns the fail-closed rule this leaf tests: a
+                # registration may only name a unit with a real service.
+                aspects.notify
                 extra
               ];
             }).config;
           defaults = evaluated { };
           tuned = evaluated {
             services.fast-nix-gc.dates = "daily";
+            services.fast-nix-optimise.enable = false;
+          };
+          # Every unit off at once: the update that removes the schedule. The
+          # checks below read what the composition produced — rendered units and
+          # the registration set — because an override that only sets option
+          # values cannot show a registration that outlived its unit.
+          disabled = evaluated {
+            programs.nh.clean.enable = false;
+            services.fast-nix-gc.enable = false;
             services.fast-nix-optimise.enable = false;
           };
         in
@@ -1476,7 +1489,22 @@ let
         # The fleet's values are defaults on the upstream options, so a host
         # overrides them directly instead of through a fleet namespace.
         && tuned.services.fast-nix-gc.dates == [ "daily" ]
-        && !tuned.services.fast-nix-optimise.enable;
+        && !tuned.services.fast-nix-optimise.enable
+        # Turning a unit off is the override the contract invites, so it must
+        # leave no trace. Two defects this catches: a registration left behind
+        # with no unit to attach to, and the ordering drop-in on its own, which
+        # renders a phantom `nh-clean` with no ExecStart (the same failure class
+        # as the unconditional `tailscaled-autoconnect`).
+        && !(disabled.systemd.units ? "nh-clean.service")
+        && !(disabled.services.notify.events ? "nh-clean")
+        && !(disabled.services.notify.events ? "fast-nix-gc")
+        && !(disabled.services.notify.events ? "fast-nix-optimise")
+        # The symptom in notify's own words, so this leaf fails the way a
+        # consumer's build did.
+        && !(lib.any (
+          assertion:
+          !assertion.assertion && lib.hasInfix "has no systemd service implementation" assertion.message
+        ) disabled.assertions);
 
       nodeExporterIdentityChecks =
         let
