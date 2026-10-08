@@ -6,3 +6,4 @@ result-*
 .qmd/
 __pycache__/
 *.pyc
+.pi-herdsman/
