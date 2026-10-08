@@ -6,9 +6,8 @@
 # it declares.
 #
 # It imports the reusable contract fragment (lib/telemetry-contract.nix) so the
-# registration is valid whether or not the telemetry aspect is co-selected; on a
-# host that did not select telemetry the registration fails closed by name (the
-# fragment's orphan guard) instead of being silently dropped.
+# registration is valid without a metrics realization. It remains dormant until
+# the host composes a scraper; publishing a source never starts its consumer.
 _: {
   flake.modules.nixos.node-exporter =
     { config, lib, ... }:

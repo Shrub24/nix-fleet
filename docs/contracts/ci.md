@@ -7,10 +7,31 @@ hosts use. No builder coordinates live in workflow files or repo variables.
 
 On every push and pull request, `ci.yml` checks formatting, evaluates all declared
 systems, then builds **all native x86_64 checks** with `nix flake check`. This
-includes the fixture toplevel, Bifrost startup/plugin/module runtime checks and
-telemetry delivery/ingress checks. Adding a native check adds a CI gate without
-editing the workflow. ARM evaluation is covered; ARM builds require an ARM builder.
-The separately dispatch-gated fleet build workflow is not needed for these gates.
+includes the fixture toplevel and its per-aspect contract leaf checks, Bifrost
+startup/plugin/module runtime checks, telemetry delivery/ingress checks and the
+vmagent credential guard. Adding a native check adds a CI gate without editing
+the workflow. ARM evaluation is covered; ARM builds require an ARM builder. The
+separately dispatch-gated fleet build workflow is not needed for these gates.
+
+The fixture host asserts only what it can read from its own configuration. Every
+throwaway evaluation a contract needs — telemetry rejects/admission/journald,
+vmalert and alertmanager admission, build-account trust, tailscale autoconnect,
+nix-baseline and nix-gc defaults, node-exporter, the collector's own fail-closed
+paths, vmagent rendering — is one independent `checks.<system>.<name>` leaf
+instead of a nested evaluation forced through the host's assertions. Forcing the
+host is therefore seconds — measured at roughly 5 s and 750 MiB, against 91 s and
+2.6 GiB when the same contracts ran inside its assertions — and an evaluator
+memory budget applies to a single leaf rather than to the whole fixture.
+`checks.<system>.contract-leaf-registry` fails if a leaf is dropped from or
+renamed out of that set.
+
+One leaf is still heavier than that budget. `telemetry-admission` evaluates about
+ten throwaway systems, and the stock `nix-eval-jobs` accounting reports it over
+the 8192 MiB worker budget even when run alone, although its real footprint stays
+near 2 GiB — the tool charges roughly four times the measured peak. This is a
+known, accepted gap: it affects only this dispatch-gated workflow, not the
+`nix flake check` gate above, which evaluates natively. Split
+`telemetry-admission` per probe if it ever has to fit.
 
 ## Model
 

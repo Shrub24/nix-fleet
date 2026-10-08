@@ -99,5 +99,5 @@ under `nh`.
 nix-fleet owns the mechanism, the defaults above and their rationale. Consumers
 own the thresholds that depend on a machine (disk size, any `min-free` backstop),
 retention that differs from the fleet's, and which hosts select the aspect.
-Verify a host by evaluation: the fixture asserts the defaults, that pruning never
-collects, and that each default can be switched off.
+Verify a host by evaluation: `checks.<system>.nix-gc-defaults` asserts the
+defaults, that pruning never collects, and that each default can be switched off.

@@ -4,72 +4,115 @@
 the agent → gateway topology and their rationale. This document specifies the
 host-local mechanism; its safe opt-in defaults are not the fleet adoption policy.
 
-Scope: one NixOS host's telemetry. A **single** public aspect,
-`flake.modules.nixos.telemetry`, owns the implementation-agnostic
-`services.telemetry` contract: a service registers a Prometheus scrape source,
-admits OTLP signals on the local endpoint, opts into journald shipping, or binds
-a remote destination without knowing which implementation serves it. Selection
-is enablement — no top-level enable flag.
+Scope: one NixOS host's telemetry. `flake.modules.nixos.telemetry` is the
+**contract** — the implementation-agnostic `services.telemetry` vocabulary: a
+service registers a Prometheus scrape source, admits OTLP signals on the local
+endpoint, opts into journald shipping, or binds a remote destination without
+knowing which realization serves it. The contract declares types and validates
+values; it starts no unit, listener or provider.
+
+Capabilities are **selected by composing lanes**. A lane aspect composes the
+contract and the fleet's default realization for one signal, so a host reads as
+the signals it ships:
+
+```nix
+# the host's aspect list: the signals this host ships
+imports = [
+  inputs.nix-fleet.modules.nixos.telemetry-metrics
+  inputs.nix-fleet.modules.nixos.telemetry-logs
+  inputs.nix-fleet.modules.nixos.telemetry-otlp
+  inputs.nix-fleet.modules.nixos.node-exporter
+];
+```
+
+Composing a lane is enablement — there is no top-level enable flag.
 
 A host can also act as an explicit relay or gateway: it forwards only to the
 destinations its pipelines select, and it can bind a separate, explicitly
 addressed network ingress next to its loopback producer listener. Discovery,
 implicit forwarding and a `agent`/`gateway` role switch are out of scope.
 
-```nix
-# the host's aspect list: one import
-imports = [ inputs.nix-fleet.modules.nixos.telemetry ];
-```
+## Contract, lanes and realizations
 
-## One aspect, implementations as sibling contributors
+The contract, the signal lanes and the realizations are separate public aspects.
+A signal lane selects a signal and composes its default realization; a
+realization carries exactly one signal. No realization imports a lane, and a
+host never names an implementation to get a default.
 
-Implementations are **not** separate aspects, and telemetry has no private
-module tree. The aspect is composed from sibling flake-parts contributors that
-all merge the same `flake.modules.nixos.telemetry` deferred module:
+| Surface               | Aspect                            | Composes                                   | Ships                                     |
+| --------------------- | --------------------------------- | ------------------------------------------ | ----------------------------------------- |
+| Contract (vocabulary) | `telemetry`                       | `services.telemetry`, value validation     | nothing — no unit, listener or provider   |
+| Metrics lane          | `telemetry-metrics`               | contract + `telemetry-vmagent`             | Prometheus scrape → metrics destinations  |
+| Logs lane             | `telemetry-logs`                  | contract + `telemetry-vector`              | journald records → the JSON-line sink     |
+| OTLP lane             | `telemetry-otlp`                  | contract + `telemetry-otel-collector-otlp` | admitted OTLP signals → OTLP destinations |
+| Scrape realization    | `telemetry-vmagent`               | contract                                   | Prometheus scrape (metrics-lane default)  |
+| Journald realization  | `telemetry-vector`                | contract                                   | journald records (logs-lane default)      |
+| OTLP realization      | `telemetry-otel-collector-otlp`   | contract                                   | admitted OTLP signals (OTLP-lane default) |
+| Scrape realization    | `telemetry-otel-collector-scrape` | contract                                   | Prometheus scrape through the Collector   |
 
-```text
-modules/telemetry/
-  telemetry.nix      # the aspect: contract import + realization marker
-  otel-collector.nix # OpenTelemetry Collector (OTLP ingest, scrape override)
-  vmagent.nix        # VictoriaMetrics vmagent (default Prometheus scrape)
-  vector.nix         # Vector (journald shipping)
-lib/telemetry-contract.nix  # registration fragment: services.telemetry + guards
-```
+A lane is the whole opt-in for its signal. One valid composition per lane:
 
-Siblings never import one another and no implementation is exported as a second
-public aspect: swapping or splitting an implementation is a
-`services.telemetry.providers.*` value, never an imports-list edit. Selection is
-per capability:
+**Metrics** — node-exporter registers the scrape source, the lane carries it:
 
 ```nix
-services.telemetry.providers = {
-  otlpIngest = "otel-collector"; # default
-  prometheusScrape = "vmagent"; # default
-  journaldIngest = "vector"; # default
+imports = [
+  inputs.nix-fleet.modules.nixos.telemetry-metrics
+  inputs.nix-fleet.modules.nixos.node-exporter
+];
+```
+
+**Logs** — the lane composes the shipper; the consumer enables it and binds a
+sink:
+
+```nix
+imports = [ inputs.nix-fleet.modules.nixos.telemetry-logs ];
+services.telemetry.journald = {
+  enable = true;
+  includeUnits = [ "sshd.service" ];
+  sink.endpoint = journalIngestUrl;
 };
 ```
 
-The capability axis (not the host, not the signal) is the unit of selection, so
-metrics and logs can use different implementations later without touching any
-registration. The enum lists the implemented set: an unimplemented value is a
-contract edit, not a host typo. `prometheusScrape = "otel-collector"` remains
-the override for a host whose scraped metrics go to an OTLP destination instead
-of a Prometheus remote-write store.
+**OTLP** — the lane binds the loopback endpoint local producers push to:
 
-## Providers run only for declared work
+```nix
+imports = [ inputs.nix-fleet.modules.nixos.telemetry-otlp ];
+services.telemetry.otlp.signals = [ "traces" ];
+```
 
-A provider starts only when a declared **input** uses it and that input has a
-valid destination pipeline. A destination or a provider selection on its own
-starts nothing:
+`telemetry-otel-collector-scrape` and `telemetry-otel-collector-otlp` configure
+**one** host collector service: a host that composes both gets a single
+collector with both pipelines, and a host that composes one gets only that
+pipeline. A host whose scraped metrics go to an OTLP destination instead of a
+Prometheus remote-write store composes the OTel scrape realization **instead
+of** the metrics lane, which replaces that lane's default bundle rather than
+adding a second scraper:
 
-| Declared work                                        | vmagent | Vector | OTel collector                              |
-| ---------------------------------------------------- | ------- | ------ | ------------------------------------------- |
-| scrape source + metrics fanout                       | yes     | no     | no                                          |
-| `otlp.signals` + valid pipeline                      | no      | no     | yes                                         |
-| `journald.enable` + sink                             | no      | yes    | no                                          |
-| scrape source, `prometheusScrape = "otel-collector"` | no      | no     | yes (Prometheus receiver, no OTLP receiver) |
-| OTel admission + scrape override                     | no      | no     | yes (both receivers)                        |
-| a destination or provider selection alone            | no      | no     | no                                          |
+```nix
+# alternate scrape realization; do not also compose telemetry-metrics
+imports = [ inputs.nix-fleet.modules.nixos.telemetry-otel-collector-scrape ];
+```
+
+### One scrape realization
+
+Compose either vmagent or the collector's scrape realization, not both. Two
+scrape realizations fail with a named telemetry conflict rather than collecting
+every source twice. To replace the metrics lane's default, import the alternate
+realization instead of that lane.
+
+Scraping and admitting OTLP metrics are different inputs and may coexist. The
+collector keeps them in separate `metrics/scrape` and `metrics` pipelines, with
+shared exporters and delivery state.
+
+## Capability selection determines what runs
+
+A realization runs because its aspect is composed — never because a
+destination, pipeline or registration happens to exist. The contract reads no
+configuration to decide whether a capability is present: **a destination is
+where data goes, never evidence that an input exists.** Binding a destination,
+admitting a signal or registering a scrape source therefore starts nothing on
+its own; the lane that carries the signal is the declaration, and `imports` is
+where Nix expects a dependency.
 
 The OTel adapter renders only the exporters the **active** signals actually
 select, and binds only their credentials.
@@ -88,8 +131,8 @@ fails by name (`telemetry: OTLP admits logs with no destination pipeline to
 carry them; …`): a receiver never acknowledges what it cannot export. Duplicate
 entries fail the same way (`… otlp.signals names traces more than once`).
 
-**A destination is not admission.** A metrics destination alone no longer starts
-the collector and no longer advertises an OTLP receiver.
+**A destination is not admission.** A metrics destination alone composes no OTLP
+realization and advertises no OTLP receiver; only the OTLP lane binds one.
 
 ## Producer registrations
 
@@ -107,16 +150,25 @@ The attribute name is the scrape job name; `labels` become static target
 labels. Two independent registrations merge into one scrape configuration and
 reach the metrics pipeline.
 
+**A registration is a dormant declaration, not activation.** Like the `notify`
+event registrations, a scrape source, admitted signal, destination or journald
+sink is fixed-point data: it neither starts a realization nor fails when none is
+composed. It is realized only while the lane that carries its signal is
+composed, and _a registration is never silently dropped while its lane is
+composed_. A host that registers a scrape source and composes no metrics
+realization evaluates and ships nothing — that is its composition's statement,
+and consumer-side host policy is where "this host should ship these signals" is
+checked.
+
 ### Shipped producer aspect: node-exporter
 
 `flake.modules.nixos.node-exporter` is a normal aspect a host selects next to
-`telemetry`: it enables nixpkgs' node exporter on `127.0.0.1` (no firewall
-rule), registers `services.telemetry.scrape.node` for the same port, and
-registers its own unit's failure. It names no backend: the host's selected
-implementation carries those metrics to whatever metrics destination the
-consumer declares.
-Selecting it **without** `telemetry` is an orphan registration and fails closed
-by name. `services.node-exporter.port` is the only option — one value, so the
+`telemetry-metrics`: it enables nixpkgs' node exporter on `127.0.0.1` (no
+firewall rule), registers `services.telemetry.scrape.node` for the same port,
+and registers its own unit's failure. It names no backend: the composed metrics
+realization carries those metrics to whatever metrics destination the consumer
+declares, and composing the producer alone starts no scraper.
+`services.node-exporter.port` is the only option — one value, so the
 listener and the registration cannot disagree; anything else about the exporter
 is reachable through nixpkgs' own `services.prometheus.exporters.node`.
 The scrape registration defaults `labels.instance` to `hostName:port`, so local
@@ -137,44 +189,32 @@ environment.OTEL_EXPORTER_OTLP_ENDPOINT = config.services.telemetry.otlp.httpUrl
 ```
 
 `services.telemetry.otlp.{host,httpPort,grpcPort}` default to loopback
-(4318/4317); the URLs are derived read-only, and `otlp.host` is
+(4318/4317); the OTLP realization derives the URLs, and `otlp.host` is
 **loopback-only**. The network-facing listener is the separate
 `otlp.ingress` below, so the advertised producer endpoint and the loopback
 listener cannot drift apart.
 
-**Orphan guard.** Registration here is deliberately _not_ declaration-only (the
-`notify` idiom). A scrape source, a destination, or a journald sink written on a
-host that did not select `flake.modules.nixos.telemetry` fails closed by name:
-
-```text
-telemetry: scrape source(s) my-app configured without the host selecting
-flake.modules.nixos.telemetry; select that aspect (it realizes the
-registration) or remove it. A registration is never silently dropped.
-```
-
 A contributing aspect imports the reusable fragment
-`lib/telemetry-contract.nix` to write a registration; the fragment carries the
-guard. Reliance is on the host selecting the aspect, not on the fragment alone.
+`lib/telemetry-contract.nix` to declare into the contract, so a producer is
+composable by a host that ships no telemetry lane at all; the fragment carries
+the value validation below, not an activation guard.
 
-The same holds for a **push-only** consumer: it registers nothing, so there is
-no orphan to catch, and an endpoint nothing binds would be a dead address.
-Reading `otlp.httpUrl` / `otlp.grpcUrl` on a host that did not select the
-aspect fails closed by name instead:
+**The local URL promises a realized input.** A push-only consumer registers
+nothing, so an endpoint nothing binds would be a dead address. Reading
+`otlp.httpUrl` / `otlp.grpcUrl` fails closed by name unless the host composes
+the OTLP realization:
 
 ```text
-telemetry: services.telemetry.otlp.httpUrl was read on a host that did not
-select flake.modules.nixos.telemetry; no implementation binds the local OTLP
-endpoint. Select the host aspect or drop the read.
+telemetry: services.telemetry.otlp.httpUrl was read without composing an OTLP
+realization; no implementation binds the local OTLP endpoint. Compose
+telemetry-otlp or telemetry-otel-collector-otlp, or drop the read.
 ```
 
 The read also requires an **admitted signal**, because the endpoint promises an
 input the host actually accepts:
 
 ```text
-telemetry: services.telemetry.otlp.httpUrl was read without admitting any OTLP
-signal; the local endpoint promises an input this host accepts, so declare
-services.telemetry.otlp.signals (for example [ "traces" ]) before reading it.
-Binding a destination alone admits nothing.
+telemetry: local OTLP URL was read without admitting any OTLP signal
 ```
 
 Admission alone is not enough either: the admitted input must have a destination
@@ -182,23 +222,21 @@ pipeline to carry it, or the URL advertises a listener that would acknowledge
 what it silently drops.
 
 ```text
-telemetry: services.telemetry.otlp.httpUrl was read while OTLP admits logs with
-no destination pipeline to carry them; an admitted input is only a realized
-input once a destination accepts it. Bind a destination accepting the signal or
-remove it from services.telemetry.otlp.signals.
+telemetry: local OTLP URL was read while admitted signals have no destination
+pipeline to carry them
 ```
 
 All three guards are read-time errors: the failure happens where the URL is read,
 not when some other value is forced, so a producer that never reads the endpoint
-is unaffected by a host that has nothing to serve.
-
-Selecting the aspect with neither a destination nor journald shipping also fails
-by name. A host can still use Vector alone for journald shipping.
+is unaffected by a host that has nothing to serve. A host can compose the logs
+lane alone for journald shipping.
 
 ## Local relay and gateway ingress
 
-A gateway keeps its loopback producer listener and optionally binds a second,
-explicitly addressed OTLP listener for other hosts:
+Relay and gateway hosts compose the OTLP lane; the role is entirely a matter of
+which destinations the pipelines select. A gateway keeps its loopback producer
+listener and optionally binds a second, explicitly addressed OTLP listener for
+other hosts:
 
 ```nix
 services.telemetry.otlp.signals = [ "traces" "metrics" "logs" ];
@@ -308,30 +346,66 @@ prometheus-remote-write cannot carry
 ## Local log shipping: journald
 
 Log shipping is **explicitly enabled in the mechanism** and has its own typed
-sink: selecting telemetry for metrics or traces must not export a journal as a
-side effect. The [fleet policy](observability.md#journal-shipping-required-policy-explicit-mechanism)
+sink: composing the metrics or OTLP lane must not export a journal as a side
+effect, and the logs lane is what carries it. The [fleet policy](observability.md#journal-shipping-required-policy-explicit-mechanism)
 requires shipping an operational-unit allowlist on every managed NixOS host,
-including workstations. Consumers set `journald.enable = true` and a nonempty
-`includeUnits`; an empty list ships every unit and does not meet that baseline.
+including workstations. The logs realization sets `journald.enable = true`;
+consumers bind its sink and a nonempty `includeUnits`. The empty list is not
+silently "everything" but a fail-closed
+mistake, and `includeAll` is the deliberate whole-journal decision the rare
+exception needs.
 
 ```nix
 services.telemetry.journald = {
   enable = true;
-  includeUnits = [ "nginx" ]; # empty = every unit; _SYSTEMD_UNIT filter
+  includeUnits = [ "nginx.service" ];
   sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
   # streamFields = [ "_HOSTNAME" "_SYSTEMD_UNIT" ];  # low-cardinality grouping
   # buffer.maxSizeMb = 512; buffer.whenFull = "block";
 };
 ```
 
+- `includeUnits` filters on `_SYSTEMD_UNIT`, matched **exactly and
+  case-sensitively**. This is not `journalctl -u`: records the kernel or
+  PID 1 logs about a service usually carry `init.scope`, not the service's
+  own name, so selecting a service's name does not include its lifecycle
+  transitions — include them via `init.scope` only with an explicit decision,
+  since that scope sees every unit. A template instance needs its own exact
+  name (`foo@bar.service`, never `foo@.service`): template base names and
+  globs match nothing. Records carrying no included unit are excluded, and
+  `excludeUnits` wins outright: a unit in both lists is rejected by the
+  reader, so an overlapping pair fails at the unit, not silently in one
+  direction.
+- The baseline is **the service's own output**, not everything associated
+  with the service: no fleet default pulls in kernel or manager-scope records
+  to "complete" a unit's story, for exactly the trusted-origin and
+  sweep reasons that make `init.scope` dangerous as a blanket selection.
+  Broader service-associated diagnostics would need narrow selectors the
+  contract does not offer today.
+- System units only: there is no per-user-unit selector. A unit named in the
+  user manager's transient scope (for example `user@1000.service`)
+  still shows `_SYSTEMD_UNIT=user@1000.service`, so selecting that sweeps every
+  user service on the host. Individual `_SYSTEMD_USER_UNIT` export is an
+  optional extension, deliberately not offered: the present baseline is
+  system units, and no shortcut around the user manager is recommended.
+- `includeUnits = [ ]` with `includeAll = false` fails closed by name
+  (`telemetry: journald shipping is enabled with an empty includeUnits …`):
+  an absent allowlist is a missing selection, not a licence to export every
+  unit's records. `includeAll = true` is the whole-journal opt-in for the
+  deliberate case — it renders no `include_units` filter at all — and it is
+  contradictory with a non-empty list (`… includeAll is true …`). A host
+  passing this gate by inertia (an empty list it never looked at) is exactly
+  what the gate exists to stop; adopting this patch is **breaking for
+  empty-list journald consumers**, who must pick a side.
+
 `sink.endpoint` is the backend's HTTP JSON-line ingest URL — consumer policy,
-never a fleet default. The provider reads the journal locally, writes one JSON
+never a fleet default. The realization reads the journal locally, writes one JSON
 event per line with gzip, and buffers on disk. `streamFields` selects the
 backend's stream grouping and is deliberately low-cardinality by default.
 
 **Why this does not go through the local collector.** Journald shipping is a
-separate capability with its own provider and its own binding: a host that ships
-logs need not admit OTLP logs or run a collector at all. Vector's disk buffer
+separate lane with its own realization and its own binding: a host that ships
+logs need not admit OTLP logs or compose an OTel realization at all. Vector's disk buffer
 plus its persistent journal read checkpoints cover journal → Vector → backend: a
 backend outage or a Vector restart does not drop what is already buffered, and a
 restart resumes after the last checkpoint instead of re-reading. It is
@@ -339,15 +413,29 @@ restart resumes after the last checkpoint instead of re-reading. It is
 stops reading the journal when it is full (the journal keeps its own records, so
 nothing is lost until journald rotates) while `drop_newest` discards, and once a
 record is accepted by the backend its durability is the backend's business.
-Vector's `current_boot_only` default is left in place, so a first start ships the
-current boot rather than replaying older ones.
+**Scope is the current boot, stated in the render** (`current_boot_only = true`,
+Vector's own default): the reader ships from a saved checkpoint first,
+`since_now` when there is none, and otherwise this host's boot — it does not
+replay. Concretely: an offline host that reboots with previous-boot records
+still sitting unread in its journal does **not** ship them — already-buffered
+replay and unread-history replay are different recovery obligations, and the
+reader only honours the first. Losing unread history on an offline reboot is
+therefore documented behaviour, not a buffer bug; maximum replay is not
+offered, because it would also replay logs a consumer's allowlist and
+retention policy were never meant to keep. Cover first enable with and without
+a checkpoint, same-boot restart, host reboot and a rotated or unavailable
+cursor only when such a fixture exists: current-boot scope is corroborated and
+invalid-cursor recovery is not.
 
-Both mistakes fail closed by name: shipping enabled with no `sink.endpoint`
-(`telemetry: journald shipping is enabled but
-services.telemetry.journald.sink.endpoint is not set`), and an endpoint that is
-not an http(s) URL. An endpoint set while shipping is disabled is the same
-class of error as an orphan registration. The provider also rejects a buffer
-below Vector's disk-buffer floor rather than letting the service fail at
+The scope mistakes fail closed by name alongside the wiring mistakes: shipping
+enabled with no `sink.endpoint` (`telemetry: journald shipping is enabled but
+services.telemetry.journald.sink.endpoint is not set`), an endpoint that is
+not an http(s) URL, an empty allowlist without the deliberate opt-in
+(`telemetry: journald shipping is enabled with an empty includeUnits …`), and
+an `includeAll = true` paired with a non-empty `includeUnits` (`telemetry:
+services.telemetry.journald.includeAll is true …`). An endpoint set while
+shipping is disabled is rejected the same way. The realization also rejects a
+buffer below Vector's disk-buffer floor rather than letting the service fail at
 startup.
 
 ## OTLP delivery: persistent, bounded, observable
@@ -440,20 +528,55 @@ Bounds, honestly stated:
 An active collector exposes its own operational metrics on **loopback 9464**
 (`services.otel-collector.metricsPort`), which replaces the implicit all-interface
 `:8888` listener that the collector would otherwise create. Exporter queue size
-and configured capacity, and enqueue/send failure counters, are visible there.
+and configured capacity, and enqueue/send failure counters, are visible there,
+and the collector publishes that listener as a scrape registration like any
+other producer.
 
-```nix
-# collect them through the ordinary producer interface when you want them
-services.telemetry.scrape.otel-collector-health = {
-  target = "127.0.0.1";
-  port = 9464;
-};
-```
+A published health registration is a scrape source like any other: it does
+**not** start a scraper, a collector or a second realization. A host with no
+OTel work has no operational listener and no OTel failure registration at all.
+The metrics endpoint is loopback and is never opened by a firewall rule.
 
-That registration is a scrape source like any other: it does **not** start a
-scraper, a collector or a second provider. A host with no OTel input work has no
-operational listener and no OTel failure registration at all. The metrics
-endpoint is loopback and is never opened by a firewall rule.
+Every active realization publishes its own health source the same way, and
+collection follows the metrics realization the host composes: with no metrics
+realization composed, the sources are published and simply not scraped — a
+composition statement, not an orphan failure.
+
+- **vmagent**, while composed, scrapes its own loopback `:8429` management
+  endpoint as the `vmagent-health` job.
+- **Vector**, while journald shipping is active, exposes its internal metrics
+  through an `internal_metrics` source feeding a loopback
+  `prometheus_exporter` sink at `127.0.0.1:9598` (Vector's documented port for
+  this sink), registered as the `vector-health` job. The exporter carries
+  only internal metrics, so it is never a second path for log records, and
+  the log sink keeps its `inputs = [ "journald" ]`.
+
+Names verified locally against the pinned binaries: 1.153.0 `vmagent` started
+with an unreachable destination exposed all nine `vmagent_*` series at its
+loopback endpoint, with the destination masked (`url="1:secret-url"`), and
+Vector 0.58.0's `vector validate --no-environment` accepted the rendered
+`journald` / `internal_metrics` / `prometheus_exporter` config; the `vector_*`
+series follow the component metric names compiled into that binary
+(`size_bytes`, `size_events`, `sent_events_total`, `errors_total`,
+`discarded_events_total`) under the pinned `default_namespace = "vector"`.
+Vector exports a counter series only once it first increments, so these are the
+shapes to alert on, not a promise that every one is present on a healthy sink:
+
+| Signal                            | vmagent (`vmagent-health`)                                                                                                       | Vector (`vector-health`, per sink via `component_id`)   |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Queued / pending work             | `vmagent_remotewrite_pending_data_bytes`, `vmagent_remotewrite_pending_inmemory_blocks`, `vmagent_remotewrite_queue_blocked`     | `vector_buffer_size_bytes`, `vector_buffer_size_events` |
+| Send / enqueue errors and retries | `vmagent_remotewrite_errors_total`, `vmagent_remotewrite_retries_count_total`, `vmagent_remotewrite_send_duration_seconds_total` | `vector_component_errors_total`                         |
+| Dropped data                      | `vmagent_remotewrite_packets_dropped_total`, `vmagent_remotewrite_samples_dropped_total`                                         | `vector_buffer_discarded_events_total`                  |
+| Delivered (presence is the proof) | `vmagent_remotewrite_bytes_sent_total`                                                                                           | `vector_component_sent_events_total`                    |
+
+Self-health rides the same transport it reports on, so it is **not** an
+independent witness: an absent `vector_component_sent_events_total` series at
+the store — or a flat `vmagent_remotewrite_pending_data_bytes` on a host that
+should be shipping — is observed from the center, which is where absence is
+actually detectable. Keep availability policy (a laptop is not an always-on
+server) and alert thresholds out of these defaults; they stay consumer-owned
+central rules (see the [notification and alert
+policy](observability.md#notification-and-alert-policy)).
 
 ## Implementation tuning: OpenTelemetry Collector
 
@@ -471,11 +594,11 @@ the only place that speaks in collector terms:
 - `exporterExtra.<destination>` — raw exporter override escape hatch, recursively
   merged over the generated exporter (including its queue settings).
 
-The implementation binds the OTLP receiver to `services.telemetry.otlp`, renders
-`services.telemetry.scrape` into
-`receivers.prometheus.config.scrape_configs` **only when it is the selected
-scrape provider** (metrics pipeline only), adds the `otlp/ingress` receiver and
-`<signal>/ingress` pipelines when `otlp.ingress` is configured, and validates
+The OTel realizations bind the OTLP receiver to `services.telemetry.otlp` when
+the OTLP realization is composed, render `services.telemetry.scrape` into
+`receivers.prometheus.config.scrape_configs` **only when the scrape realization
+is composed** (metrics pipeline only), add the `otlp/ingress` receiver and
+`<signal>/ingress` pipelines when `otlp.ingress` is configured, and validate
 the config at build time with the real binary. When a scrape source is
 registered but no metrics destination can carry it, it fails closed
 (`telemetry: N scrape source(s) are registered but the metrics pipeline has no
@@ -483,9 +606,9 @@ destination to carry them`).
 
 ## Implementation tuning: vmagent (Prometheus scrape)
 
-vmagent is the default `prometheusScrape` implementation and has no separate
-public namespace: its whole surface is the contract's `services.telemetry.scrape`
-plus the metrics fanout. The provider renders
+`telemetry-vmagent` is the metrics lane's default realization and has no
+separate public namespace: its whole surface is the contract's
+`services.telemetry.scrape` plus the metrics fanout. It renders
 
 - the registered jobs into `services.vmagent.prometheusConfig.scrape_configs`
   (job name = registration name; target, port, `metricsPath`, `scheme`,
@@ -512,16 +635,16 @@ other protocol fails closed by name rather than silently narrowing:
 
 ```text
 telemetry: the metrics pipeline selects 'gateway' (otlp-grpc) for metrics,
-which the scrape provider vmagent cannot write to — vmagent speaks
-prometheus-remote-write only. Repoint those destinations or select
-services.telemetry.providers.prometheusScrape = "otel-collector".
+which the composed scrape realization vmagent cannot write to — vmagent speaks
+prometheus-remote-write only. Repoint those destinations or compose
+telemetry-otel-collector-scrape instead of the metrics lane.
 ```
 
 A scrape source with no metrics destination fails the same way
 (`telemetry: N scrape source(s) are registered but the metrics pipeline has no
-destination to carry them`). Either way the host gets **no** vmagent unit, so an
-unsupported fanout can never be realized as a push to a destination the contract
-did not select. A host with no scrape work installs no agent at all.
+destination to carry them`). Either way an unsupported fanout can never be
+realized as a push to a destination the contract did not select, and a metrics
+destination bound without a composed metrics realization starts nothing.
 
 **Bounded durability, not lossless.** The queue lives under the unit's
 `StateDirectory` (`/var/lib/vmagent`, `%S` in the argument), so it is persistent
@@ -532,9 +655,20 @@ vmagent drops the **oldest** buffered data to make room for newly scraped
 samples, and it flushes its file-based queue to a destination before newly
 ingested samples go there — a long outage past the bound loses data and lags
 the remote store. The management/inspection HTTP endpoint binds loopback
-(`-httpListenAddr=127.0.0.1:8429`) and `openFirewall` keeps its false default.
-The provider registers the `vmagent` unit's failure on the notification
-contract.
+(`-httpListenAddr=127.0.0.1:8429`) and `openFirewall` keeps its false default;
+the `vmagent-health` scrape registration names that same endpoint, so the bound
+port and the scraped target cannot drift apart. That endpoint reports the queue
+itself — `vmagent_remotewrite_pending_data_bytes` and
+`vmagent_remotewrite_queue_blocked`, with the destination URL masked
+(`url="1:secret-url"`) — and it opened **one queue directory per destination**,
+named for the destination's position and a hash of its URL (observed in
+1.153.0's own startup log and metric labels; the layout is vmagent's, not a
+contract). Pointing a destination at a different URL therefore opens a fresh
+queue and leaves the old backlog on disk unread, and reordering
+`destinations.metrics` does the same because position is part of the name —
+same rule as an exporter rename on the OTLP side. Drain before a store move: a
+stable Nix attribute name is not proof of a migrated queue. The realization
+registers the `vmagent` unit's failure on the notification contract.
 
 **Credentials.** vmagent expands `%{ENV_VAR}` placeholders in its own
 command-line flags (its documented substitution syntax — not OTel's
@@ -575,25 +709,50 @@ destination that was not given one
 Refusing to start is deliberate: a credential that cannot be represented safely
 is a configuration error, and a stopped exporter is visible while a leaked
 credential is not. Bearer and basic-auth credentials — `base64url`, dots,
-underscores, `~`, `+`, `/`, `=` — are unaffected. Selecting
-`providers.prometheusScrape = "otel-collector"` avoids the restriction entirely,
-because OTel reads header values through its own `${env:...}` expansion instead
-of vmagent's argument array. The guard itself is exercised by
-`checks.vmagent-secret-guard`.
+underscores, `~`, `+`, `/`, `=` — are unaffected. Composing
+`telemetry-otel-collector-scrape` instead of the metrics lane avoids the
+restriction entirely, because OTel reads header values through its own
+`${env:...}` expansion instead of vmagent's argument array. The guard itself is
+exercised by `checks.vmagent-secret-guard`.
 
 ## Implementation tuning: Vector (journald)
 
-Vector is the `journaldIngest` implementation and has no separate public
-namespace: its whole surface is the contract's `services.telemetry.journald`
-(source filters, sink endpoint, stream fields, buffer bounds). The rendered
-`services.vector.settings` is the nixpkgs module's own — the provider sets
-`data_dir = "/var/lib/vector"` (the unit's `StateDirectory`, where checkpoints
-and the disk buffer live), `journaldAccess = true`, and the JSON-line sink
-fields, and the module validates the config at build time through its own
-`vector validate` step. Secrets never enter the store: this path needs none (a
-private ingest route is authenticated by the network it sits on) and no value in
-the generated config is env-interpolated. The provider registers the `vector`
-unit's failure on the notification contract.
+`telemetry-vector` is the logs lane's default realization and has no separate
+public namespace: its whole surface is the contract's
+`services.telemetry.journald` (source filters, `sink.endpoint`, stream fields,
+buffer bounds) plus one realization-owned loopback endpoint — the
+`prometheus_exporter` sink at `127.0.0.1:9598`, fed by an `internal_metrics`
+source, which it registers as the `vector-health` scrape job whenever journald
+shipping is active. That registration starts no scraper and ships nothing to
+the log backend: the exporter sink's only input is the internal metrics, and
+the log sink keeps `inputs = [ "journald" ]`. The metric names are pinned in
+[delivery health](#delivery-health); alert rules on them stay consumer-owned.
+
+The rendered `services.vector.settings` is the nixpkgs module's own — the
+realization sets `data_dir = "/var/lib/vector"` (the unit's `StateDirectory`,
+where checkpoints and the disk buffer live), `journaldAccess = true`, the
+explicit `current_boot_only = true`, and the JSON-line sink fields, and the
+module validates the config at build time through its own `vector validate`
+step. Secrets never enter the store: this path needs none (a private ingest
+route is authenticated by the network it sits on) and no value in the generated
+config is env-interpolated. The realization registers the `vector` unit's failure
+on the notification contract.
+
+**Local state is keyed by the identifiers in the rendered config.** The log
+sink's disk buffer, the journald read checkpoints and the health exporter's own
+state all live under `data_dir`, named by the component (`logs`, `journald`,
+`vector-health`). Repointing `sink.endpoint` at a different backend is a config
+edit and does **not** move the queue: the old records drain to the new URL,
+which is a delivery and retention decision — records buffered under one policy
+arrive at a store chosen under another. Renaming a component abandons its state
+instead: the old buffer and checkpoint are no longer read. Treat a rename like
+an exporter rename on the OTLP side — drain first, or disclose the stranded
+backlog — and keep the stable name across a rollout. Rolling the host's whole
+state back does the same thing in reverse: restoring a root snapshot from before
+the change restores the state the old names expect. Who drains is consumer-owned:
+the fleet publishes coordinates, the consumer that binds them performs the drain.
+The queue layout under `data_dir` is Vector's own and is not a documented
+interface here.
 
 ## Secrets
 
@@ -603,10 +762,10 @@ unbound/null file registers nothing; referenced unknown or unbound IDs fail
 closed. Secret IDs use ASCII letters, digits, and underscores. The ID/pairing
 vocabulary and the "unknown secret reference" check live in the reusable
 contract fragment, so they hold whether or not an OTel instance runs — a vmagent
-host validates its credentials exactly the same way. Each provider binds only
-the secrets its own **active** exporters need, so a host can run both without
-duplicating the binding, and a declared-but-unused destination contributes no
-exporter, no secret and no validation override:
+host validates its credentials exactly the same way. Each realization binds only
+the secrets its own **active** exporters need, so a host can compose both
+without duplicating the binding, and a declared-but-unused destination
+contributes no exporter, no secret and no validation override:
 
 - **otel-collector** registers `sops.secrets."otel-collector/<id>"`, then
   renders a root-owned `sops.templates."otel-collector.env"` as
@@ -678,12 +837,16 @@ pending data before retiring an old listener.
 
 ## Adoption and rollback
 
-**Adopting.** Add `services.telemetry.otlp.signals` for every host that pushes
-OTLP to its local endpoint; existing scrape and journald declarations keep their
-shape. A host that only scrapes or only ships journald needs no admission. A
-gateway binds `otlp.ingress` instead of pointing `otlp.host` at a network
-address, and moves host identity into `resourceAttributes` knowing that it now
-applies to local inputs only.
+**Adopting.** Replace `imports = [ …modules.nixos.telemetry ]` with the lane
+aspects the host ships (`telemetry-metrics`, `telemetry-logs`, `telemetry-otlp`),
+and replace any `services.telemetry.providers.*` override with the realization
+aspect that replaces the lane's default. Add `services.telemetry.otlp.signals`
+for every host that pushes OTLP to its local endpoint; existing scrape and
+journald declarations keep their shape. A host that only scrapes or only ships
+journald needs no admission. A gateway composes the OTLP lane and binds
+`otlp.ingress` instead of pointing `otlp.host` at a network address, and moves
+host identity into `resourceAttributes` knowing that it now applies to local
+inputs only.
 
 **Verifying what is local and what is consumer-owned.** `nix flake check` and
 `checks.telemetry-*` validate configuration, mutation failures and offline
@@ -691,8 +854,12 @@ delivery semantics (acceptance, restart recovery, independent fan-out, overflow,
 source identity) against the real collector binary with synthetic payloads and
 local receivers. They are **not** live acceptance: tailnet grants, backend
 relocation, credential scope and end-to-end receipt are consumer deployment
-gates. Verify at least: local push and remote push, each backend separately, an
-allowed device and a denied device, and origin identity at the backend.
+gates. The remote-write and JSON-line lanes carry configuration validation and
+realization-published health scrapes; only the OTLP path proves outage/restart recovery
+below capacity today, and a deterministic outage/restart harness for those two
+lanes is deferred, not claimed. Verify at least: local push and remote push,
+each backend separately, an allowed device and a denied device, and origin
+identity at the backend.
 
 **Rolling back.** Revert the consumer's destinations and the catalog pins to the
 last verified endpoint, keep the state directory and the stable exporter IDs,

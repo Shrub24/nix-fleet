@@ -1,21 +1,11 @@
-# The host-local telemetry contract. One namespace, `services.telemetry`,
-# implementation-agnostic: a service registers a Prometheus scrape source, reads
-# the local OTLP endpoint, opts into journald shipping, or binds a remote
-# destination without knowing which implementation serves it.
-#
-# Declared in a fragment so a service aspect can write a registration on any
-# host. Unlike the notification fragment, this one is NOT declaration-only: a
-# registration that no host aspect realizes must fail closed by name, so the
-# fragment carries the orphan guard, and the derived OTLP endpoint fails closed
-# too (a push-only consumer registers nothing, and a destination alone does not
-# admit a signal). Everything that is implementation-independent lives here —
-# including the secret-ID vocabulary — so validating the contract never depends
-# on which implementation happens to be selected.
-#
-# Realization (`services.telemetry.realized`) is set by flake.modules.nixos.telemetry,
-# whose contributors are the sibling flake-parts files under modules/telemetry/.
-# OTel-specific tuning lives under `services.otel-collector`.
-{ config, lib, ... }:
+# The host-local telemetry contract: one implementation-agnostic namespace.
+# Registrations are dormant data; composition of a lane selects a consumer.
+{
+  config,
+  lib,
+  options,
+  ...
+}:
 let
   inherit (lib) mkOption types;
 
@@ -190,7 +180,6 @@ let
   # not depend on whether an OTel instance happens to run, because the scrape
   # provider binds credentials too.
   secretIds = builtins.attrNames cfg.secretFiles;
-  secretNamesMatch = secretIds == builtins.attrNames cfg.secretKeys;
   validSecretIds = builtins.all (id: builtins.match "[A-Za-z0-9_]+" id != null) secretIds;
   headerSecretIds = lib.unique (
     lib.concatMap (
@@ -198,61 +187,35 @@ let
     ) destinationNames
   );
   unknownHeaderSecrets = builtins.filter (id: !(builtins.hasAttr id cfg.secretFiles)) headerSecretIds;
-
-  # The local endpoint is a promise that an implementation binds it AND accepts
-  # what is pushed there. A push-only consumer that imports this fragment, reads
-  # the URL, and registers nothing has no orphan for the guard below to catch,
-  # and a destination alone never admits a signal — so the derived value itself
-  # fails closed by name instead of advertising a dead or deaf address. An
-  # admitted signal with no pipeline to carry it is the same broken promise from
-  # the other side: the listener would acknowledge what it silently drops.
-  derivedUrl =
-    option: port:
-    if !cfg.realized then
-      throw "telemetry: ${option} was read on a host that did not select flake.modules.nixos.telemetry; no implementation binds the local OTLP endpoint. Select the host aspect or drop the read."
-    else if admittedSignals == [ ] then
-      throw "telemetry: ${option} was read without admitting any OTLP signal; the local endpoint promises an input this host accepts, so declare services.telemetry.otlp.signals (for example [ \"traces\" ]) before reading it. Binding a destination alone admits nothing."
-    else if unservedSignals != [ ] then
-      throw "telemetry: ${option} was read while OTLP admits ${lib.concatStringsSep ", " unservedSignals} with no destination pipeline to carry them; an admitted input is only a realized input once a destination accepts it. Bind a destination accepting the signal or remove it from services.telemetry.otlp.signals."
-    else
-      let
-        host =
-          if lib.hasInfix ":" cfg.otlp.host && !lib.hasPrefix "[" cfg.otlp.host then
-            "[${cfg.otlp.host}]"
-          else
-            cfg.otlp.host;
-      in
-      "http://${host}:${toString port}";
-
-  orphanReport = lib.concatStringsSep ", " (
-    lib.optional (
-      cfg.scrape != { }
-    ) "scrape source(s) ${lib.concatStringsSep ", " (builtins.attrNames cfg.scrape)}"
-    ++ lib.optional (
-      cfg.destinations != { }
-    ) "destination(s) ${lib.concatStringsSep ", " destinationNames}"
-    ++ lib.optional (cfg.journald.sink.endpoint != null) "journald sink"
-  );
+  unusedBoundSecrets = builtins.filter (
+    id:
+    cfg.secretFiles.${id} != null
+    && builtins.pathExists cfg.secretFiles.${id}
+    && !(builtins.elem id headerSecretIds)
+  ) secretIds;
 
   # A sink endpoint is a URL the provider dials; a bare `host:port` is the
   # mistake this catches, not a stylistic preference.
   validSinkUrl = url: lib.hasPrefix "http://" url || lib.hasPrefix "https://" url;
 
-  nothingRegistered =
-    cfg.scrape == { } && cfg.destinations == { } && cfg.journald.sink.endpoint == null;
 in
 {
   options.services.telemetry = {
-    # Internal: set by flake.modules.nixos.telemetry. Distinguishes a host that
-    # adopted the contract from a tree where a contributor merely declared a
-    # registration (the orphan case the guard below rejects).
-    realized = mkOption {
-      type = types.bool;
+    scrapeRealization = mkOption {
+      type =
+        types.unique
+          {
+            message = "telemetry: scrape realization conflict; compose exactly one of telemetry-vmagent or telemetry-otel-collector-scrape";
+          }
+          (
+            types.enum [
+              "vmagent"
+              "otel-collector"
+            ]
+          );
       internal = true;
-      default = false;
-      description = "Whether flake.modules.nixos.telemetry is selected on this host. Set by that aspect; nothing else should define it.";
+      description = "Internal exclusive scrape-realization identity.";
     };
-
     otlp = {
       host = mkOption {
         type = types.str;
@@ -270,7 +233,7 @@ in
         default = [ ];
         description = ''
           Signals this host's OTLP input accepts, as a unique set. Empty by
-          default: a destination or a provider selection declares where data
+          default: a destination declares where data
           goes, never that an input exists, so a host must admit its signals
           explicitly. Every admitted signal needs a nonempty destination
           pipeline (otherwise the receiver would acknowledge what it drops), and
@@ -289,12 +252,12 @@ in
       };
       httpUrl = mkOption {
         type = types.str;
-        readOnly = true;
+        default = throw "telemetry: services.telemetry.otlp.httpUrl was read without composing an OTLP realization; no implementation binds the local OTLP endpoint. Compose telemetry-otlp or telemetry-otel-collector-otlp, or drop the read.";
         description = "OTLP/HTTP endpoint producers push to; derived from `host` and `httpPort`, and readable only once an admitted signal has a destination pipeline to carry it.";
       };
       grpcUrl = mkOption {
         type = types.str;
-        readOnly = true;
+        default = throw "telemetry: services.telemetry.otlp.grpcUrl was read without composing an OTLP realization; no implementation binds the local OTLP endpoint. Compose telemetry-otlp or telemetry-otel-collector-otlp, or drop the read.";
         description = "OTLP/gRPC endpoint producers push to; derived from `host` and `grpcPort`, and readable only once an admitted signal has a destination pipeline to carry it.";
       };
       ingress = mkOption {
@@ -333,36 +296,6 @@ in
           URLs untouched. The consumer owns interface-specific firewall policy
           and any authentication in front of it.
         '';
-      };
-    };
-
-    providers = {
-      otlpIngest = mkOption {
-        type = types.enum [ "otel-collector" ];
-        default = "otel-collector";
-        description = "Implementation serving OTLP ingest on this host. The enum is the implemented set; an unimplemented value is a contract edit, not a host typo.";
-      };
-      prometheusScrape = mkOption {
-        type = types.enum [
-          "vmagent"
-          "otel-collector"
-        ];
-        default = "vmagent";
-        description = ''
-          Implementation serving Prometheus scrape sources on this host.
-          Selection is per capability, so metrics and logs may split later
-          without touching registrations. `vmagent` is the default: an agent
-          that scrapes and forwards over Prometheus remote write. It can only
-          write to destinations the metrics pipeline selects that speak
-          `prometheus-remote-write`, so a fanout naming any other protocol is a
-          named failure; `otel-collector` remains the override for a host whose
-          scraped metrics go to an OTLP destination.
-        '';
-      };
-      journaldIngest = mkOption {
-        type = types.enum [ "vector" ];
-        default = "vector";
-        description = "Implementation shipping this host's journald logs (`services.telemetry.journald`). Per capability like the others: a future implementation is an enum value plus its private module, never a registration change.";
       };
     };
 
@@ -410,7 +343,9 @@ in
 
     # The host-local log source: systemd's journal. Deliberately opt-in — a
     # host that selected telemetry for metrics or traces must not start
-    # shipping its journal as a side effect.
+    # shipping its journal as a side effect — and deliberately explicit about
+    # scope: `includeUnits` is an allowlist, and an empty allowlist needs
+    # `includeAll` to mean the whole journal.
     journald = {
       enable = mkOption {
         type = types.bool;
@@ -420,7 +355,26 @@ in
       includeUnits = mkOption {
         type = types.listOf types.str;
         default = [ ];
-        description = "Only ship entries whose `_SYSTEMD_UNIT` is listed. Empty means every unit. Unit names without a `.` get `.service` appended by the reader.";
+        description = ''
+          Only ship entries whose `_SYSTEMD_UNIT` is listed, matched exactly
+          and case-sensitively — this is not `journalctl -u`: records the kernel
+          or PID 1 logs about a unit usually carry `init.scope`, not the unit's
+          own name, and a template instance needs its own exact name
+          (`foo@bar.service`, not `foo@.service`). Empty is not "no units" and
+          not by itself "every unit": it must be paired with `includeAll`.
+          Unit names without a `.` get `.service` appended by the reader.
+        '';
+      };
+      includeAll = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Ship the whole journal, deliberately. An empty `includeUnits` with
+          this false fails closed by name: an absent allowlist is a missing
+          selection, not a licence to export every unit's records, and the
+          fleet baseline forbids whole-journal adoption without an explicit
+          policy decision. Setting both is contradictory.
+        '';
       };
       excludeUnits = mkOption {
         type = types.listOf types.str;
@@ -546,35 +500,38 @@ in
   };
 
   config = {
-    services.telemetry.otlp = {
-      httpUrl = derivedUrl "services.telemetry.otlp.httpUrl" cfg.otlp.httpPort;
-      grpcUrl = derivedUrl "services.telemetry.otlp.grpcUrl" cfg.otlp.grpcPort;
-    };
     services.telemetry.resolvedPipelines = lib.genAttrs allSignals resolvedPipeline;
 
     assertions = [
       {
-        assertion = cfg.realized || nothingRegistered;
-        message = "telemetry: ${orphanReport} configured without the host selecting flake.modules.nixos.telemetry; select that aspect (it realizes the registration) or remove it. A registration is never silently dropped.";
+        assertion = unusedBoundSecrets == [ ];
+        message = "telemetry: bound credentials have no declared destination header reference: ${lib.concatStringsSep ", " unusedBoundSecrets}";
       }
       {
-        assertion = !cfg.realized || destinationNames != [ ] || cfg.journald.enable;
-        message = "telemetry: the host selected flake.modules.nixos.telemetry without any OTLP destinations or journald shipping; bind a destination or configure the journald sink.";
-      }
-      {
-        assertion = !cfg.journald.enable || cfg.journald.sink.endpoint != null;
-        message = "telemetry: journald shipping is enabled but services.telemetry.journald.sink.endpoint is not set; the host's journal has nowhere to go.";
-      }
-      {
-        assertion = cfg.journald.sink.endpoint == null || cfg.journald.enable;
-        message = "telemetry: services.telemetry.journald.sink.endpoint is set while journald shipping is disabled; enable it or remove the sink. A registration is never silently dropped.";
+        assertion =
+          !options.services.telemetry.scrapeRealization.isDefined || builtins.seq cfg.scrapeRealization true;
+        message = "telemetry: compose only one scrape realization";
       }
       {
         assertion = cfg.journald.sink.endpoint == null || validSinkUrl cfg.journald.sink.endpoint;
         message = "telemetry: journald sink endpoint '${cfg.journald.sink.endpoint}' must be an http:// or https:// URL.";
       }
+      # The whole-journal footgun, closed at the contract rather than in one
+      # provider: an empty allowlist used to mean "every unit", so a host that
+      # enabled shipping to satisfy the "logs go somewhere" wiring shipped the
+      # entire journal by accident. Exporting everything is now an explicit,
+      # named decision, and a contradictory pair is not a preference to resolve
+      # silently in either direction.
       {
-        assertion = !cfg.realized || isLoopbackHost cfg.otlp.host;
+        assertion = !cfg.journald.enable || cfg.journald.includeUnits != [ ] || cfg.journald.includeAll;
+        message = "telemetry: journald shipping is enabled with an empty includeUnits and includeAll = false; an empty allowlist is not a whole-journal licence. List the operating units this host ships, or set services.telemetry.journald.includeAll = true to export the whole journal deliberately.";
+      }
+      {
+        assertion = !cfg.journald.includeAll || cfg.journald.includeUnits == [ ];
+        message = "telemetry: services.telemetry.journald.includeAll is true with a non-empty includeUnits (${lib.concatStringsSep ", " cfg.journald.includeUnits}); the two are contradictory — drop includeUnits to export the whole journal, or drop includeAll to export the listed units.";
+      }
+      {
+        assertion = isLoopbackHost cfg.otlp.host;
         message = "telemetry: services.telemetry.otlp.host is '${cfg.otlp.host}', but the producer listener is loopback-only. Bind the network-facing listener through services.telemetry.otlp.ingress instead.";
       }
       {
@@ -582,7 +539,7 @@ in
         message = "telemetry: services.telemetry.otlp.signals names ${lib.concatStringsSep ", " (lib.unique duplicateSignals)} more than once; admitted signals are a unique set.";
       }
       {
-        assertion = unservedSignals == [ ];
+        assertion = admittedSignals == [ ] || unservedSignals == [ ];
         message = "telemetry: OTLP admits ${lib.concatStringsSep ", " unservedSignals} with no destination pipeline to carry them; bind a destination accepting the signal or remove it from services.telemetry.otlp.signals. A receiver never acknowledges what it cannot export.";
       }
       {
@@ -618,11 +575,11 @@ in
         message = "telemetry: services.telemetry.otlp.ingress binds ${lib.concatStringsSep ", " listenerCollisions}, the same address and transport port as the local producer listener; the two listeners must be distinct.";
       }
       {
-        assertion = !cfg.realized || secretNamesMatch;
+        assertion = secretIds == builtins.attrNames cfg.secretKeys;
         message = "telemetry: secretFiles and secretKeys IDs must match; secretFiles has ${lib.concatStringsSep ", " secretIds} and secretKeys has ${lib.concatStringsSep ", " (builtins.attrNames cfg.secretKeys)}.";
       }
       {
-        assertion = !cfg.realized || validSecretIds;
+        assertion = validSecretIds;
         message = "telemetry: secret IDs must contain only letters, digits, or underscores; got ${
           lib.concatStringsSep ", " (
             builtins.filter (id: builtins.match "[A-Za-z0-9_]+" id == null) secretIds
@@ -630,7 +587,7 @@ in
         }.";
       }
       {
-        assertion = !cfg.realized || unknownHeaderSecrets == [ ];
+        assertion = unknownHeaderSecrets == [ ];
         message = "telemetry: destination header(s) reference unknown secret(s) ${lib.concatStringsSep ", " unknownHeaderSecrets}; declare them in services.telemetry.secretFiles and secretKeys or fix the reference.";
       }
     ];

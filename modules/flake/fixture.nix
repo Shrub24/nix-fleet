@@ -3,7 +3,9 @@
 # obviously-fake placeholders. Never activated, never decrypts anything. One
 # fixture per declared system: the wiring module builds each toplevel as a
 # check, so platform-specific packaging (python3, apprise) is exercised for
-# every architecture the fleet actually runs.
+# every architecture the fleet actually runs. The host asserts only what it can
+# read from its own configuration; every throwaway contract evaluation lives in
+# its own leaf check (`contractLeaves` below), so forcing the host stays cheap.
 {
   lib,
   config,
@@ -56,924 +58,28 @@ let
     }
   );
 
-  # A destination/fanout/secret mistake must fail closed by name at the
-  # contract level (it must hold for any implementation), so the reject checks
-  # force the rendered collector settings, the contract's resolved fanout, and
-  # the contract's own assertions.
-  telemetryRejects =
-    module:
-    let
-      evaluated = fixtureNixosSystem {
-        system = "x86_64-linux";
-        modules = [
-          inputs.sops-nix.nixosModules.sops
-          aspects.telemetry
-          module
-        ];
-      };
-    in
-    !(builtins.tryEval (
-      builtins.deepSeq [
-        evaluated.config.services.opentelemetry-collector.settings
-        (lib.asserts.checkAssertWarn evaluated.config.assertions evaluated.config.warnings true)
-        evaluated.config.services.telemetry.resolvedPipelines
-      ] true
-    )).success;
-  telemetryMutationChecks =
-    # a destination header referencing an unknown secret
-    telemetryRejects {
-      services.telemetry.destinations.bad = {
-        protocol = "otlp-http";
-        endpoint = "https://invalid.example";
-        signals = [ "traces" ];
-        headers.Authorization.secret = "absent";
-      };
-    }
-    # secretFiles and secretKeys must pair
-    && telemetryRejects {
-      services.telemetry.secretFiles.token = fixtureSecretFile;
-      services.telemetry.secretKeys.other = "otel/token";
-    }
-    # explicit fanout naming an unknown destination
-    && telemetryRejects { services.telemetry.pipelines.traces = [ "absent" ]; }
-    # a destination accepting a signal its protocol cannot carry
-    && telemetryRejects {
-      services.telemetry.destinations.metricsWire = {
-        protocol = "prometheus-remote-write";
-        endpoint = "http://metrics.invalid/api/v1/write";
-        signals = [
-          "metrics"
-          "logs"
-        ];
-      };
-    }
-    # an explicit pipeline naming a destination for a signal it does not accept
-    && telemetryRejects {
-      services.telemetry.destinations.tracesOnly = {
-        protocol = "otlp-http";
-        endpoint = "https://langfuse.invalid";
-        signals = [ "traces" ];
-      };
-      services.telemetry.pipelines.logs = [ "tracesOnly" ];
-    }
-    # an explicit empty fanout is a silent drop
-    && telemetryRejects { services.telemetry.pipelines.logs = [ ]; }
-    # a scrape source with no metrics destination to carry it
-    && telemetryRejects {
-      services.telemetry.scrape.app = {
-        target = "127.0.0.1";
-        port = 9100;
-      };
-    }
-    # a scrape source whose only destination accepts traces, not metrics: the
-    # traces-only default fanout must not be what carries scraped metrics
-    && telemetryRejects {
-      services.telemetry.scrape.app = {
-        target = "127.0.0.1";
-        port = 9100;
-      };
-      services.telemetry.destinations.tracesOnly = {
-        protocol = "otlp-grpc";
-        endpoint = "http://langfuse.invalid:4317";
-        signals = [ "traces" ];
-      };
-    }
-    # the resource processor is configured through resourceAttributes, not raw
-    # (the collector must be active for the provider's own check to run)
-    && telemetryRejects {
-      services.telemetry.otlp.signals = [ "traces" ];
-      services.telemetry.destinations.local = {
-        protocol = "otlp-grpc";
-        endpoint = "http://gateway.invalid:4317";
-        signals = [ "traces" ];
-      };
-      services.otel-collector.resourceAttributes."host.name" = "fixture-host";
-      services.otel-collector.processors.resource.attributes = [
-        {
-          key = "k";
-          value = "v";
-          action = "upsert";
-        }
-      ];
-    };
-  # Every failure below is a named contract error read from the host's own
-  # assertions, not an incidental evaluation error: the message is asserted, so
-  # renaming or dropping the check fails this fixture.
-  admissionFailuresOf =
-    modules:
-    let
-      evaluated = admissionEval modules;
-    in
-    map (assertion: assertion.message) (
-      builtins.filter (assertion: !assertion.assertion) evaluated.config.assertions
-    );
-  namedContractFailures =
-    let
-      rejects = message: modules: builtins.any (lib.hasPrefix message) (admissionFailuresOf modules);
-      host = extra: [
-        aspects.telemetry
-        {
-          services.telemetry.destinations.traces = {
-            protocol = "otlp-http";
-            endpoint = "https://backend.invalid";
-            signals = [ "traces" ];
-          };
-        }
-        extra
-      ];
-    in
-    # duplicate admission is not a set
-    rejects "telemetry: services.telemetry.otlp.signals names traces more than once" (host {
-      services.telemetry.otlp.signals = [
-        "traces"
-        "traces"
-      ];
-    })
-    # an admitted signal with no destination to carry it
-    && rejects "telemetry: OTLP admits logs with no destination pipeline" (host {
-      services.telemetry.otlp.signals = [
-        "traces"
-        "logs"
-      ];
-    })
-    # the producer listener is loopback-only: network ingress is a separate,
-    # explicitly bound listener
-    &&
-      rejects
-        "telemetry: services.telemetry.otlp.host is '0.0.0.0', but the producer listener is loopback-only"
-        (host {
-          services.telemetry.otlp.signals = [ "traces" ];
-          services.telemetry.otlp.host = "0.0.0.0";
-        })
-    # A DNS name beginning with 127. is not a loopback address, and malformed
-    # octets must fail at evaluation rather than at collector startup.
-    &&
-      builtins.all
-        (
-          badHost:
-          rejects
-            "telemetry: services.telemetry.otlp.host is '${badHost}', but the producer listener is loopback-only"
-            (host {
-              services.telemetry.otlp.signals = [ "traces" ];
-              services.telemetry.otlp.host = badHost;
-            })
-        )
-        [
-          "127.example.invalid"
-          "127.999.0.1"
-        ]
-    # HTTP and gRPC each own a TCP listener, even within one receiver.
-    && rejects "telemetry: services.telemetry.otlp.httpPort and grpcPort must differ" (host {
-      services.telemetry.otlp.signals = [ "traces" ];
-      services.telemetry.otlp.httpPort = 4317;
-    })
-    && rejects "telemetry: services.telemetry.otlp.ingress.httpPort and grpcPort must differ" (host {
-      services.telemetry.otlp.signals = [ "traces" ];
-      services.telemetry.otlp.ingress = {
-        host = "100.64.0.2";
-        httpPort = 4318;
-        grpcPort = 4318;
-      };
-    })
-    # a wildcard ingress would expose the collector on every interface
-    &&
-      rejects "telemetry: services.telemetry.otlp.ingress.host must be an explicit bind address"
-        (host {
-          services.telemetry.otlp.signals = [ "traces" ];
-          services.telemetry.otlp.ingress = {
-            host = "0.0.0.0";
-          };
-        })
-    &&
-      rejects "telemetry: services.telemetry.otlp.ingress.host must be an explicit bind address"
-        (host {
-          services.telemetry.otlp.signals = [ "traces" ];
-          services.telemetry.otlp.ingress = {
-            host = "";
-          };
-        })
-    # an ingress with no transport binds nothing
-    && rejects "telemetry: services.telemetry.otlp.ingress sets no HTTP or gRPC port" (host {
-      services.telemetry.otlp.signals = [ "traces" ];
-      services.telemetry.otlp.ingress = {
-        host = "100.64.0.2";
-        httpPort = null;
-      };
-    })
-    # an ingress with nothing admitted is a dead listener
-    &&
-      rejects
-        "telemetry: services.telemetry.otlp.ingress is configured while services.telemetry.otlp.signals is empty"
-        (host {
-          services.telemetry.otlp.ingress = {
-            host = "100.64.0.2";
-          };
-        })
-    # local and network listeners must not collide
-    &&
-      rejects "telemetry: services.telemetry.otlp.ingress binds 127.0.0.1:4318, the same address"
-        (host {
-          services.telemetry.otlp.signals = [ "traces" ];
-          services.telemetry.otlp.ingress = {
-            host = "127.0.0.1";
-          };
-        })
-    # the same socket spelled differently: `localhost` can resolve to the local
-    # listener's own address (or its IPv6 twin), and a bracketed IPv6 literal is
-    # the same bind address as the unbracketed form
-    &&
-      rejects "telemetry: services.telemetry.otlp.ingress binds localhost:4318, the same address"
-        (host {
-          services.telemetry.otlp.signals = [ "traces" ];
-          services.telemetry.otlp.ingress = {
-            host = "localhost";
-          };
-        })
-    && rejects "telemetry: services.telemetry.otlp.ingress binds ::1:4318, the same address" (host {
-      services.telemetry.otlp.host = "[::1]";
-      services.telemetry.otlp.signals = [ "traces" ];
-      services.telemetry.otlp.ingress = {
-        host = "::1";
-      };
-    })
-    # credential vocabulary is shared, so it is enforced without OTel: a
-    # vmagent host must not silently accept a bad secret id or an unpaired file
-    && rejects "telemetry: secretFiles and secretKeys IDs must match" [
-      aspects.telemetry
-      {
-        services.telemetry.scrape.app = {
-          target = "127.0.0.1";
-          port = 9100;
-        };
-        services.telemetry.destinations.victoria = {
-          protocol = "prometheus-remote-write";
-          endpoint = "https://metrics.invalid/api/v1/write";
-          signals = [ "metrics" ];
-          headers.Authorization.secret = "token";
-        };
-        services.telemetry.secretFiles.token = fixtureSecretFile;
-        services.telemetry.secretKeys.other = "metrics/token";
-      }
-    ]
-    && rejects "telemetry: destination header(s) reference unknown secret(s) absent" [
-      aspects.telemetry
-      {
-        services.telemetry.destinations.bad = {
-          protocol = "otlp-http";
-          endpoint = "https://invalid.example";
-          signals = [ "traces" ];
-          headers.Authorization.secret = "absent";
-        };
-      }
-    ];
-  # A resource processor declared directly (not via resourceAttributes) must
-  # still reach the pipeline order, or the config would define a processor no
-  # pipeline runs.
-  collectorManualResourceOrder =
-    (fixtureNixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        inputs.sops-nix.nixosModules.sops
-        aspects.telemetry
-        {
-          services.telemetry.otlp.signals = [ "traces" ];
-          services.telemetry.destinations.local = {
-            protocol = "otlp-grpc";
-            endpoint = "http://gateway.invalid:4317";
-            signals = [ "traces" ];
-          };
-          services.otel-collector.processors.resource.attributes = [
-            {
-              key = "k";
-              value = "v";
-              action = "upsert";
-            }
-          ];
-        }
-      ];
-    }).config.services.opentelemetry-collector.settings.service.pipelines.traces.processors;
-  # With no bound secret the aspect must register nothing: an unbound (or not
-  # yet bootstrapped) file is the two-step SOPS path, not a broken config.
-  collectorUnboundSecrets =
-    let
-      evaluated = fixtureNixosSystem {
-        system = "x86_64-linux";
-        modules = [
-          inputs.sops-nix.nixosModules.sops
-          aspects.telemetry
-          {
-            services.telemetry.otlp.signals = [ "traces" ];
-            services.telemetry.destinations.plain = {
-              protocol = "otlp-grpc";
-              endpoint = "http://gateway.invalid:4317";
-              signals = [ "traces" ];
-            };
-          }
-        ];
-      };
-      collector = evaluated.config.services.opentelemetry-collector;
-    in
-    !(builtins.any (name: lib.hasPrefix "otel-collector/" name) (
-      builtins.attrNames evaluated.config.sops.secrets
-    ))
-    && !(evaluated.config.sops.templates ? "otel-collector.env")
-    && !(evaluated.config.systemd.services.opentelemetry-collector.serviceConfig ? EnvironmentFile)
-    && collector.settings.exporters ? "otlp/plain";
-  # A provider binds only the credentials its active exporters use: a declared
-  # destination that no admitted signal selects contributes no exporter, no
-  # secret and no validation override, even when its header file is bound.
-  collectorInactiveCredentials =
-    let
-      evaluated = fixtureNixosSystem {
-        system = "x86_64-linux";
-        modules = [
-          inputs.sops-nix.nixosModules.sops
-          aspects.telemetry
-          {
-            services.telemetry.otlp.signals = [ "traces" ];
-            services.telemetry.destinations.traces = {
-              protocol = "otlp-http";
-              endpoint = "https://backend.invalid";
-              signals = [ "traces" ];
-              headers.Authorization.secret = "activeToken";
-            };
-            services.telemetry.destinations.logsOnly = {
-              protocol = "otlp-http";
-              endpoint = "https://logs.invalid";
-              signals = [ "logs" ];
-              headers.Authorization.secret = "idleToken";
-            };
-            services.telemetry.secretFiles = {
-              activeToken = fixtureSecretFile;
-              idleToken = fixtureSecretFile;
-            };
-            services.telemetry.secretKeys = {
-              activeToken = "otel/active";
-              idleToken = "otel/idle";
-            };
-          }
-        ];
-      };
-      collector = evaluated.config.services.opentelemetry-collector;
-    in
-    builtins.attrNames collector.settings.exporters == [ "otlphttp/traces" ]
-    && builtins.attrNames evaluated.config.sops.secrets == [ "otel-collector/activeToken" ]
-    &&
-      evaluated.config.sops.templates."otel-collector.env".content
-      == "OTELCOL_activeToken=${evaluated.config.sops.placeholder."otel-collector/activeToken"}\n"
-    && !(builtins.elem "exporters::otlphttp/logsOnly::headers::Authorization=stub" collector.validateConfigOverrides);
-
-  # Source admission is unconditional: a registration is realized only on a
-  # host that selects the aspect, and an orphan fails closed by name instead of
-  # being silently accepted. A minimal host is evaluated through nixpkgs' own
-  # assertion check so the named `telemetry:` failure is what a deployment
-  # hits.
-  admissionEval =
-    modules:
-    fixtureNixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        inputs.sops-nix.nixosModules.sops
-        {
-          boot.loader.grub.enable = false;
-          fileSystems."/" = {
-            device = "nodev";
-            fsType = "tmpfs";
-          };
-          system.stateVersion = "25.11";
-        }
-      ]
-      ++ modules;
-    };
-  admissionAccepts =
-    modules:
-    let
-      evaluated = admissionEval modules;
-    in
-    (builtins.tryEval (
-      lib.asserts.checkAssertWarn evaluated.config.assertions evaluated.config.warnings true
-    )).success;
-  admissionFailures =
-    modules:
-    map (assertion: assertion.message) (
-      builtins.filter (assertion: !assertion.assertion) (admissionEval modules).config.assertions
-    );
-  # A push-only consumer registers nothing: it imports the fragment and reads
-  # the local OTLP endpoint. The orphan guard sees no registration, so the
-  # derived URL itself must fail closed — and the same read must succeed only
-  # once the host selects the aspect AND admits a signal it can export, or the
-  # check would pass vacuously.
-  pushOnlyEndpoint =
-    {
-      withAspect,
-      withSignals ? false,
-      withDestination ? false,
-    }:
-    (fixtureNixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        inputs.sops-nix.nixosModules.sops
-      ]
-      ++ lib.optionals withAspect [ aspects.telemetry ]
-      ++ lib.optionals (!withAspect) [ ../../lib/telemetry-contract.nix ]
-      ++ lib.optionals withDestination [
-        {
-          services.telemetry.destinations.local = {
-            protocol = "otlp-grpc";
-            endpoint = "http://gateway.invalid:4317";
-            signals = [ "traces" ];
-          };
-        }
-      ]
-      ++ lib.optionals withSignals [ { services.telemetry.otlp.signals = [ "traces" ]; } ]
-      ++ [
-        ({ config, ... }: {
-          environment.variables.OTEL_EXPORTER_OTLP_ENDPOINT = config.services.telemetry.otlp.httpUrl;
-        })
-      ];
-    }).config.environment.variables.OTEL_EXPORTER_OTLP_ENDPOINT;
-  telemetryAdmissionChecks =
-    let
-      traceOnlyEndpoint = builtins.tryEval (pushOnlyEndpoint {
-        withAspect = true;
-        withSignals = true;
-        withDestination = true;
-      });
-      destinationOnlyEndpoint = builtins.tryEval (pushOnlyEndpoint {
-        withAspect = true;
-        withDestination = true;
-      });
-      pushOnlyWithoutAspect = builtins.tryEval (pushOnlyEndpoint {
-        withAspect = false;
-      });
-      pushOnlyWithoutDestination = builtins.tryEval (pushOnlyEndpoint {
-        withAspect = true;
-        withSignals = true;
-      });
-      vectorOnly = admissionEval [
-        aspects.telemetry
-        {
-          services.telemetry.journald = {
-            enable = true;
-            sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
-          };
-        }
-      ];
-      # The delivery-health registration the contract documents, evaluated as a
-      # host: an ordinary scrape source like any other.
-      deliveryHealthModules = [
-        aspects.telemetry
-        {
-          services.telemetry.scrape.otel-collector-health = {
-            target = "127.0.0.1";
-            port = 9464;
-          };
-          services.telemetry.destinations.metrics = {
-            protocol = "prometheus-remote-write";
-            endpoint = "http://metrics.invalid/api/v1/write";
-            signals = [ "metrics" ];
-          };
-        }
-      ];
-      deliveryHealthHost = admissionEval deliveryHealthModules;
-      # A different loopback address is a different socket: the pair the gateway
-      # runtime check binds (127.0.0.1 local, 127.0.0.2 ingress) has to stay
-      # legal, or normalizing loopback aliases would over-reject a real gateway.
-      distinctLoopbackModules = [
-        aspects.telemetry
-        {
-          services.telemetry.otlp.signals = [ "traces" ];
-          services.telemetry.otlp.ingress = {
-            host = "127.0.0.2";
-          };
-          services.telemetry.destinations.traces = {
-            protocol = "otlp-http";
-            endpoint = "https://backend.invalid";
-            signals = [ "traces" ];
-          };
-        }
-      ];
-      distinctLoopbackHost = admissionEval distinctLoopbackModules;
-      # Raw and already-bracketed IPv6 spellings must produce usable URLs and
-      # socket addresses on both receivers, not merely pass admission.
-      ipv6Bindings =
-        lib.all
-          (
-            host:
-            let
-              modules = [
-                aspects.telemetry
-                {
-                  services.telemetry.otlp = {
-                    inherit host;
-                    signals = [ "traces" ];
-                    ingress = {
-                      host = "fd00::2";
-                      httpPort = 4318;
-                      grpcPort = 4317;
-                    };
-                  };
-                  services.telemetry.destinations.traces = {
-                    protocol = "otlp-http";
-                    endpoint = "https://backend.invalid";
-                    signals = [ "traces" ];
-                  };
-                }
-              ];
-              c = (admissionEval modules).config;
-              receivers = c.services.opentelemetry-collector.settings.receivers;
-            in
-            admissionAccepts modules
-            && c.services.telemetry.otlp.httpUrl == "http://[::1]:4318"
-            && c.services.telemetry.otlp.grpcUrl == "http://[::1]:4317"
-            && receivers.otlp.protocols.http.endpoint == "[::1]:4318"
-            && receivers.otlp.protocols.grpc.endpoint == "[::1]:4317"
-            && receivers."otlp/ingress".protocols.http.endpoint == "[fd00::2]:4318"
-            && receivers."otlp/ingress".protocols.grpc.endpoint == "[fd00::2]:4317"
-          )
-          [
-            "::1"
-            "[::1]"
-          ];
-    in
-    # the host aspect realizes a registered source (the destination must accept
-    # metrics AND speak a protocol the selected scrape provider can write, or
-    # the scrape has nowhere to land)
-    admissionAccepts [
-      aspects.telemetry
-      {
-        services.telemetry.scrape.app = {
-          target = "127.0.0.1";
-          port = 9100;
-        };
-        services.telemetry.destinations.local = {
-          protocol = "prometheus-remote-write";
-          endpoint = "http://metrics.invalid/api/v1/write";
-          signals = [ "metrics" ];
-        };
-      }
-    ]
-    # orphan: the fragment alone accepts no registration
-    && !(admissionAccepts [
-      ../../lib/telemetry-contract.nix
-      {
-        services.telemetry.scrape.app = {
-          target = "127.0.0.1";
-          port = 9100;
-        };
-      }
-    ])
-    # orphan: a destination written without the host aspect likewise
-    && !(admissionAccepts [
-      ../../lib/telemetry-contract.nix
-      {
-        services.telemetry.destinations.x = {
-          protocol = "otlp-grpc";
-          endpoint = "http://x.invalid:4317";
-          signals = [ "traces" ];
-        };
-      }
-    ])
-    # the fragment alone with no registration is inert; selecting the host
-    # aspect without any provider work is rejected by name
-    && admissionAccepts [ ../../lib/telemetry-contract.nix ]
-    && !(admissionAccepts [ aspects.telemetry ])
-    && builtins.any (lib.hasPrefix "telemetry: the host selected") (admissionFailures [
-      aspects.telemetry
-    ])
-    # the local endpoint is only readable on a host that realizes an admitted
-    # input with a destination to carry it: the aspect alone, an admission with
-    # nothing to export, and a destination with no admission all fail closed.
-    # The guard is a read-time throw (the message is only observable where the
-    # read happens), so failure of the read is the evidence here; every
-    # config-level failure below is checked by its named message.
-    && !pushOnlyWithoutAspect.success
-    && !pushOnlyWithoutDestination.success
-    && !destinationOnlyEndpoint.success
-    && traceOnlyEndpoint.success
-    && traceOnlyEndpoint.value == "http://127.0.0.1:4318"
-    # selecting only Vector for journald must not start an invalid OTel collector
-    && admissionAccepts [
-      aspects.telemetry
-      {
-        services.telemetry.journald = {
-          enable = true;
-          sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
-        };
-      }
-    ]
-    && vectorOnly.config.services.vector.enable
-    && !vectorOnly.config.services.opentelemetry-collector.enable
-    && !(vectorOnly.config.systemd.services ? opentelemetry-collector)
-    # The documented delivery-health registration validates and starts only the
-    # selected scrape provider: collecting the collector's own metrics does not
-    # start a collector, and no OTel failure registration is created.
-    && admissionAccepts deliveryHealthModules
-    && deliveryHealthHost.config.services.vmagent.enable
-    && !deliveryHealthHost.config.services.opentelemetry-collector.enable
-    && !(deliveryHealthHost.config.systemd.services ? opentelemetry-collector)
-    && !(deliveryHealthHost.config.services.notify.events ? opentelemetry-collector)
-    # a second, distinct loopback address is a distinct socket, not a collision,
-    # and adding the gateway ingress adds neither remote scraping nor journald
-    # shipping to that host
-    && admissionAccepts distinctLoopbackModules
-    && !(distinctLoopbackHost.config.systemd.services ? vmagent)
-    && !distinctLoopbackHost.config.services.vector.enable
-    && !(distinctLoopbackHost.config.services.opentelemetry-collector.settings.receivers ? prometheus)
-    && ipv6Bindings
-    && namedContractFailures;
-
-  # The journald provider's own fail-closed checks: forcing the rendered Vector
-  # settings is what a host build does, so a bad value must fail there by name.
-  vectorRejects =
-    telemetryConfig:
-    let
-      evaluated = fixtureNixosSystem {
-        system = "x86_64-linux";
-        modules = [
-          inputs.sops-nix.nixosModules.sops
-          aspects.telemetry
-          { services.telemetry = telemetryConfig; }
-        ];
-      };
-    in
-    !(builtins.tryEval (builtins.deepSeq evaluated.config.services.vector.settings true)).success;
-  telemetryJournaldChecks =
-    # shipping enabled with no endpoint: a journal with nowhere to go
-    vectorRejects { journald.enable = true; }
-    # a disk buffer under Vector's floor would be rejected at startup
-    && vectorRejects {
-      journald = {
-        enable = true;
-        sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
-        buffer.maxSizeMb = 100;
-      };
-    }
-    # an endpoint with no scheme is not dialable
-    && !(admissionAccepts [
-      aspects.telemetry
-      {
-        services.telemetry.journald = {
-          enable = true;
-          sink.endpoint = "victorialogs.invalid:9428/insert/jsonline";
-        };
-      }
-    ])
-    # an endpoint while shipping is off is a registration nothing realizes
-    && !(admissionAccepts [
-      aspects.telemetry
-      { services.telemetry.journald.sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline"; }
-    ])
-    # the sink written without the host aspect is an orphan
-    && !(admissionAccepts [
-      ../../lib/telemetry-contract.nix
-      {
-        services.telemetry.journald = {
-          enable = true;
-          sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
-        };
-      }
-    ]);
-  # The scrape provider: the default vmagent translating every registered job,
-  # and the two fanout mistakes failing closed by NAME (an unrelated evaluation
-  # error would not count).
-  # One host platform serves the pure-evaluation probes below: they assert on
-  # rendered config, which does not vary by architecture. A check that *runs* an
-  # artifact must evaluate its own system instead — a foreign-platform script is
-  # an Exec format error at run time, not a test failure (see guardScriptFor).
-  vmagentHostFor =
-    system: telemetryConfig:
+  # A throwaway telemetry host for the caller's system. The contract
+  # evaluations below assert on its rendered config, so they are evaluated for
+  # the system of the check that carries them.
+  telemetryHostFor =
+    system: imports: telemetryConfig:
     (fixtureNixosSystem {
       inherit system;
       modules = [
         inputs.sops-nix.nixosModules.sops
-        aspects.telemetry
-        { services.telemetry = telemetryConfig; }
-      ];
+      ]
+      ++ imports
+      ++ [ { services.telemetry = telemetryConfig; } ];
     }).config;
-  vmagentHost = vmagentHostFor "x86_64-linux";
-  vmagentFanoutFailures =
-    telemetryConfig:
-    map (assertion: assertion.message) (
-      builtins.filter (assertion: !assertion.assertion) (vmagentHost telemetryConfig).assertions
-    );
-  vmagentChecks =
-    let
-      remoteWrite = {
-        protocol = "prometheus-remote-write";
-        endpoint = "https://metrics.invalid/api/v1/write";
-        signals = [ "metrics" ];
-      };
-      rendered = vmagentHost {
-        scrape.everything = {
-          target = "10.0.0.5";
-          port = 9090;
-          metricsPath = "/custom-metrics";
-          scheme = "https";
-          interval = "45s";
-          labels = {
-            service = "everything";
-            environment = "fixture";
-          };
-        };
-        destinations.metrics = remoteWrite;
-      };
-      otelScrape = vmagentHost {
-        providers.prometheusScrape = "otel-collector";
-        scrape.app = {
-          target = "127.0.0.1";
-          port = 9187;
-        };
-        destinations.metrics = remoteWrite;
-      };
-      noScrape = vmagentHost { destinations.metrics = remoteWrite; };
-      # A trace-only host: OTLP admission plus a traces destination, no scrape
-      # work. Nothing else may start because a traces gateway exists.
-      traceOnly = vmagentHost {
-        otlp.signals = [ "traces" ];
-        destinations.gateway = {
-          protocol = "otlp-http";
-          endpoint = "https://gateway.invalid";
-          signals = [ "traces" ];
-        };
-      };
-      noOtel = vmagentHost { };
-      vectorOnlyJournald = vmagentHost {
-        journald = {
-          enable = true;
-          sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
-        };
-      };
-      unwritableFanout = {
-        scrape.app = {
-          target = "127.0.0.1";
-          port = 9187;
-        };
-        destinations.plain = {
-          protocol = "otlp-grpc";
-          endpoint = "http://gateway.invalid:4317";
-          signals = [ "metrics" ];
-        };
-      };
-      emptyFanout = {
-        scrape.app = {
-          target = "127.0.0.1";
-          port = 9187;
-        };
-      };
-      # A literal the adapter would render into its own comma-separated argument
-      # array, so it has to be refused while it is still visible at build time.
-      hostileEndpoint = {
-        scrape.app = {
-          target = "127.0.0.1";
-          port = 9187;
-        };
-        destinations.metrics = remoteWrite // {
-          endpoint = "https://metrics.invalid/api/v1/write?tenant=a,b";
-        };
-      };
-      hostileHeader = {
-        scrape.app = {
-          target = "127.0.0.1";
-          port = 9187;
-        };
-        destinations.metrics = remoteWrite // {
-          headers.Authorization = {
-            secret = "token";
-            prefix = "Bearer,x ";
-          };
-        };
-        secretFiles.token = fixtureSecretFile;
-        secretKeys.token = "fixture/token";
-      };
-      # A secret id with a structural character is refused as well, but by the
-      # contract's own id charset (letters, digits, underscores) rather than by
-      # this adapter — which is what lets the adapter interpolate
-      # `%{VMAGENT_<id>}` into its argument without a check of its own.
-    in
-    # the default provider renders every scrape field into vmagent's own config
-    rendered.services.telemetry.providers.prometheusScrape == "vmagent"
-    && rendered.services.vmagent.enable
-    &&
-      rendered.services.vmagent.prometheusConfig.scrape_configs == [
-        {
-          job_name = "everything";
-          scrape_interval = "45s";
-          metrics_path = "/custom-metrics";
-          scheme = "https";
-          static_configs = [
-            {
-              targets = [ "10.0.0.5:9090" ];
-              labels = {
-                service = "everything";
-                environment = "fixture";
-              };
-            }
-          ];
-        }
-      ]
-    # a metrics-only host runs the selected scrape provider and nothing else:
-    # no OTel instance, no OTLP listener, no second scraper, no OTel failure
-    # registration. A metrics destination alone is not OTLP admission.
-    && !rendered.services.opentelemetry-collector.enable
-    && !(rendered.systemd.services ? opentelemetry-collector)
-    && rendered.services.opentelemetry-collector.settings == { }
-    && !(rendered.services.notify.events ? opentelemetry-collector)
-    # persistent StateDirectory queue, 1 GiB bound per destination, loopback
-    # management endpoint, no firewall rule
-    &&
-      rendered.services.vmagent.extraArgs == [
-        "-remoteWrite.url=https://metrics.invalid/api/v1/write"
-        "-remoteWrite.tmpDataPath=%S/vmagent/remote_write_tmp"
-        "-httpListenAddr=127.0.0.1:8429"
-        "-remoteWrite.maxDiskUsagePerURL=1073741824"
-      ]
-    && rendered.systemd.services.vmagent.serviceConfig.StateDirectory == "vmagent"
-    && rendered.services.vmagent.checkConfig
-    && !rendered.services.vmagent.openFirewall
-    && !(builtins.elem 8429 rendered.networking.firewall.allowedTCPPorts)
-    && rendered.services.notify.events.vmagent.failure != null
-    # the explicit override still scrapes through the collector — its Prometheus
-    # receiver and nothing else, with no OTLP receiver because nothing admitted
-    # an OTLP signal — and then no vmagent unit exists at all
-    && otelScrape.services.telemetry.providers.prometheusScrape == "otel-collector"
-    && !(otelScrape.systemd.services ? vmagent)
-    && !(otelScrape.services.opentelemetry-collector.settings.receivers ? otlp)
-    &&
-      builtins.attrNames otelScrape.services.opentelemetry-collector.settings.receivers
-      == [ "prometheus" ]
-    &&
-      otelScrape.services.opentelemetry-collector.settings.service.pipelines.metrics.receivers
-      == [ "prometheus" ]
-    && !(otelScrape.services.opentelemetry-collector.settings.service.pipelines ? traces)
-    && !(otelScrape.services.opentelemetry-collector.settings.service.pipelines ? logs)
-    &&
-      otelScrape.services.opentelemetry-collector.settings.receivers.prometheus.config.scrape_configs == [
-        {
-          job_name = "app";
-          scrape_interval = "30s";
-          metrics_path = "/metrics";
-          scheme = "http";
-          static_configs = [
-            {
-              targets = [ "127.0.0.1:9187" ];
-              labels = { };
-            }
-          ];
-        }
-      ]
-    # a host with no scrape work installs no agent
-    && !noScrape.services.vmagent.enable
-    && !(noScrape.systemd.services ? vmagent)
-    # a trace-only host starts OTel and neither of the other providers
-    && traceOnly.services.opentelemetry-collector.enable
-    &&
-      traceOnly.services.opentelemetry-collector.settings.receivers.otlp.protocols.http.endpoint
-      == "127.0.0.1:4318"
-    && !(traceOnly.services.opentelemetry-collector.settings.receivers ? prometheus)
-    # an absent ingress adds no network listener and opens no firewall port
-    && !(traceOnly.services.opentelemetry-collector.settings.receivers ? "otlp/ingress")
-    && !(builtins.elem 4318 traceOnly.networking.firewall.allowedTCPPorts)
-    && !(builtins.elem 4317 traceOnly.networking.firewall.allowedTCPPorts)
-    &&
-      traceOnly.services.opentelemetry-collector.settings.service.pipelines.traces.receivers == [ "otlp" ]
-    && !traceOnly.services.vmagent.enable
-    && !(traceOnly.systemd.services ? vmagent)
-    && !traceOnly.services.vector.enable
-    # a host that selects the aspect for nothing starts nothing
-    && !noOtel.services.opentelemetry-collector.enable
-    && !noOtel.services.vmagent.enable
-    && !noOtel.services.vector.enable
-    # and a journal-only host starts only the log shipper
-    && vectorOnlyJournald.services.vector.enable
-    && !vectorOnlyJournald.services.opentelemetry-collector.enable
-    && !vectorOnlyJournald.services.vmagent.enable
-    # a selected metrics destination vmagent cannot write to fails by name,
-    # and leaves no unit behind that would push there anyway
-    && builtins.any (lib.hasPrefix "telemetry: the metrics pipeline selects") (
-      vmagentFanoutFailures unwritableFanout
-    )
-    && !((vmagentHost unwritableFanout).systemd.services ? vmagent)
-    # so does a scrape source with no metrics destination to land in
-    && builtins.any (lib.hasPrefix "telemetry: 1 scrape source(s) are registered") (
-      vmagentFanoutFailures emptyFanout
-    )
-    && !((vmagentHost emptyFanout).systemd.services ? vmagent)
-    # and so does a LITERAL value the remote-write argument parser would treat as
-    # structure: a comma in an endpoint or header prefix would otherwise shift
-    # arguments onto the next destination, so it fails while it is visible
-    && builtins.any (lib.hasPrefix "telemetry: the metrics pipeline selects") (
-      vmagentFanoutFailures hostileEndpoint
-    )
-    && !((vmagentHost hostileEndpoint).systemd.services ? vmagent)
-    && builtins.any (lib.hasPrefix "telemetry: the metrics pipeline selects") (
-      vmagentFanoutFailures hostileHeader
-    )
-    && !((vmagentHost hostileHeader).systemd.services ? vmagent);
+  vmagentHostFor =
+    system: telemetryConfig: telemetryHostFor system [ aspects.telemetry-vmagent ] telemetryConfig;
+  contractHostFor =
+    system: telemetryConfig: telemetryHostFor system [ aspects.telemetry ] telemetryConfig;
+
   # The credential guard the vmagent unit runs, taken from the unit's own
-  # rendered ExecStartPre rather than re-derived here, so the check below tests
-  # the artifact that ships. Evaluated for the checking system because the script
-  # embeds the coreutils path it calls.
+  # rendered ExecStartPre rather than re-derived here, so the check that builds
+  # it runs the artifact that ships. Evaluated for the checking system because
+  # the script embeds the coreutils path it calls.
   guardScriptFor =
     system:
     let
@@ -998,292 +104,1588 @@ let
     in
     lib.head (lib.splitString " " (lib.head pre));
 
-  # Selecting telemetry for metrics or traces must not start a log shipper.
-  vectorDisabledWithoutJournald =
-    (fixtureNixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        inputs.sops-nix.nixosModules.sops
-        aspects.telemetry
-        {
+  # The contract evaluations behind the fixture's leaf checks: throwaway
+  # evaluations, independent of the fixture host, parameterized by the system of
+  # the check that carries them. Splitting them out of the host's assertions is
+  # what keeps the host's own evaluation cheap.
+  contractLeaves =
+    system:
+    let
+      # A destination/fanout/secret mistake must fail closed by name at the
+      # contract level (it must hold for any implementation), so the reject
+      # checks force the rendered collector settings, the contract's resolved
+      # fanout, and the contract's own assertions.
+      telemetryRejects =
+        imports: module:
+        let
+          evaluated = fixtureNixosSystem {
+            inherit system;
+            modules = [ inputs.sops-nix.nixosModules.sops ] ++ imports ++ [ module ];
+          };
+        in
+        !(builtins.tryEval (
+          builtins.deepSeq [
+            evaluated.config.services.telemetry.resolvedPipelines
+            (lib.asserts.checkAssertWarn evaluated.config.assertions evaluated.config.warnings true)
+          ] true
+        )).success;
+      providerRejects =
+        imports: module:
+        let
+          evaluated = fixtureNixosSystem {
+            inherit system;
+            modules = [ inputs.sops-nix.nixosModules.sops ] ++ imports ++ [ module ];
+          };
+        in
+        !(builtins.tryEval (
+          builtins.deepSeq [
+            evaluated.config.services.vmagent.prometheusConfig
+            evaluated.config.services.opentelemetry-collector.settings
+            (lib.asserts.checkAssertWarn evaluated.config.assertions evaluated.config.warnings true)
+          ] true
+        )).success;
+      telemetryMutationChecks =
+        # Contract mutations force resolved pipelines and contract assertions;
+        # provider-specific failures use their explicitly composed realization.
+        # a destination header referencing an unknown secret
+        telemetryRejects [ aspects.telemetry ] {
+          services.telemetry.destinations.bad = {
+            protocol = "otlp-http";
+            endpoint = "https://invalid.example";
+            signals = [ "traces" ];
+            headers.Authorization.secret = "absent";
+          };
+        }
+        # secretFiles and secretKeys must pair
+        && telemetryRejects [ aspects.telemetry ] {
+          services.telemetry.secretFiles.token = fixtureSecretFile;
+          services.telemetry.secretKeys.other = "otel/token";
+        }
+        # explicit fanout naming an unknown destination
+        && telemetryRejects [ aspects.telemetry ] { services.telemetry.pipelines.traces = [ "absent" ]; }
+        # a destination accepting a signal its protocol cannot carry
+        && telemetryRejects [ aspects.telemetry ] {
+          services.telemetry.destinations.metricsWire = {
+            protocol = "prometheus-remote-write";
+            endpoint = "http://metrics.invalid/api/v1/write";
+            signals = [
+              "metrics"
+              "logs"
+            ];
+          };
+        }
+        # an explicit pipeline naming a destination for a signal it does not accept
+        && telemetryRejects [ aspects.telemetry ] {
+          services.telemetry.destinations.tracesOnly = {
+            protocol = "otlp-http";
+            endpoint = "https://langfuse.invalid";
+            signals = [ "traces" ];
+          };
+          services.telemetry.pipelines.logs = [ "tracesOnly" ];
+        }
+        # an explicit empty fanout is a silent drop
+        && telemetryRejects [ aspects.telemetry ] { services.telemetry.pipelines.logs = [ ]; }
+        # a scrape source with no metrics destination to carry it
+        && providerRejects [ aspects.telemetry-vmagent ] {
+          services.telemetry.scrape.app = {
+            target = "127.0.0.1";
+            port = 9100;
+          };
+        }
+        # a scrape source whose only destination accepts traces, not metrics: the
+        # traces-only default fanout must not be what carries scraped metrics
+        && providerRejects [ aspects.telemetry-vmagent ] {
+          services.telemetry.scrape.app = {
+            target = "127.0.0.1";
+            port = 9100;
+          };
+          services.telemetry.destinations.tracesOnly = {
+            protocol = "otlp-grpc";
+            endpoint = "http://langfuse.invalid:4317";
+            signals = [ "traces" ];
+          };
+        }
+        # the resource processor is configured through resourceAttributes, not raw
+        # (the collector must be active for the provider's own check to run)
+        && telemetryRejects [ aspects.telemetry-otel-collector-otlp ] {
           services.telemetry.otlp.signals = [ "traces" ];
-          services.telemetry.destinations.plain = {
+          services.telemetry.destinations.local = {
             protocol = "otlp-grpc";
             endpoint = "http://gateway.invalid:4317";
             signals = [ "traces" ];
           };
-        }
-      ];
-    }).config;
-  # The node-exporter aspect owns both ends of its scrape: it composes with the
-  # host aspect, and alone it is an orphan registration that fails by name.
-  nodeExporterAdmissionChecks =
-    admissionAccepts [
-      aspects.telemetry
-      aspects.node-exporter
-      {
-        services.telemetry.destinations.victoria = {
-          protocol = "prometheus-remote-write";
-          endpoint = "http://metrics.invalid/api/v1/write";
-          signals = [ "metrics" ];
+          services.otel-collector.resourceAttributes."host.name" = "fixture-host";
+          services.otel-collector.processors.resource.attributes = [
+            {
+              key = "k";
+              value = "v";
+              action = "upsert";
+            }
+          ];
         };
-      }
-    ]
-    && !(admissionAccepts [ aspects.node-exporter ])
-    &&
-      builtins.any (lib.hasPrefix "telemetry: scrape source(s) node configured without")
-        (admissionFailures [ aspects.node-exporter ]);
-
-  nixBaselineChecks =
-    let
-      evaluated =
-        extra:
-        (fixtureNixosSystem {
-          system = "x86_64-linux";
-          modules = [
-            aspects.nix-baseline
+      # Every failure below is a named contract error read from the host's own
+      # assertions, not an incidental evaluation error: the message is asserted, so
+      # renaming or dropping the check fails this fixture.
+      admissionFailuresOf =
+        modules:
+        let
+          evaluated = admissionEval modules;
+        in
+        map (assertion: assertion.message) (
+          builtins.filter (assertion: !assertion.assertion) evaluated.config.assertions
+        );
+      namedContractFailures =
+        let
+          rejects = message: modules: builtins.any (lib.hasPrefix message) (admissionFailuresOf modules);
+          host = extra: [
+            aspects.telemetry
+            aspects.telemetry-otlp
+            {
+              services.telemetry.destinations.traces = {
+                protocol = "otlp-http";
+                endpoint = "https://backend.invalid";
+                signals = [ "traces" ];
+              };
+            }
             extra
           ];
-        }).config;
-      defaults = evaluated { };
-      overridden = evaluated {
-        nix.daemonCPUSchedPolicy = "idle";
-        nix.daemonIOSchedClass = "idle";
-        systemd.services.nix-daemon.serviceConfig.MemoryHigh = "8G";
-      };
-    in
-    defaults.nix.package.version
-    == inputs.nixpkgs.legacyPackages.x86_64-linux.nixVersions.latest.version
-    && defaults.nix.daemonCPUSchedPolicy == "batch"
-    && defaults.nix.daemonIOSchedClass == "best-effort"
-    && defaults.nix.daemonIOSchedPriority == 7
-    && defaults.systemd.services.nix-daemon.serviceConfig.CPUWeight == 50
-    && defaults.systemd.services.nix-daemon.serviceConfig.IOWeight == 50
-    && !(defaults.systemd.services.nix-daemon.serviceConfig ? MemoryHigh)
-    && overridden.nix.daemonCPUSchedPolicy == "idle"
-    && overridden.nix.daemonIOSchedClass == "idle"
-    && overridden.systemd.services.nix-daemon.serviceConfig.MemoryHigh == "8G";
-
-  buildAccountTrustChecks =
-    let
-      evaluated =
-        modules:
+        in
+        # duplicate admission is not a set
+        rejects "telemetry: services.telemetry.otlp.signals names traces more than once" (host {
+          services.telemetry.otlp.signals = [
+            "traces"
+            "traces"
+          ];
+        })
+        # an admitted signal with no destination to carry it
+        && rejects "telemetry: OTLP admits logs with no destination pipeline" (host {
+          services.telemetry.otlp.signals = [
+            "traces"
+            "logs"
+          ];
+        })
+        # the producer listener is loopback-only: network ingress is a separate,
+        # explicitly bound listener
+        &&
+          rejects
+            "telemetry: services.telemetry.otlp.host is '0.0.0.0', but the producer listener is loopback-only"
+            (host {
+              services.telemetry.otlp.signals = [ "traces" ];
+              services.telemetry.otlp.host = "0.0.0.0";
+            })
+        # A DNS name beginning with 127. is not a loopback address, and malformed
+        # octets must fail at evaluation rather than at collector startup.
+        &&
+          builtins.all
+            (
+              badHost:
+              rejects
+                "telemetry: services.telemetry.otlp.host is '${badHost}', but the producer listener is loopback-only"
+                (host {
+                  services.telemetry.otlp.signals = [ "traces" ];
+                  services.telemetry.otlp.host = badHost;
+                })
+            )
+            [
+              "127.example.invalid"
+              "127.999.0.1"
+            ]
+        # HTTP and gRPC each own a TCP listener, even within one receiver.
+        && rejects "telemetry: services.telemetry.otlp.httpPort and grpcPort must differ" (host {
+          services.telemetry.otlp.signals = [ "traces" ];
+          services.telemetry.otlp.httpPort = 4317;
+        })
+        && rejects "telemetry: services.telemetry.otlp.ingress.httpPort and grpcPort must differ" (host {
+          services.telemetry.otlp.signals = [ "traces" ];
+          services.telemetry.otlp.ingress = {
+            host = "100.64.0.2";
+            httpPort = 4318;
+            grpcPort = 4318;
+          };
+        })
+        # a wildcard ingress would expose the collector on every interface
+        &&
+          rejects "telemetry: services.telemetry.otlp.ingress.host must be an explicit bind address"
+            (host {
+              services.telemetry.otlp.signals = [ "traces" ];
+              services.telemetry.otlp.ingress = {
+                host = "0.0.0.0";
+              };
+            })
+        &&
+          rejects "telemetry: services.telemetry.otlp.ingress.host must be an explicit bind address"
+            (host {
+              services.telemetry.otlp.signals = [ "traces" ];
+              services.telemetry.otlp.ingress = {
+                host = "";
+              };
+            })
+        # an ingress with no transport binds nothing
+        && rejects "telemetry: services.telemetry.otlp.ingress sets no HTTP or gRPC port" (host {
+          services.telemetry.otlp.signals = [ "traces" ];
+          services.telemetry.otlp.ingress = {
+            host = "100.64.0.2";
+            httpPort = null;
+          };
+        })
+        # an ingress with nothing admitted is a dead listener
+        &&
+          rejects
+            "telemetry: services.telemetry.otlp.ingress is configured while services.telemetry.otlp.signals is empty"
+            (host {
+              services.telemetry.otlp.ingress = {
+                host = "100.64.0.2";
+              };
+            })
+        # local and network listeners must not collide
+        &&
+          rejects "telemetry: services.telemetry.otlp.ingress binds 127.0.0.1:4318, the same address"
+            (host {
+              services.telemetry.otlp.signals = [ "traces" ];
+              services.telemetry.otlp.ingress = {
+                host = "127.0.0.1";
+              };
+            })
+        # the same socket spelled differently: `localhost` can resolve to the local
+        # listener's own address (or its IPv6 twin), and a bracketed IPv6 literal is
+        # the same bind address as the unbracketed form
+        &&
+          rejects "telemetry: services.telemetry.otlp.ingress binds localhost:4318, the same address"
+            (host {
+              services.telemetry.otlp.signals = [ "traces" ];
+              services.telemetry.otlp.ingress = {
+                host = "localhost";
+              };
+            })
+        && rejects "telemetry: services.telemetry.otlp.ingress binds ::1:4318, the same address" (host {
+          services.telemetry.otlp.host = "[::1]";
+          services.telemetry.otlp.signals = [ "traces" ];
+          services.telemetry.otlp.ingress = {
+            host = "::1";
+          };
+        })
+        # credential vocabulary is shared, so it is enforced without OTel: a
+        # vmagent host must not silently accept a bad secret id or an unpaired file
+        && rejects "telemetry: secretFiles and secretKeys IDs must match" [
+          aspects.telemetry
+          aspects.telemetry-vmagent
+          {
+            services.telemetry.scrape.app = {
+              target = "127.0.0.1";
+              port = 9100;
+            };
+            services.telemetry.destinations.victoria = {
+              protocol = "prometheus-remote-write";
+              endpoint = "https://metrics.invalid/api/v1/write";
+              signals = [ "metrics" ];
+              headers.Authorization.secret = "token";
+            };
+            services.telemetry.secretFiles.token = fixtureSecretFile;
+            services.telemetry.secretKeys.other = "metrics/token";
+          }
+        ]
+        && rejects "telemetry: destination header(s) reference unknown secret(s) absent" [
+          aspects.telemetry
+          {
+            services.telemetry.destinations.bad = {
+              protocol = "otlp-http";
+              endpoint = "https://invalid.example";
+              signals = [ "traces" ];
+              headers.Authorization.secret = "absent";
+            };
+          }
+        ]
+        && rejects "telemetry: bound credentials have no declared destination header reference: unused" [
+          aspects.telemetry
+          {
+            services.telemetry.secretFiles.unused = fixtureSecretFile;
+            services.telemetry.secretKeys.unused = "unused/key";
+          }
+        ]
+        && admissionAccepts [
+          aspects.telemetry
+          {
+            services.telemetry.destinations.dormant = {
+              protocol = "otlp-http";
+              endpoint = "https://dormant.invalid";
+              signals = [ "logs" ];
+              headers.Authorization.secret = "unused";
+            };
+            services.telemetry.secretFiles.unused = fixtureSecretFile;
+            services.telemetry.secretKeys.unused = "unused/key";
+          }
+        ];
+      # A resource processor declared directly (not via resourceAttributes) must
+      # still reach the pipeline order, or the config would define a processor no
+      # pipeline runs.
+      collectorManualResourceOrder =
         (fixtureNixosSystem {
-          system = "x86_64-linux";
-          inherit modules;
-        }).config;
-      defaults = evaluated [ aspects.build-account ];
-      renamed = evaluated [
-        aspects.build-account
-        {
-          services.build-account.name = "dispatcher";
-          nix.settings.trusted-users = [ "existing-coordinator" ];
-        }
-      ];
-      unselected = evaluated [ ];
-    in
-    lib.elem "nixbuild" defaults.nix.settings.trusted-users
-    && lib.elem "dispatcher" renamed.nix.settings.trusted-users
-    && lib.elem "existing-coordinator" renamed.nix.settings.trusted-users
-    && lib.elem "root" renamed.nix.settings.trusted-users
-    && !(lib.elem "nixbuild" renamed.nix.settings.trusted-users)
-    && !(lib.elem "nixbuild" unselected.nix.settings.trusted-users);
-
-  tailscaleAutoconnectChecks =
-    let
-      units =
-        extra:
-        (fixtureNixosSystem {
-          system = "x86_64-linux";
+          inherit system;
           modules = [
             inputs.sops-nix.nixosModules.sops
-            aspects.tailscale
-            extra
+            aspects.telemetry-otel-collector-otlp
+            {
+              services.telemetry.otlp.signals = [ "traces" ];
+              services.telemetry.destinations.local = {
+                protocol = "otlp-grpc";
+                endpoint = "http://gateway.invalid:4317";
+                signals = [ "traces" ];
+              };
+              services.otel-collector.processors.resource.attributes = [
+                {
+                  key = "k";
+                  value = "v";
+                  action = "upsert";
+                }
+              ];
+            }
           ];
-        }).config.systemd.units;
-      unbound = units { };
-      bound = units { services.tailscale.secretFiles.auth = ./fixture.nix; };
-    in
-    # Unbound, no autoconnect unit exists at all; a unit holding only the
-    # ordering drop-in has no ExecStart and warns on every boot. Bound, the
-    # unit carries nixpkgs' script and the sops ordering together.
-    !(unbound ? "tailscaled-autoconnect.service")
-    && lib.hasInfix "ExecStart=" bound."tailscaled-autoconnect.service".text
-    && lib.hasInfix "sops-install-secrets.service" bound."tailscaled-autoconnect.service".text;
+        }).config.services.opentelemetry-collector.settings.service.pipelines.traces.processors;
+      # With no bound secret the aspect must register nothing: an unbound (or not
+      # yet bootstrapped) file is the two-step SOPS path, not a broken config.
+      collectorUnboundSecrets =
+        let
+          evaluated = fixtureNixosSystem {
+            inherit system;
+            modules = [
+              inputs.sops-nix.nixosModules.sops
+              aspects.telemetry-otel-collector-otlp
+              {
+                services.telemetry.otlp.signals = [ "traces" ];
+                services.telemetry.destinations.plain = {
+                  protocol = "otlp-grpc";
+                  endpoint = "http://gateway.invalid:4317";
+                  signals = [ "traces" ];
+                };
+              }
+            ];
+          };
+          collector = evaluated.config.services.opentelemetry-collector;
+        in
+        !(builtins.any (name: lib.hasPrefix "otel-collector/" name) (
+          builtins.attrNames evaluated.config.sops.secrets
+        ))
+        && !(evaluated.config.sops.templates ? "otel-collector.env")
+        && !(evaluated.config.systemd.services.opentelemetry-collector.serviceConfig ? EnvironmentFile)
+        && collector.settings.exporters ? "otlp/plain";
+      # Bound credentials remain valid when their declared destination header is
+      # dormant; the realization registers only secrets for active exporters.
+      collectorInactiveCredentials =
+        let
+          evaluated = fixtureNixosSystem {
+            inherit system;
+            modules = [
+              inputs.sops-nix.nixosModules.sops
+              aspects.telemetry-otel-collector-otlp
+              {
+                services.telemetry.otlp.signals = [ "traces" ];
+                services.telemetry.destinations.traces = {
+                  protocol = "otlp-http";
+                  endpoint = "https://backend.invalid";
+                  signals = [ "traces" ];
+                  headers.Authorization.secret = "activeToken";
+                };
+                services.telemetry.destinations.logsOnly = {
+                  protocol = "otlp-http";
+                  endpoint = "https://logs.invalid";
+                  signals = [ "logs" ];
+                  headers.Authorization.secret = "idleToken";
+                };
+                services.telemetry.secretFiles = {
+                  activeToken = fixtureSecretFile;
+                  idleToken = fixtureSecretFile;
+                };
+                services.telemetry.secretKeys = {
+                  activeToken = "otel/active";
+                  idleToken = "otel/idle";
+                };
+              }
+            ];
+          };
+          collector = evaluated.config.services.opentelemetry-collector;
+        in
+        builtins.attrNames collector.settings.exporters == [ "otlphttp/traces" ]
+        && builtins.attrNames evaluated.config.sops.secrets == [ "otel-collector/activeToken" ]
+        &&
+          evaluated.config.sops.templates."otel-collector.env".content
+          == "OTELCOL_activeToken=${evaluated.config.sops.placeholder."otel-collector/activeToken"}\n"
+        &&
+          collector.validateConfigOverrides == [
+            "exporters::otlphttp/traces::headers::Authorization=stub"
+          ];
 
-  nixGcChecks =
-    let
-      evaluated =
-        extra:
-        (fixtureNixosSystem {
-          system = "x86_64-linux";
+      # These minimal hosts exercise dormant contract data and explicit capability
+      # selection. A minimal host is evaluated through nixpkgs' own assertion check.
+      admissionEval =
+        modules:
+        fixtureNixosSystem {
+          inherit system;
           modules = [
-            aspects.nix-gc
-            { services.nix-gc.implementation = "fast-nix-gc"; }
-            extra
-          ];
-        }).config;
-      fast = evaluated { };
-      tuned = evaluated {
-        services.nix-gc = {
-          ensureFree = null;
-          roots.prune = false;
-          optimise.enable = false;
+            inputs.sops-nix.nixosModules.sops
+            {
+              boot.loader.grub.enable = false;
+              fileSystems."/" = {
+                device = "nodev";
+                fsType = "tmpfs";
+              };
+              system.stateVersion = "25.11";
+            }
+          ]
+          ++ modules;
         };
-      };
-      nh =
+      admissionAccepts =
+        modules:
+        let
+          evaluated = admissionEval modules;
+        in
+        (builtins.tryEval (
+          lib.asserts.checkAssertWarn evaluated.config.assertions evaluated.config.warnings true
+        )).success;
+      admissionFailures =
+        modules:
+        map (assertion: assertion.message) (
+          builtins.filter (assertion: !assertion.assertion) (admissionEval modules).config.assertions
+        );
+      # A push-only consumer imports the contract fragment and reads its local
+      # endpoint. Reading that endpoint is valid only with a composed OTLP input
+      # and a destination that carries the admitted signal.
+      pushOnlyEndpoint =
+        {
+          withAspect,
+          withSignals ? false,
+          withDestination ? false,
+        }:
         (fixtureNixosSystem {
-          system = "x86_64-linux";
-          modules = [ aspects.nix-gc ];
-        }).config;
-      argv = fast.systemd.services.nix-gc-roots.serviceConfig.ExecStart;
-    in
-    # Threshold-driven collection: hourly, frees only the shortfall, spares
-    # fresh builds, and leaves generation retention to nh so two rules cannot
-    # disagree.
-    fast.services.fast-nix-gc.dates == [ "hourly" ]
-    && fast.services.fast-nix-gc.ensureFree == "15%"
-    && fast.services.fast-nix-gc.keepRecent == "1d"
-    && fast.services.fast-nix-gc.deleteOlderThan == null
-    # Root pruning never collects (--no-gc) and keeps live result links.
-    && lib.hasInfix " --no-gc " argv
-    && lib.hasInfix " --keep-since 7d " argv
-    && fast.systemd.services.nix-gc-roots.before == [ "fast-nix-gc.service" ]
-    && fast.services.fast-nix-optimise.enable
-    && fast.services.notify.events ? "nix-gc-roots"
-    && fast.services.notify.events ? "fast-nix-optimise"
-    && fast.services.fast-nix-optimise.dates == [ "weekly" ]
-    # Each default is switchable, and the nh path is untouched.
-    && tuned.services.fast-nix-gc.ensureFree == null
-    && tuned.services.fast-nix-gc.deleteOlderThan == "30d"
-    && !(tuned.systemd.services ? nix-gc-roots)
-    && !tuned.services.fast-nix-optimise.enable
-    && nh.programs.nh.clean.enable
-    && !nh.services.fast-nix-gc.enable
-    && !nh.services.fast-nix-optimise.enable;
-
-  nodeExporterIdentityChecks =
-    let
-      identity =
-        extra:
-        (fixtureNixosSystem {
-          system = "x86_64-linux";
+          inherit system;
           modules = [
+            inputs.sops-nix.nixosModules.sops
+          ]
+          ++ lib.optionals withAspect [ aspects.telemetry-otlp ]
+          ++ lib.optionals (!withAspect) [ ../../lib/telemetry-contract.nix ]
+          ++ lib.optionals withDestination [
+            {
+              services.telemetry.destinations.local = {
+                protocol = "otlp-grpc";
+                endpoint = "http://gateway.invalid:4317";
+                signals = [ "traces" ];
+              };
+            }
+          ]
+          ++ lib.optionals withSignals [ { services.telemetry.otlp.signals = [ "traces" ]; } ]
+          ++ [
+            ({ config, ... }: {
+              environment.variables.OTEL_EXPORTER_OTLP_ENDPOINT = config.services.telemetry.otlp.httpUrl;
+            })
+          ];
+        }).config.environment.variables.OTEL_EXPORTER_OTLP_ENDPOINT;
+      telemetryCapabilityMatrixChecks =
+        let
+          contractOnly = contractHostFor system {
+            destinations.metrics = {
+              protocol = "prometheus-remote-write";
+              endpoint = "http://metrics.invalid/api/v1/write";
+              signals = [ "metrics" ];
+            };
+          };
+          producerOnly = telemetryHostFor system [
+            ../../lib/telemetry-contract.nix
             aspects.node-exporter
-            extra
+          ] { };
+          logsOnly = admissionEval [
+            aspects.telemetry-logs
+            {
+              services.telemetry.journald = {
+                includeUnits = [ "fixture-monitored" ];
+                sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+              };
+            }
           ];
-        }).config.services.telemetry.scrape.node.labels.instance;
-    in
-    identity {
-      networking.hostName = "node-probe";
-      services.node-exporter.port = 9200;
-    } == "node-probe:9200"
-    &&
-      identity {
-        networking.hostName = "other-probe";
-        services.telemetry.scrape.node.labels.instance = "consumer-owned";
-      } == "consumer-owned";
+          otelBoth =
+            telemetryHostFor system
+              [
+                aspects.telemetry-otel-collector-scrape
+                aspects.telemetry-otel-collector-otlp
+              ]
+              {
+                scrape.app = {
+                  target = "127.0.0.1";
+                  port = 9187;
+                };
+                otlp.signals = [ "traces" ];
+                destinations.metrics = {
+                  protocol = "prometheus-remote-write";
+                  endpoint = "http://metrics.invalid/api/v1/write";
+                  signals = [ "metrics" ];
+                };
+                destinations.traces = {
+                  protocol = "otlp-http";
+                  endpoint = "https://traces.invalid";
+                  signals = [ "traces" ];
+                };
+              };
+        in
+        !(contractOnly ? systemd.services.vmagent)
+        && !(contractOnly ? systemd.services.vector)
+        && !(contractOnly ? systemd.services.opentelemetry-collector)
+        && admissionAccepts [
+          ../../lib/telemetry-contract.nix
+          aspects.node-exporter
+        ]
+        && !(producerOnly.systemd.services ? vmagent)
+        && !(producerOnly.systemd.services ? opentelemetry-collector)
+        && logsOnly.config.services.vector.enable
+        && !(logsOnly.config.systemd.services ? vmagent)
+        && !(logsOnly.config.systemd.services ? opentelemetry-collector)
+        && builtins.hasAttr "vector-health" logsOnly.config.services.telemetry.scrape
+        &&
+          (builtins.attrNames otelBoth.services.opentelemetry-collector.settings.service.pipelines) == [
+            "metrics/scrape"
+            "traces"
+          ]
+        && otelBoth.services.opentelemetry-collector.enable
+        && !(otelBoth.systemd.services ? vmagent)
+        && telemetryRejects [ aspects.telemetry-vmagent aspects.telemetry-otel-collector-scrape ] {
+          services.telemetry.destinations.metrics = {
+            protocol = "prometheus-remote-write";
+            endpoint = "http://metrics.invalid/api/v1/write";
+            signals = [ "metrics" ];
+          };
+          services.telemetry.scrape.app = {
+            target = "127.0.0.1";
+            port = 9187;
+          };
+        };
+      telemetryAdmissionChecks =
+        let
+          traceOnlyEndpoint = builtins.tryEval (pushOnlyEndpoint {
+            withAspect = true;
+            withSignals = true;
+            withDestination = true;
+          });
+          destinationOnlyEndpoint = builtins.tryEval (pushOnlyEndpoint {
+            withAspect = true;
+            withDestination = true;
+          });
+          scrapeOnlyEndpoint =
+            builtins.tryEval
+              (fixtureNixosSystem {
+                inherit system;
+                modules = [
+                  inputs.sops-nix.nixosModules.sops
+                  aspects.telemetry-otel-collector-scrape
+                  ({ config, ... }: {
+                    environment.variables.OTEL_EXPORTER_OTLP_ENDPOINT = config.services.telemetry.otlp.httpUrl;
+                  })
+                ];
+              }).config.environment.variables.OTEL_EXPORTER_OTLP_ENDPOINT;
+          pushOnlyWithoutAspect = builtins.tryEval (pushOnlyEndpoint {
+            withAspect = false;
+          });
+          pushOnlyWithoutDestination = builtins.tryEval (pushOnlyEndpoint {
+            withAspect = true;
+            withSignals = true;
+          });
+          vectorOnly = admissionEval [
+            aspects.telemetry-logs
+            {
+              services.telemetry.journald = {
+                includeUnits = [ "fixture-monitored" ];
+                sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+              };
+            }
+          ];
+          # The delivery-health registration the contract documents, evaluated as a
+          # host: an ordinary scrape source like any other.
+          deliveryHealthModules = [
+            aspects.telemetry-metrics
+            {
+              services.telemetry.scrape.otel-collector-health = {
+                target = "127.0.0.1";
+                port = 9464;
+              };
+              services.telemetry.destinations.metrics = {
+                protocol = "prometheus-remote-write";
+                endpoint = "http://metrics.invalid/api/v1/write";
+                signals = [ "metrics" ];
+              };
+            }
+          ];
+          deliveryHealthHost = admissionEval deliveryHealthModules;
+          # A different loopback address is a different socket: the pair the gateway
+          # runtime check binds (127.0.0.1 local, 127.0.0.2 ingress) has to stay
+          # legal, or normalizing loopback aliases would over-reject a real gateway.
+          distinctLoopbackModules = [
+            aspects.telemetry-otlp
+            {
+              services.telemetry.otlp.signals = [ "traces" ];
+              services.telemetry.otlp.ingress = {
+                host = "127.0.0.2";
+              };
+              services.telemetry.destinations.traces = {
+                protocol = "otlp-http";
+                endpoint = "https://backend.invalid";
+                signals = [ "traces" ];
+              };
+            }
+          ];
+          distinctLoopbackHost = admissionEval distinctLoopbackModules;
+          # Raw and already-bracketed IPv6 spellings must produce usable URLs and
+          # socket addresses on both receivers, not merely pass admission.
+          ipv6Bindings =
+            lib.all
+              (
+                host:
+                let
+                  modules = [
+                    aspects.telemetry-otlp
+                    {
+                      services.telemetry.otlp = {
+                        inherit host;
+                        signals = [ "traces" ];
+                        ingress = {
+                          host = "fd00::2";
+                          httpPort = 4318;
+                          grpcPort = 4317;
+                        };
+                      };
+                      services.telemetry.destinations.traces = {
+                        protocol = "otlp-http";
+                        endpoint = "https://backend.invalid";
+                        signals = [ "traces" ];
+                      };
+                    }
+                  ];
+                  c = (admissionEval modules).config;
+                  receivers = c.services.opentelemetry-collector.settings.receivers;
+                in
+                admissionAccepts modules
+                && c.services.telemetry.otlp.httpUrl == "http://[::1]:4318"
+                && c.services.telemetry.otlp.grpcUrl == "http://[::1]:4317"
+                && receivers.otlp.protocols.http.endpoint == "[::1]:4318"
+                && receivers.otlp.protocols.grpc.endpoint == "[::1]:4317"
+                && receivers."otlp/ingress".protocols.http.endpoint == "[fd00::2]:4318"
+                && receivers."otlp/ingress".protocols.grpc.endpoint == "[fd00::2]:4317"
+              )
+              [
+                "::1"
+                "[::1]"
+              ];
+        in
+        # A metrics realization consumes the unchanged registration shape only
+        # when the realization aspect is composed.
+        admissionAccepts [
+          aspects.telemetry-vmagent
+          {
+            services.telemetry.scrape.app = {
+              target = "127.0.0.1";
+              port = 9100;
+            };
+            services.telemetry.destinations.local = {
+              protocol = "prometheus-remote-write";
+              endpoint = "http://metrics.invalid/api/v1/write";
+              signals = [ "metrics" ];
+            };
+          }
+        ]
+        # Contract and producer data are dormant without a realization.
+        && admissionAccepts [
+          aspects.telemetry
+          {
+            services.telemetry.scrape.app = {
+              target = "127.0.0.1";
+              port = 9100;
+            };
+            services.telemetry.destinations.local = {
+              protocol = "prometheus-remote-write";
+              endpoint = "http://metrics.invalid/api/v1/write";
+              signals = [ "metrics" ];
+            };
+          }
+        ]
+        && admissionAccepts [
+          ../../lib/telemetry-contract.nix
+          {
+            services.telemetry.scrape.app = {
+              target = "127.0.0.1";
+              port = 9100;
+            };
+          }
+        ]
+        && admissionAccepts [
+          ../../lib/telemetry-contract.nix
+          {
+            services.telemetry.destinations.x = {
+              protocol = "otlp-grpc";
+              endpoint = "http://x.invalid:4317";
+              signals = [ "traces" ];
+            };
+          }
+        ]
+        # vocabulary with an unused destination remains inert and valid.
+        && admissionAccepts [
+          aspects.telemetry
+          { services.telemetry.destinations.x.endpoint = "http://x.invalid:4317"; }
+        ]
+        && admissionAccepts [ aspects.telemetry ]
+        # The local endpoint is only readable when an OTLP capability accepts a
+        # signal and a destination carries it. The guard is a read-time throw.
+        && !pushOnlyWithoutAspect.success
+        && !scrapeOnlyEndpoint.success
+        && !pushOnlyWithoutDestination.success
+        && !destinationOnlyEndpoint.success
+        && traceOnlyEndpoint.success
+        && traceOnlyEndpoint.value == "http://127.0.0.1:4318"
+        # Selecting the logs lane runs Vector without an explicit enable flag;
+        # a valid sink and non-empty allowlist are still required.
+        && admissionAccepts [
+          aspects.telemetry-logs
+          {
+            services.telemetry.journald = {
+              includeUnits = [ "fixture-monitored" ];
+              sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+            };
+          }
+        ]
+        && vectorOnly.config.services.vector.enable
+        && !vectorOnly.config.services.opentelemetry-collector.enable
+        && !(vectorOnly.config.systemd.services ? opentelemetry-collector)
+        # A composed metrics realization consumes the published health source; the
+        # publishing registration does not compose another realization.
+        && admissionAccepts deliveryHealthModules
+        && deliveryHealthHost.config.services.vmagent.enable
+        && !deliveryHealthHost.config.services.opentelemetry-collector.enable
+        && !(deliveryHealthHost.config.systemd.services ? opentelemetry-collector)
+        && !(deliveryHealthHost.config.services.notify.events ? opentelemetry-collector)
+        # a second, distinct loopback address is a distinct socket, not a collision,
+        # and adding the gateway ingress adds neither remote scraping nor journald
+        # shipping to that host
+        && admissionAccepts distinctLoopbackModules
+        && !(distinctLoopbackHost.config.systemd.services ? vmagent)
+        && !distinctLoopbackHost.config.services.vector.enable
+        && !(distinctLoopbackHost.config.services.opentelemetry-collector.settings.receivers ? prometheus)
+        && ipv6Bindings
+        && namedContractFailures;
 
-  # The alerting aspects' own contract: selected but unbound leaves no unit and
-  # no registration, an enabled vmalert instance without a datasource or a
-  # notifier is refused by name (per instance), and a fully bound one is
-  # accepted and registers its failure.
-  alertingAdmissionChecks =
-    let
-      inert = admissionEval [
-        aspects.vmalert
-        aspects.alertmanager
-      ];
-      bound = {
-        services.vmalert.instances.bound = {
-          enable = true;
-          settings = {
-            "datasource.url" = "http://127.0.0.1:8428";
-            "notifier.url" = [ "http://127.0.0.1:9093" ];
-            "httpListenAddr" = "127.0.0.1:8880";
+      # The journald provider's own fail-closed checks: forcing the rendered Vector
+      # settings is what a host build does, so a bad value must fail there by name.
+      vectorSettingsOf =
+        telemetryConfig:
+        (fixtureNixosSystem {
+          inherit system;
+          modules = [
+            inputs.sops-nix.nixosModules.sops
+            aspects.telemetry-vector
+            { services.telemetry = telemetryConfig; }
+          ];
+        }).config.services.vector.settings;
+      vectorRejects =
+        telemetryConfig:
+        !(builtins.tryEval (builtins.deepSeq (vectorSettingsOf telemetryConfig) true)).success;
+      telemetryJournaldChecks =
+        # shipping enabled with no endpoint: a journal with nowhere to go
+        vectorRejects { journald.enable = true; }
+        # a disk buffer under Vector's floor would be rejected at startup
+        && vectorRejects {
+          journald = {
+            enable = true;
+            sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+            buffer.maxSizeMb = 100;
           };
-        };
-      };
-    in
-    !(inert.config.systemd.services ? "vmalert")
-    && !(inert.config.systemd.services ? alertmanager)
-    && inert.config.services.notify.events == { }
-    && builtins.any (lib.hasPrefix "vmalert: instance(s) 'unbound-notifier'") (admissionFailures [
-      aspects.vmalert
-      {
-        services.vmalert.instances.unbound-notifier = {
-          enable = true;
-          settings."datasource.url" = "http://127.0.0.1:8428";
-        };
-      }
-    ])
-    && builtins.any (lib.hasPrefix "vmalert: instance(s) 'unbound-datasource'") (admissionFailures [
-      aspects.vmalert
-      { services.vmalert.instances.unbound-datasource.enable = true; }
-    ])
-    && builtins.any (lib.hasPrefix "vmalert: instance(s) 'unbound-management'") (admissionFailures [
-      aspects.vmalert
-      {
-        services.vmalert.instances.unbound-management = {
-          enable = true;
-          settings = {
-            "datasource.url" = "http://127.0.0.1:8428";
-            "notifier.url" = [ "http://127.0.0.1:9093" ];
+        }
+        # a selected logs lane still rejects an endpoint with no scheme by name
+        && !(admissionAccepts [
+          aspects.telemetry-logs
+          {
+            services.telemetry.journald = {
+              includeAll = true;
+              sink.endpoint = "victorialogs.invalid:9428/insert/jsonline";
+            };
+          }
+        ])
+        # Contract-only journald values remain dormant without a logs realization.
+        && admissionAccepts [
+          aspects.telemetry
+          {
+            services.telemetry.journald = {
+              sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+            };
+          }
+        ]
+        # the logs realization selects shipping, so an allowlist is what the host
+        # still has to state: an empty one is the whole-journal footgun, refused
+        # by its own name rather than resolved to "every unit".
+        &&
+          builtins.any (lib.hasPrefix "telemetry: journald shipping is enabled with an empty includeUnits")
+            (admissionFailures [
+              aspects.telemetry-logs
+              {
+                services.telemetry.journald = {
+                  sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+                };
+              }
+            ])
+        # the deliberate opt-in exports the whole journal, and renders no
+        # include_units filter at all: an empty list would mean "no unit", so
+        # "everything" has to be its own decision and its own rendering
+        && admissionAccepts [
+          aspects.telemetry-logs
+          {
+            services.telemetry.journald = {
+              includeAll = true;
+              sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+            };
+          }
+        ]
+        && !(vectorSettingsOf {
+          journald = {
+            enable = true;
+            includeAll = true;
+            sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
           };
-        };
-      }
-    ])
-    && admissionAccepts [
-      aspects.vmalert
-      bound
-    ]
-    && (admissionEval [
-      aspects.vmalert
-      bound
-    ]).config.services.notify.events
-      ? "vmalert-bound";
-  # The substitution catalog is a fleet-owned baseline, not an option surface:
-  # a consumer appends through nix.conf's own extra-substituters key, or
-  # replaces the list outright with mkForce. Both seams are exercised here so
-  # neither can rot into an option nothing renders again.
-  nixBaselineSubstitutionSeams =
-    let
-      settingsFor =
-        extra:
-        (admissionEval [
-          aspects.nix-baseline
-          extra
-        ]).config.nix.settings;
-      base = settingsFor { };
-      appended = settingsFor {
-        nix.settings."extra-substituters" = [ "https://appended.invalid" ];
-        nix.settings."extra-trusted-public-keys" = [ "appended.invalid-1:AAAA" ];
-      };
-      replaced = settingsFor {
-        nix.settings.substituters = lib.mkForce [ "https://replaced.invalid" ];
-      };
+        }).sources.journald
+          ? include_units
+        # includeAll with a list is contradictory, not a preference to resolve
+        # silently in either direction
+        &&
+          builtins.any (lib.hasPrefix "telemetry: services.telemetry.journald.includeAll is true")
+            (admissionFailures [
+              aspects.telemetry-logs
+              {
+                services.telemetry.journald = {
+                  includeAll = true;
+                  includeUnits = [ "sshd.service" ];
+                  sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+                };
+              }
+            ])
+        # the journal read scope is Vector-equivalent and stated, not inherited
+        # from a provider default that could move: the current boot only, so a
+        # reboot does not replay older boots' unread records
+        && (vectorSettingsOf {
+          journald = {
+            enable = true;
+            includeUnits = [ "fixture-monitored" ];
+            sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+          };
+        }).sources.journald.current_boot_only
+        # A sink endpoint without the logs capability is inert contract data.
+        && admissionAccepts [
+          aspects.telemetry
+          { services.telemetry.journald.sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline"; }
+        ]
+        && admissionAccepts [
+          aspects.telemetry
+          {
+            services.telemetry.destinations.dormant = {
+              protocol = "otlp-http";
+              endpoint = "https://dormant.invalid";
+              signals = [ "logs" ];
+              headers.Authorization.secret = "idleToken";
+            };
+            services.telemetry.secretFiles.idleToken = fixtureSecretFile;
+            services.telemetry.secretKeys.idleToken = "unused/token";
+          }
+        ]
+        && admissionAccepts [
+          ../../lib/telemetry-contract.nix
+          {
+            services.telemetry.journald = {
+              includeUnits = [ "fixture-monitored" ];
+              sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+            };
+          }
+        ]
+        # Selecting telemetry for metrics or traces must not start the log shipper
+        # or publish its delivery health: both belong to the logs realization.
+        && !vectorDisabledWithoutJournald.services.vector.enable
+        && !(vectorDisabledWithoutJournald.services.telemetry.scrape ? vector-health)
+        && !vectorDisabledWithoutJournald.services.vmagent.enable
+        && vectorDisabledWithoutJournald.services.opentelemetry-collector.enable;
+      # The scrape provider: the default vmagent translating every registered job,
+      # and the two fanout mistakes failing closed by NAME (an unrelated evaluation
+      # error would not count).
+      vmagentHost = vmagentHostFor system;
+      vmagentFanoutFailures =
+        telemetryConfig:
+        map (assertion: assertion.message) (
+          builtins.filter (assertion: !assertion.assertion) (vmagentHost telemetryConfig).assertions
+        );
+      vmagentChecks =
+        let
+          remoteWrite = {
+            protocol = "prometheus-remote-write";
+            endpoint = "https://metrics.invalid/api/v1/write";
+            signals = [ "metrics" ];
+          };
+          # The provider-owned health scrapes, named by their providers so the
+          # targets can never drift from the listeners those units bind, with the
+          # identity label each provider stamps on its own registration. Sorted
+          # by job name like the rendering itself.
+          otelCollectorHealthJob = {
+            job_name = "otel-collector-health";
+            scrape_interval = "30s";
+            metrics_path = "/metrics";
+            scheme = "http";
+            static_configs = [
+              {
+                targets = [ "127.0.0.1:9464" ];
+                labels.instance = "nixos:otel-collector";
+              }
+            ];
+          };
+          vectorHealthJob = {
+            job_name = "vector-health";
+            scrape_interval = "30s";
+            metrics_path = "/metrics";
+            scheme = "http";
+            static_configs = [
+              {
+                targets = [ "127.0.0.1:9598" ];
+                labels.instance = "nixos:vector";
+              }
+            ];
+          };
+          vmagentHealthJob = {
+            job_name = "vmagent-health";
+            scrape_interval = "30s";
+            metrics_path = "/metrics";
+            scheme = "http";
+            static_configs = [
+              {
+                targets = [ "127.0.0.1:8429" ];
+                labels.instance = "nixos:vmagent";
+              }
+            ];
+          };
+          rendered = vmagentHost {
+            scrape.everything = {
+              target = "10.0.0.5";
+              port = 9090;
+              metricsPath = "/custom-metrics";
+              scheme = "https";
+              interval = "45s";
+              labels = {
+                service = "everything";
+                environment = "fixture";
+              };
+            };
+            destinations.metrics = remoteWrite;
+          };
+          otelScrape = telemetryHostFor system [ aspects.telemetry-otel-collector-scrape ] {
+            scrape.app = {
+              target = "127.0.0.1";
+              port = 9187;
+            };
+            destinations.metrics = remoteWrite;
+          };
+          noScrape = vmagentHost { destinations.metrics = remoteWrite; };
+          contractOnlyDestination = contractHostFor system { destinations.metrics = remoteWrite; };
+          producerOnly = telemetryHostFor system [
+            ../../lib/telemetry-contract.nix
+            aspects.node-exporter
+          ] { };
+          vectorOnlyJournald = telemetryHostFor system [ aspects.telemetry-vector ] {
+            journald = {
+              includeUnits = [ "fixture-monitored" ];
+              sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+            };
+          };
+          # A trace-only host: OTLP admission plus a traces destination, no scrape
+          # work. Nothing else may start because a traces gateway exists.
+          traceOnly = vmagentHost {
+            otlp.signals = [ "traces" ];
+            destinations.gateway = {
+              protocol = "otlp-http";
+              endpoint = "https://gateway.invalid";
+              signals = [ "traces" ];
+            };
+          };
+          noOtel = vmagentHost { };
+          journaldWithMetrics =
+            telemetryHostFor system
+              [
+                aspects.telemetry-vector
+                aspects.telemetry-vmagent
+              ]
+              {
+                journald = {
+                  includeUnits = [ "fixture-monitored" ];
+                  sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
+                };
+                destinations.metrics = remoteWrite;
+              };
+          unwritableFanout = {
+            scrape.app = {
+              target = "127.0.0.1";
+              port = 9187;
+            };
+            destinations.plain = {
+              protocol = "otlp-grpc";
+              endpoint = "http://gateway.invalid:4317";
+              signals = [ "metrics" ];
+            };
+          };
+          emptyFanout = {
+            scrape.app = {
+              target = "127.0.0.1";
+              port = 9187;
+            };
+          };
+          # Composing both implementations of the scrape signal is an explicit
+          # arbitration error, irrespective of whether either has export work.
+          duplicateScrapeRealizations =
+            telemetryRejects
+              [
+                aspects.telemetry-vmagent
+                aspects.telemetry-otel-collector-scrape
+              ]
+              {
+                scrape.app = {
+                  target = "127.0.0.1";
+                  port = 9187;
+                };
+                destinations.metrics = remoteWrite;
+              };
+          # A literal the adapter would render into its own comma-separated argument
+          # array, so it has to be refused while it is still visible at build time.
+          hostileEndpoint = {
+            scrape.app = {
+              target = "127.0.0.1";
+              port = 9187;
+            };
+            destinations.metrics = remoteWrite // {
+              endpoint = "https://metrics.invalid/api/v1/write?tenant=a,b";
+            };
+          };
+          hostileHeader = {
+            scrape.app = {
+              target = "127.0.0.1";
+              port = 9187;
+            };
+            destinations.metrics = remoteWrite // {
+              headers.Authorization = {
+                secret = "token";
+                prefix = "Bearer,x ";
+              };
+            };
+            secretFiles.token = fixtureSecretFile;
+            secretKeys.token = "fixture/token";
+          };
+          # A secret id with a structural character is refused as well, but by the
+          # contract's own id charset (letters, digits, underscores) rather than by
+          # this adapter — which is what lets the adapter interpolate
+          # `%{VMAGENT_<id>}` into its argument without a check of its own.
+        in
+        # the default provider renders every scrape field into vmagent's own config
+        duplicateScrapeRealizations
+        && rendered.services.vmagent.enable
+        &&
+          rendered.services.vmagent.prometheusConfig.scrape_configs == [
+            {
+              job_name = "everything";
+              scrape_interval = "45s";
+              metrics_path = "/custom-metrics";
+              scheme = "https";
+              static_configs = [
+                {
+                  targets = [ "10.0.0.5:9090" ];
+                  labels = {
+                    service = "everything";
+                    environment = "fixture";
+                  };
+                }
+              ];
+            }
+            vmagentHealthJob
+          ]
+        # a metrics-only host runs the selected scrape provider and nothing else:
+        # no OTel instance, no OTLP listener, no second scraper, no OTel failure
+        # registration. A metrics destination alone is not OTLP admission.
+        && !rendered.services.opentelemetry-collector.enable
+        && !(rendered.systemd.services ? opentelemetry-collector)
+        && rendered.services.opentelemetry-collector.settings == { }
+        && !(rendered.services.notify.events ? opentelemetry-collector)
+        # persistent StateDirectory queue, 1 GiB bound per destination, loopback
+        # management endpoint, no firewall rule
+        &&
+          rendered.services.vmagent.extraArgs == [
+            "-remoteWrite.url=https://metrics.invalid/api/v1/write"
+            "-remoteWrite.tmpDataPath=%S/vmagent/remote_write_tmp"
+            "-httpListenAddr=127.0.0.1:8429"
+            "-remoteWrite.maxDiskUsagePerURL=1073741824"
+          ]
+        && rendered.systemd.services.vmagent.serviceConfig.StateDirectory == "vmagent"
+        && rendered.services.vmagent.checkConfig
+        && !rendered.services.vmagent.openFirewall
+        && !(builtins.elem 8429 rendered.networking.firewall.allowedTCPPorts)
+        && rendered.services.notify.events.vmagent.failure != null
+        # The explicit scrape realization owns this host; it does not also start vmagent.
+        && !(otelScrape.systemd.services ? vmagent)
+        && !(otelScrape.services.opentelemetry-collector.settings.receivers ? otlp)
+        &&
+          builtins.attrNames otelScrape.services.opentelemetry-collector.settings.receivers
+          == [ "prometheus" ]
+        &&
+          builtins.attrNames otelScrape.services.opentelemetry-collector.settings.service.pipelines
+          == [ "metrics/scrape" ]
+        &&
+          otelScrape.services.opentelemetry-collector.settings.service.pipelines."metrics/scrape".receivers
+          == [ "prometheus" ]
+        && !(otelScrape.services.opentelemetry-collector.settings.service.pipelines ? traces)
+        && !(otelScrape.services.opentelemetry-collector.settings.service.pipelines ? logs)
+        &&
+          otelScrape.services.opentelemetry-collector.settings.receivers.prometheus.config.scrape_configs == [
+            {
+              job_name = "app";
+              scrape_interval = "30s";
+              metrics_path = "/metrics";
+              scheme = "http";
+              static_configs = [
+                {
+                  targets = [ "127.0.0.1:9187" ];
+                  labels = { };
+                }
+              ];
+            }
+            otelCollectorHealthJob
+          ]
+        # A host that binds a metrics destination but registers no scrape source
+        # still starts the provider: its own loopback health scrape is a
+        # registered job like any other, so the agent that would ship those
+        # metrics exists exactly when the lane can carry them.
+        && noScrape.services.vmagent.enable
+        && noScrape.services.vmagent.prometheusConfig.scrape_configs == [ vmagentHealthJob ]
+        && !(noScrape.systemd.services ? opentelemetry-collector)
+        && !noScrape.services.opentelemetry-collector.enable
+        # A traces destination is not a scrape source: a declared gateway starts
+        # nothing beyond the composed scrape provider's own health job — no OTLP
+        # listener, no log shipper, and no consumer scrape registration.
+        && traceOnly.services.vmagent.enable
+        && traceOnly.services.vmagent.prometheusConfig.scrape_configs == [ vmagentHealthJob ]
+        && builtins.attrNames traceOnly.services.telemetry.scrape == [ "vmagent-health" ]
+        && !traceOnly.services.opentelemetry-collector.enable
+        && !(traceOnly.systemd.services ? opentelemetry-collector)
+        && !traceOnly.services.vector.enable
+        # The scrape realization owns vmagent and registers its own health job, so
+        # a bare composition starts exactly that and nothing else.
+        && noOtel.services.vmagent.enable
+        && noOtel.services.vmagent.prometheusConfig.scrape_configs == [ vmagentHealthJob ]
+        && !noOtel.services.opentelemetry-collector.enable
+        && !(noOtel.systemd.services ? opentelemetry-collector)
+        && !noOtel.services.vector.enable
+        # The logs lane starts the shipper and publishes health, but no scrape
+        # consumer starts unless the metrics lane is also composed.
+        && vectorOnlyJournald.services.vector.enable
+        && builtins.hasAttr "vector-health" vectorOnlyJournald.services.telemetry.scrape
+        && !vectorOnlyJournald.services.opentelemetry-collector.enable
+        && !vectorOnlyJournald.services.vmagent.enable
+        && !(vectorOnlyJournald.systemd.services ? vmagent)
+        # and when the same host also composes the scrape realization, the log
+        # lane's delivery health and the agent's own management scrape are both
+        # jobs the agent carries — the shipper's health arrives through the
+        # ordinary contract rather than a second, log-carrying sink.
+        && journaldWithMetrics.services.vector.settings.sources.internal_metrics.type == "internal_metrics"
+        && journaldWithMetrics.services.vector.settings.sinks.vector-health.inputs == [ "internal_metrics" ]
+        &&
+          journaldWithMetrics.services.vmagent.prometheusConfig.scrape_configs == [
+            vectorHealthJob
+            vmagentHealthJob
+          ]
+        && !(journaldWithMetrics.services.telemetry.scrape ? app)
+        # a selected metrics destination vmagent cannot write to fails by name,
+        # the selected service remains present while named assertions reject bad fanout
+        && builtins.any (lib.hasPrefix "telemetry: the metrics pipeline selects") (
+          vmagentFanoutFailures unwritableFanout
+        )
+        && (vmagentHost unwritableFanout).services.vmagent.enable
+        # so does a scrape source with no metrics destination to land in
+        && builtins.any (lib.hasPrefix "telemetry: scrape sources are registered but the metrics pipeline") (
+          vmagentFanoutFailures emptyFanout
+        )
+        && (vmagentHost emptyFanout).services.vmagent.enable
+        # and so does a LITERAL value the remote-write argument parser would treat as
+        # structure: a comma in an endpoint or header prefix would otherwise shift
+        # arguments onto the next destination, so it fails while it is visible
+        && builtins.any (lib.hasPrefix "telemetry: the metrics pipeline selects") (
+          vmagentFanoutFailures hostileEndpoint
+        )
+        && (vmagentHost hostileEndpoint).services.vmagent.enable
+        && builtins.any (lib.hasPrefix "telemetry: the metrics pipeline selects") (
+          vmagentFanoutFailures hostileHeader
+        )
+        && (vmagentHost hostileHeader).services.vmagent.enable
+        && builtins.any (lib.hasPrefix "telemetry: the metrics pipeline selects values vmagent's argument parser") (
+          vmagentFanoutFailures hostileEndpoint
+        )
+        && builtins.any (lib.hasPrefix "telemetry: the metrics pipeline selects values vmagent's argument parser") (
+          vmagentFanoutFailures hostileHeader
+        )
+        # contract-only destinations are valid data but create no runtime.
+        && !(contractOnlyDestination.systemd.services ? vmagent)
+        && !(producerOnly.systemd.services ? vmagent);
+
+      # Selecting telemetry for metrics or traces must not start a log shipper.
+      vectorDisabledWithoutJournald =
+        (fixtureNixosSystem {
+          inherit system;
+          modules = [
+            inputs.sops-nix.nixosModules.sops
+            aspects.telemetry-otlp
+            {
+              services.telemetry.otlp.signals = [ "traces" ];
+              services.telemetry.destinations.plain = {
+                protocol = "otlp-grpc";
+                endpoint = "http://gateway.invalid:4317";
+                signals = [ "traces" ];
+              };
+            }
+          ];
+        }).config;
+      # The node-exporter aspect owns both ends of its scrape and remains
+      # independently composable without a consumer lane.
+      nodeExporterAdmissionChecks =
+        admissionAccepts [
+          aspects.telemetry
+          aspects.node-exporter
+          {
+            services.telemetry.destinations.victoria = {
+              protocol = "prometheus-remote-write";
+              endpoint = "http://metrics.invalid/api/v1/write";
+              signals = [ "metrics" ];
+            };
+          }
+        ]
+        && admissionAccepts [ aspects.node-exporter ];
+
+      nixBaselineChecks =
+        let
+          evaluated =
+            extra:
+            (fixtureNixosSystem {
+              inherit system;
+              modules = [
+                aspects.nix-baseline
+                extra
+              ];
+            }).config;
+          defaults = evaluated { };
+          overridden = evaluated {
+            nix.daemonCPUSchedPolicy = "idle";
+            nix.daemonIOSchedClass = "idle";
+            systemd.services.nix-daemon.serviceConfig.MemoryHigh = "8G";
+          };
+        in
+        defaults.nix.package.version == inputs.nixpkgs.legacyPackages.${system}.nixVersions.latest.version
+        && defaults.nix.daemonCPUSchedPolicy == "batch"
+        && defaults.nix.daemonIOSchedClass == "best-effort"
+        && defaults.nix.daemonIOSchedPriority == 7
+        && defaults.systemd.services.nix-daemon.serviceConfig.CPUWeight == 50
+        && defaults.systemd.services.nix-daemon.serviceConfig.IOWeight == 50
+        && !(defaults.systemd.services.nix-daemon.serviceConfig ? MemoryHigh)
+        && overridden.nix.daemonCPUSchedPolicy == "idle"
+        && overridden.nix.daemonIOSchedClass == "idle"
+        && overridden.systemd.services.nix-daemon.serviceConfig.MemoryHigh == "8G";
+
+      buildAccountTrustChecks =
+        let
+          evaluated =
+            modules:
+            (fixtureNixosSystem {
+              inherit system;
+              inherit modules;
+            }).config;
+          defaults = evaluated [ aspects.build-account ];
+          renamed = evaluated [
+            aspects.build-account
+            {
+              services.build-account.name = "dispatcher";
+              nix.settings.trusted-users = [ "existing-coordinator" ];
+            }
+          ];
+          unselected = evaluated [ ];
+        in
+        lib.elem "nixbuild" defaults.nix.settings.trusted-users
+        && lib.elem "dispatcher" renamed.nix.settings.trusted-users
+        && lib.elem "existing-coordinator" renamed.nix.settings.trusted-users
+        && lib.elem "root" renamed.nix.settings.trusted-users
+        && !(lib.elem "nixbuild" renamed.nix.settings.trusted-users)
+        && !(lib.elem "nixbuild" unselected.nix.settings.trusted-users);
+
+      tailscaleAutoconnectChecks =
+        let
+          units =
+            extra:
+            (fixtureNixosSystem {
+              inherit system;
+              modules = [
+                inputs.sops-nix.nixosModules.sops
+                aspects.tailscale
+                extra
+              ];
+            }).config.systemd.units;
+          unbound = units { };
+          bound = units { services.tailscale.secretFiles.auth = ./fixture.nix; };
+        in
+        # Unbound, no autoconnect unit exists at all; a unit holding only the
+        # ordering drop-in has no ExecStart and warns on every boot. Bound, the
+        # unit carries nixpkgs' script and the sops ordering together.
+        !(unbound ? "tailscaled-autoconnect.service")
+        && lib.hasInfix "ExecStart=" bound."tailscaled-autoconnect.service".text
+        && lib.hasInfix "sops-install-secrets.service" bound."tailscaled-autoconnect.service".text;
+
+      nixGcChecks =
+        let
+          evaluated =
+            extra:
+            (fixtureNixosSystem {
+              inherit system;
+              modules = [
+                aspects.nix-gc
+                { services.nix-gc.implementation = "fast-nix-gc"; }
+                extra
+              ];
+            }).config;
+          fast = evaluated { };
+          tuned = evaluated {
+            services.nix-gc = {
+              ensureFree = null;
+              roots.prune = false;
+              optimise.enable = false;
+            };
+          };
+          nh =
+            (fixtureNixosSystem {
+              inherit system;
+              modules = [ aspects.nix-gc ];
+            }).config;
+          argv = fast.systemd.services.nix-gc-roots.serviceConfig.ExecStart;
+        in
+        # Threshold-driven collection: hourly, frees only the shortfall, spares
+        # fresh builds, and leaves generation retention to nh so two rules cannot
+        # disagree.
+        fast.services.fast-nix-gc.dates == [ "hourly" ]
+        && fast.services.fast-nix-gc.ensureFree == "15%"
+        && fast.services.fast-nix-gc.keepRecent == "1d"
+        && fast.services.fast-nix-gc.deleteOlderThan == null
+        # Root pruning never collects (--no-gc) and keeps live result links.
+        && lib.hasInfix " --no-gc " argv
+        && lib.hasInfix " --keep-since 7d " argv
+        && fast.systemd.services.nix-gc-roots.before == [ "fast-nix-gc.service" ]
+        && fast.services.fast-nix-optimise.enable
+        && fast.services.notify.events ? "nix-gc-roots"
+        && fast.services.notify.events ? "fast-nix-optimise"
+        && fast.services.fast-nix-optimise.dates == [ "weekly" ]
+        # Each default is switchable, and the nh path is untouched.
+        && tuned.services.fast-nix-gc.ensureFree == null
+        && tuned.services.fast-nix-gc.deleteOlderThan == "30d"
+        && !(tuned.systemd.services ? nix-gc-roots)
+        && !tuned.services.fast-nix-optimise.enable
+        && nh.programs.nh.clean.enable
+        && !nh.services.fast-nix-gc.enable
+        && !nh.services.fast-nix-optimise.enable;
+
+      nodeExporterIdentityChecks =
+        let
+          identity =
+            extra:
+            (fixtureNixosSystem {
+              inherit system;
+              modules = [
+                aspects.node-exporter
+                extra
+              ];
+            }).config.services.telemetry.scrape.node.labels.instance;
+        in
+        identity {
+          networking.hostName = "node-probe";
+          services.node-exporter.port = 9200;
+        } == "node-probe:9200"
+        &&
+          identity {
+            networking.hostName = "other-probe";
+            services.telemetry.scrape.node.labels.instance = "consumer-owned";
+          } == "consumer-owned";
+
+      # The alerting aspects' own contract: selected but unbound leaves no unit and
+      # no registration, an enabled vmalert instance without a datasource or a
+      # notifier is refused by name (per instance), and a fully bound one is
+      # accepted and registers its failure.
+      alertingAdmissionChecks =
+        let
+          inert = admissionEval [
+            aspects.vmalert
+            aspects.alertmanager
+          ];
+          bound = {
+            services.vmalert.instances.bound = {
+              enable = true;
+              settings = {
+                "datasource.url" = "http://127.0.0.1:8428";
+                "notifier.url" = [ "http://127.0.0.1:9093" ];
+                "httpListenAddr" = "127.0.0.1:8880";
+              };
+            };
+          };
+        in
+        !(inert.config.systemd.services ? "vmalert")
+        && !(inert.config.systemd.services ? alertmanager)
+        && inert.config.services.notify.events == { }
+        && builtins.any (lib.hasPrefix "vmalert: instance(s) 'unbound-notifier'") (admissionFailures [
+          aspects.vmalert
+          {
+            services.vmalert.instances.unbound-notifier = {
+              enable = true;
+              settings."datasource.url" = "http://127.0.0.1:8428";
+            };
+          }
+        ])
+        && builtins.any (lib.hasPrefix "vmalert: instance(s) 'unbound-datasource'") (admissionFailures [
+          aspects.vmalert
+          { services.vmalert.instances.unbound-datasource.enable = true; }
+        ])
+        && builtins.any (lib.hasPrefix "vmalert: instance(s) 'unbound-management'") (admissionFailures [
+          aspects.vmalert
+          {
+            services.vmalert.instances.unbound-management = {
+              enable = true;
+              settings = {
+                "datasource.url" = "http://127.0.0.1:8428";
+                "notifier.url" = [ "http://127.0.0.1:9093" ];
+              };
+            };
+          }
+        ])
+        && admissionAccepts [
+          aspects.vmalert
+          bound
+        ]
+        && (admissionEval [
+          aspects.vmalert
+          bound
+        ]).config.services.notify.events
+          ? "vmalert-bound";
+      # The substitution catalog is a fleet-owned baseline, not an option surface:
+      # a consumer appends through nix.conf's own extra-substituters key, or
+      # replaces the list outright with mkForce. Both seams are exercised here so
+      # neither can rot into an option nothing renders again.
+      nixBaselineSubstitutionSeams =
+        let
+          settingsFor =
+            extra:
+            (admissionEval [
+              aspects.nix-baseline
+              extra
+            ]).config.nix.settings;
+          base = settingsFor { };
+          appended = settingsFor {
+            nix.settings."extra-substituters" = [ "https://appended.invalid" ];
+            nix.settings."extra-trusted-public-keys" = [ "appended.invalid-1:AAAA" ];
+          };
+          replaced = settingsFor {
+            nix.settings.substituters = lib.mkForce [ "https://replaced.invalid" ];
+          };
+        in
+        base.substituters == [
+          # Appended to nixpkgs' own contribution, not restated by the aspect.
+          "https://cache.nixos.org/"
+          "https://nix-community.cachix.org"
+          "https://cache.numtide.com"
+          "https://cache.shrublab.xyz"
+        ]
+        && builtins.all (message: builtins.elem message base."trusted-substituters") [
+          "https://cache.shrublab.xyz"
+          "ssh-ng://eu.nixbuild.net"
+        ]
+        && builtins.any (lib.hasPrefix "cache.nixos.org-1:") base."trusted-public-keys"
+        &&
+          builtins.elem "nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A="
+            base."trusted-public-keys"
+        # Appending is a key of its own, so the baseline list must survive it.
+        && appended.substituters == base.substituters
+        && appended."extra-substituters" == [ "https://appended.invalid" ]
+        && appended."extra-trusted-public-keys" == [ "appended.invalid-1:AAAA" ]
+        # Replacing is explicit and drops the baseline entries rather than unioning.
+        && replaced.substituters == [ "https://replaced.invalid" ];
     in
-    base.substituters == [
-      # Appended to nixpkgs' own contribution, not restated by the aspect.
-      "https://cache.nixos.org/"
-      "https://nix-community.cachix.org"
-      "https://cache.numtide.com"
-      "https://cache.shrublab.xyz"
-    ]
-    && builtins.all (message: builtins.elem message base."trusted-substituters") [
-      "https://cache.shrublab.xyz"
-      "ssh-ng://eu.nixbuild.net"
-    ]
-    && builtins.any (lib.hasPrefix "cache.nixos.org-1:") base."trusted-public-keys"
-    &&
-      builtins.elem "nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A="
-        base."trusted-public-keys"
-    # Appending is a key of its own, so the baseline list must survive it.
-    && appended.substituters == base.substituters
-    && appended."extra-substituters" == [ "https://appended.invalid" ]
-    && appended."extra-trusted-public-keys" == [ "appended.invalid-1:AAAA" ]
-    # Replacing is explicit and drops the baseline entries rather than unioning.
-    && replaced.substituters == [ "https://replaced.invalid" ];
+    {
+      # One named leaf per contract evaluation, each carried by its own check so
+      # the fixture host above never forces it. A leaf that fails throws the
+      # named error at evaluation, which is why every message reads as the
+      # contract that broke rather than as a generic check failure.
+      build-account-trust = {
+        message = "build-account: dispatch trust, account renaming or trusted-user merging regressed";
+        ok = buildAccountTrustChecks;
+      };
+      tailscale-autoconnect = {
+        message = "tailscale: the autoconnect unit is rendered without an auth key, or lost its ordering";
+        ok = tailscaleAutoconnectChecks;
+      };
+      nix-baseline = {
+        message = "nix-baseline: the daemon baseline or its consumer overrides regressed";
+        ok = nixBaselineChecks;
+      };
+      nix-baseline-substitution = {
+        message = "nix-baseline: the substitution catalog or its append/replace seams regressed";
+        ok = nixBaselineSubstitutionSeams;
+      };
+      nix-gc-defaults = {
+        message = "nix-gc: threshold collection, root pruning, optimise or their overrides regressed";
+        ok = nixGcChecks;
+      };
+      alerting-admission = {
+        message = "alerting: vmalert or alertmanager instance admission regressed";
+        ok = alertingAdmissionChecks;
+      };
+      telemetry-rejects = {
+        message = "telemetry: a destination, fanout or secret mistake no longer fails closed";
+        ok = telemetryMutationChecks;
+      };
+      telemetry-named-rejections = {
+        message = "telemetry: a named admission rejection is missing, misnamed or no longer rejects";
+        ok = namedContractFailures;
+      };
+      telemetry-admission = {
+        message = "telemetry: dormant declarations or endpoint derivation regressed";
+        ok = telemetryAdmissionChecks;
+      };
+      telemetry-capability-matrix = {
+        message = "telemetry: explicit capability composition regressed";
+        ok = telemetryCapabilityMatrixChecks;
+      };
+      telemetry-journald = {
+        message = "telemetry: the journald shipping contract or its isolation from the collector regressed";
+        ok = telemetryJournaldChecks;
+      };
+      otel-collector-resource-order = {
+        message = "otel-collector: a declared resource processor no longer reaches the pipeline order";
+        ok =
+          collectorManualResourceOrder == [
+            "memory_limiter"
+            "resource"
+          ];
+      };
+      otel-collector-unbound-secrets = {
+        message = "otel-collector: an unbound credential still registers a secret or an EnvironmentFile";
+        ok = collectorUnboundSecrets;
+      };
+      otel-collector-inactive-credentials = {
+        message = "otel-collector: a dormant destination's bound credential leaked an exporter, secret or override";
+        ok = collectorInactiveCredentials;
+      };
+      vmagent = {
+        message = "vmagent: provider selection, rendered jobs, the bounded queue or credential binding regressed";
+        ok = vmagentChecks;
+      };
+      node-exporter-identity = {
+        message = "node-exporter: the scrape instance label no longer follows the exporter's own bind";
+        ok = nodeExporterIdentityChecks;
+      };
+      node-exporter-admission = {
+        message = "node-exporter: a scrape registration without the host aspect no longer fails by name";
+        ok = nodeExporterAdmissionChecks;
+      };
+    };
+
   fixtureModule =
     {
       config,
@@ -1311,6 +1713,12 @@ let
         tailscale
         mosh
         telemetry
+        telemetry-metrics
+        telemetry-logs
+        telemetry-otlp
+        telemetry-vector
+        telemetry-vmagent
+        telemetry-otel-collector-otlp
         vmalert
       ]);
 
@@ -1430,21 +1838,12 @@ let
             || (config.systemd.services."nh-clean".onFailure or [ ]) != [ ];
         }
         {
-          assertion = tailscaleAutoconnectChecks;
-          message = "fixture: the tailscale aspect renders an autoconnect unit without an auth key, or lost its ordering when bound.";
-        }
-        {
-          assertion = nixGcChecks;
-          message = "fixture: the nix-gc defaults (threshold collection, root pruning, optimise) or their overrides regressed.";
-        }
-        {
           # Ownership policy: an aspect that owns a unit registers its
           # failure. nix-baseline owns the daemon baseline (nix-daemon),
           # ssh owns the hardening (sshd) — both wired as drop-ins.
           assertion =
             (config.systemd.services."nix-daemon".onFailure or [ ]) != [ ]
-            && (config.systemd.services.sshd.onFailure or [ ]) != [ ]
-            && nixBaselineChecks;
+            && (config.systemd.services.sshd.onFailure or [ ]) != [ ];
           message = "fixture: the nix-baseline/ssh aspects registered no failure hooks on their units.";
         }
         {
@@ -1476,11 +1875,8 @@ let
         {
           assertion =
             config.nix.settings.substituters or [ ] != [ ]
-            && builtins.elem "https://cache.shrublab.xyz" (config.nix.settings.substituters or [ ])
-            # The seams themselves: append, replace, and nixpkgs' own entry
-            # surviving both.
-            && nixBaselineSubstitutionSeams;
-          message = "fixture: the nix-baseline substitution catalog or its consumer override seams regressed.";
+            && builtins.elem "https://cache.shrublab.xyz" (config.nix.settings.substituters or [ ]);
+          message = "fixture: the nix-baseline substitution catalog regressed.";
         }
         {
           assertion =
@@ -1635,19 +2031,18 @@ let
             && builtins.elem "resource" settings.service.pipelines.traces.processors
             && settings.service.pipelines."metrics/ingress".receivers == [ "otlp/ingress" ]
             && settings.service.pipelines."logs/ingress".receivers == [ "otlp/ingress" ]
-            && !(config.systemd.services ? "otlp-ingress")
-            && telemetryMutationChecks
-            && telemetryAdmissionChecks
-            && namedContractFailures;
-          message = "fixture: the telemetry destination/fanout contract, the receiver bind, or the rendered exporter/processor set regressed.";
+            && !(config.systemd.services ? "otlp-ingress");
+          message = "fixture: the rendered telemetry receiver, exporter, processor, pipeline or ingress set regressed.";
         }
         {
           # The host-local contract: the OTLP endpoint producers read must be
-          # the receiver the collector actually binds. The scrape provider owns
-          # the scrape side, so the collector has no Prometheus receiver here.
+          # the receiver the collector actually binds, and the collector serves
+          # only the inputs it was composed for — the metrics lane's scrape
+          # realization owns scraping, so this collector has no prometheus
+          # receiver and no `metrics/scrape` pipeline.
           assertion =
             let
-              inherit (config.services.telemetry) otlp providers;
+              otlp = config.services.telemetry.otlp;
               settings = config.services.opentelemetry-collector.settings;
             in
             otlp.httpUrl == "http://127.0.0.1:4318"
@@ -1669,13 +2064,20 @@ let
             && settings.service.pipelines.metrics.receivers == [ "otlp" ]
             && settings.service.pipelines.traces.receivers == [ "otlp" ]
             && settings.service.pipelines.logs.receivers == [ "otlp" ]
-            && providers.otlpIngest == "otel-collector"
-            && providers.prometheusScrape == "vmagent";
-          message = "fixture: the telemetry scrape registration, local OTLP endpoint, provider selection, or orphan/admission contract regressed.";
+            &&
+              builtins.attrNames settings.service.pipelines == [
+                "logs"
+                "logs/ingress"
+                "metrics"
+                "metrics/ingress"
+                "traces"
+                "traces/ingress"
+              ];
+          message = "fixture: the telemetry scrape registration, local OTLP endpoint, or composed pipeline contract regressed.";
         }
         {
-          # The scrape provider owns the vmagent unit: every registered job in
-          # its own config, a bounded persistent queue, a loopback management
+          # The vmagent realization owns its unit: every registered job in
+          # its config, a bounded persistent queue, a loopback management
           # endpoint, and the credential binding its remote-write headers need.
           assertion =
             let
@@ -1740,7 +2142,38 @@ let
                   static_configs = [
                     {
                       targets = [ "127.0.0.1:9464" ];
-                      labels = { };
+                      labels.instance = "${config.networking.hostName}:otel-collector";
+                    }
+                  ];
+                }
+                {
+                  # The Vector provider's loopback health listener, registered
+                  # by the provider that binds it. The target is the
+                  # prometheus_exporter sink below, which carries only Vector's
+                  # own internal metrics.
+                  job_name = "vector-health";
+                  metrics_path = "/metrics";
+                  scheme = "http";
+                  scrape_interval = "30s";
+                  static_configs = [
+                    {
+                      targets = [ "127.0.0.1:9598" ];
+                      labels.instance = "${config.networking.hostName}:vector";
+                    }
+                  ];
+                }
+                {
+                  # vmagent's own loopback management endpoint, registered the
+                  # same way: the selected scrape provider collects its own
+                  # backlog and send-error metrics.
+                  job_name = "vmagent-health";
+                  metrics_path = "/metrics";
+                  scheme = "http";
+                  scrape_interval = "30s";
+                  static_configs = [
+                    {
+                      targets = [ "127.0.0.1:8429" ];
+                      labels.instance = "${config.networking.hostName}:vmagent";
                     }
                   ];
                 }
@@ -1786,8 +2219,7 @@ let
             # runs there, before vmagent parses the argument array it indexes
             # headers into.
             && builtins.length unit.serviceConfig.ExecStartPre == 1
-            && lib.hasInfix "VMAGENT_metricsToken" (builtins.head unit.serviceConfig.ExecStartPre)
-            && vmagentChecks;
+            && lib.hasInfix "VMAGENT_metricsToken" (builtins.head unit.serviceConfig.ExecStartPre);
           message = "fixture: the vmagent scrape provider's rendered jobs, bounded queue, loopback listen, credential binding, or notify ownership regressed.";
         }
         {
@@ -1808,30 +2240,36 @@ let
             && config.services.telemetry.scrape.node.target == "127.0.0.1"
             && config.services.telemetry.scrape.node.port == 9100
             && config.services.telemetry.scrape.node.labels.instance == "${config.networking.hostName}:9100"
-            && nodeExporterIdentityChecks
             && config.services.notify.events.prometheus-node-exporter.failure != null
-            && unit.onFailure != [ ]
-            && nodeExporterAdmissionChecks;
-          message = "fixture: the node-exporter aspect's loopback bind, scrape registration, notify hook, or orphan behavior regressed.";
+            && unit.onFailure != [ ];
+          message = "fixture: the node-exporter aspect's loopback bind, scrape registration or notify hook regressed.";
         }
         {
-          # The journald logs path: a Vector journald source writing JSON lines
-          # to the consumer's endpoint over a bounded disk buffer, alongside an
-          # untouched collector pipeline — the same log record is not shipped
-          # twice.
+          # The journald logs lane: a Vector journald source writing JSON lines
+          # to the consumer's endpoint over a bounded disk buffer, alongside
+          # independent OTLP pipelines.
           assertion =
             let
               vector = config.services.vector;
               sink = vector.settings.sinks.logs;
               otel = config.services.opentelemetry-collector.settings;
             in
-            config.services.telemetry.providers.journaldIngest == "vector"
-            && vector.enable
+            vector.enable
             && vector.journaldAccess
             && vector.settings.data_dir == "/var/lib/vector"
             && vector.settings.sources.journald.type == "journald"
+            && vector.settings.sources.journald.current_boot_only
             && vector.settings.sources.journald.include_units == [ "fixture-monitored" ]
             && !(vector.settings.sources.journald ? exclude_units)
+            && vector.settings.sources.internal_metrics.type == "internal_metrics"
+            && vector.settings.sinks.vector-health.type == "prometheus_exporter"
+            # The health exporter carries only internal metrics — it must never
+            # become a second path for journal records, and the log sink keeps
+            # its journal-only inputs.
+            && vector.settings.sinks.vector-health.inputs == [ "internal_metrics" ]
+            && vector.settings.sinks.vector-health.address == "127.0.0.1:9598"
+            && vector.settings.sinks.vector-health.default_namespace == "vector"
+            && config.services.telemetry.scrape.vector-health.port == 9598
             && sink.type == "http"
             && sink.inputs == [ "journald" ]
             && sink.uri == "http://victorialogs.invalid:9428/insert/jsonline"
@@ -1847,13 +2285,9 @@ let
             && sink.buffer.when_full == "block"
             && config.services.notify.events.vector.failure != null
             && config.systemd.services.vector.onFailure != [ ]
-            && !vectorDisabledWithoutJournald.services.vector.enable
-            && !vectorDisabledWithoutJournald.services.vmagent.enable
-            && vectorDisabledWithoutJournald.services.opentelemetry-collector.enable
             && otel.service.pipelines.logs.exporters == [ "otlp/plain" ]
-            && otel.service.pipelines.traces.receivers == [ "otlp" ]
-            && telemetryJournaldChecks;
-          message = "fixture: the journald log path (Vector journald source, JSON-line sink, disk buffer, notify) or its isolation from the collector pipelines regressed.";
+            && otel.service.pipelines.traces.receivers == [ "otlp" ];
+          message = "fixture: the journald log path (Vector journald source, JSON-line sink, disk buffer, notify) regressed.";
         }
         {
           assertion =
@@ -1882,23 +2316,12 @@ let
             &&
               config.systemd.services.opentelemetry-collector.serviceConfig.EnvironmentFile == [
                 config.sops.templates."otel-collector.env".path
-              ]
-            &&
-              collectorManualResourceOrder == [
-                "memory_limiter"
-                "resource"
-              ]
-            && collectorUnboundSecrets
-            && collectorInactiveCredentials;
-          message = "fixture: the otel-collector SOPS, notify, or fail-closed contract regressed.";
+              ];
+          message = "fixture: the otel-collector SOPS or notify contract regressed.";
         }
         {
           assertion = config.users.users ? "nixbuild" && config.users.users.nixbuild.isSystemUser;
           message = "fixture: the build-account aspect created no dispatch account.";
-        }
-        {
-          assertion = buildAccountTrustChecks;
-          message = "fixture: the build-account aspect lost dispatch trust, broke account renaming or list merging, or trusted an unselected account.";
         }
         {
           # The alerting path end to end: vmalert renders the consumer's rule
@@ -1932,8 +2355,7 @@ let
               receiverUrl == "http://127.0.0.1:${toString config.services.notify.port}/alertmanager?topic=infra"
             && lib.hasInfix "--web.listen-address 127.0.0.1:9093" alertmanagerUnit.serviceConfig.ExecStart
             && config.services.notify.events.alertmanager.failure != null
-            && alertmanagerUnit.onFailure != [ ]
-            && alertingAdmissionChecks;
+            && alertmanagerUnit.onFailure != [ ];
           message = "fixture: the alerting path (vmalert's bound datasource/notifier and rendered rules, alertmanager's loopback bind, checked config, webhook receiver, or either unit's notify ownership) regressed.";
         }
       ];
@@ -2130,7 +2552,7 @@ let
                 "logs"
               ];
             };
-            # The two metrics stores the scrape provider forwards to.
+            # The two metrics stores the scrape realization forwards to.
             victoria = {
               protocol = "prometheus-remote-write";
               endpoint = "http://metrics.invalid/api/v1/write";
@@ -2251,7 +2673,7 @@ in
           inherit system;
           modules = [
             inputs.sops-nix.nixosModules.sops
-            config.flake.modules.nixos.telemetry
+            config.flake.modules.nixos.telemetry-otel-collector-otlp
             modules
           ];
         }).config.services.opentelemetry-collector.settings;
@@ -2409,192 +2831,244 @@ in
         pkgs.coreutils
         pkgs.gnugrep
       ];
+
+      # The contract leaves: one independent check per throwaway contract
+      # evaluation, so the fixture host above never forces the nested
+      # evaluations its assertions used to carry.
+      contract = contractLeaves system;
+
+      # A leaf passes as a trivial derivation — the name still exists as a
+      # check — and fails as the named error at evaluation, so a contract break
+      # is never mistakable for an incidental evaluation error.
+      contractLeaf =
+        name:
+        { message, ok }:
+        if ok then pkgs.runCommand "check-${name}" { } "touch $out" else throw message;
+
+      # The registry is the literal this split commits to: a leaf dropped,
+      # renamed, or defined without reaching the check set fails closed here
+      # rather than silently shrinking the checked surface.
+      expectedContractLeaves = [
+        "alerting-admission"
+        "build-account-trust"
+        "nix-baseline"
+        "nix-baseline-substitution"
+        "nix-gc-defaults"
+        "node-exporter-admission"
+        "node-exporter-identity"
+        "otel-collector-inactive-credentials"
+        "otel-collector-resource-order"
+        "otel-collector-unbound-secrets"
+        "tailscale-autoconnect"
+        "telemetry-admission"
+        "telemetry-capability-matrix"
+        "telemetry-journald"
+        "telemetry-named-rejections"
+        "telemetry-rejects"
+        "vmagent"
+      ];
+      contractChecks = lib.mapAttrs contractLeaf contract;
+      contractLeafRegistry =
+        lib.sort (a: b: a < b) (builtins.attrNames contract)
+        == lib.sort (a: b: a < b) expectedContractLeaves
+        &&
+          builtins.length (builtins.filter (name: contractChecks ? ${name}) expectedContractLeaves)
+          == builtins.length expectedContractLeaves;
     in
     {
-      # The rendered rule file is a vmalert input, not a Nix value: this check
-      # feeds the fixture host's own rules.yml to the real evaluator, offline —
-      # a rule that does not parse or does not fire is caught here rather than
-      # on the host it was meant to alert from.
-      checks.vmalert-rules =
-        let
-          fixtureHost = "fixture-${builtins.replaceStrings [ "_" ] [ "-" ] system}";
-          rulesFile =
-            config.flake.nixosConfigurations.${fixtureHost}.config.environment.etc."vmalert-fixture/rules.yml".source;
-          unitTest = pkgs.writeText "vmalert-unittest.yaml" ''
-            rule_files:
-              - ${rulesFile}
-            evaluation_interval: 1m
-            tests:
-              - interval: 1m
-                alert_rule_test:
-                  - eval_time: 1m
-                    groupname: fixture
-                    alertname: FixtureWatchdog
-                    exp_alerts:
-                      - exp_labels:
-                          severity: warning
-                        exp_annotations:
-                          summary: fixture always-firing watchdog
-          '';
-        in
-        pkgs.runCommand "vmalert-rules-check"
-          {
-            nativeBuildInputs = [ pkgs.victoriametrics ];
-          }
-          ''
-            vmalert-tool unittest -files=${unitTest} > $TMPDIR/unittest.log 2>&1 || {
-              cat $TMPDIR/unittest.log
-              exit 1
+      # One check per contract leaf, plus the registry that keeps the list
+      # honest. A leaf is an ordinary check name, so a new contract keeps being
+      # an ordinary `checks.<name>` build in CI.
+      checks = contractChecks // {
+        contract-leaf-registry = contractLeaf "contract-leaf-registry" {
+          message = "fixture: the contract-leaf registry no longer matches the leaves this file defines";
+          ok = contractLeafRegistry;
+        };
+        # The rendered rule file is a vmalert input, not a Nix value: this check
+        # feeds the fixture host's own rules.yml to the real evaluator, offline —
+        # a rule that does not parse or does not fire is caught here rather than
+        # on the host it was meant to alert from.
+        vmalert-rules =
+          let
+            fixtureHost = "fixture-${builtins.replaceStrings [ "_" ] [ "-" ] system}";
+            rulesFile =
+              config.flake.nixosConfigurations.${fixtureHost}.config.environment.etc."vmalert-fixture/rules.yml".source;
+            unitTest = pkgs.writeText "vmalert-unittest.yaml" ''
+              rule_files:
+                - ${rulesFile}
+              evaluation_interval: 1m
+              tests:
+                - interval: 1m
+                  alert_rule_test:
+                    - eval_time: 1m
+                      groupname: fixture
+                      alertname: FixtureWatchdog
+                      exp_alerts:
+                        - exp_labels:
+                            severity: warning
+                          exp_annotations:
+                            summary: fixture always-firing watchdog
+            '';
+          in
+          pkgs.runCommand "vmalert-rules-check"
+            {
+              nativeBuildInputs = [ pkgs.victoriametrics ];
             }
-            grep -q SUCCESS $TMPDIR/unittest.log || {
-              cat $TMPDIR/unittest.log
-              exit 1
-            }
-            touch $out
-          '';
-
-      # Read the generated JSON at build time. Evaluation stays portable across
-      # architectures, while real output files retain the routing/default checks.
-      checks.notify-rendered-policy =
-        let
-          fixtureHost = "fixture-${builtins.replaceStrings [ "_" ] [ "-" ] system}";
-          etc = config.flake.nixosConfigurations.${fixtureHost}.config.environment.etc;
-        in
-        pkgs.runCommand "notify-rendered-policy-check" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-          python3 - '${etc."notify/events.json".source}' '${etc."notify/config.json".source}' <<'PY'
-          import json
-          import sys
-
-          with open(sys.argv[1]) as source:
-              events = json.load(source)
-          with open(sys.argv[2]) as source:
-              config = json.load(source)
-          assert events["fixture-monitored"]["failure"]["severity"] == "warning"
-          for name in ("ntfy", "telegram"):
-              transport = config[name]
-              assert transport["topics"]
-              assert transport["default_topic"] in transport["topics"], name
-          assert config["ntfy"]["topics"]["fleet"] == "fleet"
-          assert config["telegram"]["default_topic"] == "fleet"
-          print("rendered notification policy and transport routing passed")
-          PY
-          touch $out
-        '';
-
-      checks.vmagent-secret-guard =
-        pkgs.runCommand "vmagent-secret-guard-check"
-          {
-            nativeBuildInputs = [
-              pkgs.coreutils
-              pkgs.gnugrep
-            ];
-          }
-          ''
-            set -euo pipefail
-            guard=${guardScriptFor system}
-
-            refuse() {
-              if VMAGENT_probe="$1" "$guard" VMAGENT_probe 2>refusal.txt; then
-                echo "vmagent-secret-guard: accepted a value that changes argument parsing ($2)" >&2
-                exit 1
-              fi
-              grep -q "refusing to start" refusal.txt || {
-                echo "vmagent-secret-guard: refusal for $2 was not the named error" >&2
-                cat refusal.txt >&2
+            ''
+              vmalert-tool unittest -files=${unitTest} > $TMPDIR/unittest.log 2>&1 || {
+                cat $TMPDIR/unittest.log
                 exit 1
               }
-            }
-            accept() {
-              VMAGENT_probe="$1" "$guard" VMAGENT_probe || {
-                echo "vmagent-secret-guard: rejected a representable value ($2)" >&2
+              grep -q SUCCESS $TMPDIR/unittest.log || {
+                cat $TMPDIR/unittest.log
                 exit 1
               }
+              touch $out
+            '';
+
+        # Read the generated JSON at build time. Evaluation stays portable across
+        # architectures, while real output files retain the routing/default checks.
+        notify-rendered-policy =
+          let
+            fixtureHost = "fixture-${builtins.replaceStrings [ "_" ] [ "-" ] system}";
+            etc = config.flake.nixosConfigurations.${fixtureHost}.config.environment.etc;
+          in
+          pkgs.runCommand "notify-rendered-policy-check" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+            python3 - '${etc."notify/events.json".source}' '${etc."notify/config.json".source}' <<'PY'
+            import json
+            import sys
+
+            with open(sys.argv[1]) as source:
+                events = json.load(source)
+            with open(sys.argv[2]) as source:
+                config = json.load(source)
+            assert events["fixture-monitored"]["failure"]["severity"] == "warning"
+            for name in ("ntfy", "telegram"):
+                transport = config[name]
+                assert transport["topics"]
+                assert transport["default_topic"] in transport["topics"], name
+            assert config["ntfy"]["topics"]["fleet"] == "fleet"
+            assert config["telegram"]["default_topic"] == "fleet"
+            print("rendered notification policy and transport routing passed")
+            PY
+            touch $out
+          '';
+
+        vmagent-secret-guard =
+          pkgs.runCommand "vmagent-secret-guard-check"
+            {
+              nativeBuildInputs = [
+                pkgs.coreutils
+                pkgs.gnugrep
+              ];
             }
+            ''
+              set -euo pipefail
+              guard=${guardScriptFor system}
 
-            # A comma is the leak this guard exists for: it adds an array
-            # element, so the next destination receives arguments meant for
-            # this one. The rest are the parser's other structural characters,
-            # and a newline can start a new header line.
-            refuse 'PRIMARY,X-Probe: LEAKED' 'comma'
-            refuse 'a,b' 'comma (short)'
-            refuse 'a]b' 'closing bracket'
-            refuse 'a{b' 'opening brace'
-            refuse 'a(b' 'opening parenthesis'
-            refuse "q'w" 'single quote'
-            refuse 'p^^r' 'header separator'
-            refuse 'c^d' 'caret'
-            refuse $'e\nf' 'embedded newline'
-            refuse $'g\n' 'trailing newline'
-            refuse $'h\ri' 'carriage return'
+              refuse() {
+                if VMAGENT_probe="$1" "$guard" VMAGENT_probe 2>refusal.txt; then
+                  echo "vmagent-secret-guard: accepted a value that changes argument parsing ($2)" >&2
+                  exit 1
+                fi
+                grep -q "refusing to start" refusal.txt || {
+                  echo "vmagent-secret-guard: refusal for $2 was not the named error" >&2
+                  cat refusal.txt >&2
+                  exit 1
+                }
+              }
+              accept() {
+                VMAGENT_probe="$1" "$guard" VMAGENT_probe || {
+                  echo "vmagent-secret-guard: rejected a representable value ($2)" >&2
+                  exit 1
+                }
+              }
 
-            # Bearer/basic credentials and the shapes consumers actually bind
-            # must keep working, including one that is only structurally safe.
-            accept 'sk-abc123DEF' 'opaque token'
-            accept 'AbC0._~-+/=' 'base64url and padding'
-            accept 'user:pa55word' 'basic-auth style'
-            accept 'project-1234' 'identifier'
-            accept "" 'empty'
+              # A comma is the leak this guard exists for: it adds an array
+              # element, so the next destination receives arguments meant for
+              # this one. The rest are the parser's other structural characters,
+              # and a newline can start a new header line.
+              refuse 'PRIMARY,X-Probe: LEAKED' 'comma'
+              refuse 'a,b' 'comma (short)'
+              refuse 'a]b' 'closing bracket'
+              refuse 'a{b' 'opening brace'
+              refuse 'a(b' 'opening parenthesis'
+              refuse "q'w" 'single quote'
+              refuse 'p^^r' 'header separator'
+              refuse 'c^d' 'caret'
+              refuse $'e\nf' 'embedded newline'
+              refuse $'g\n' 'trailing newline'
+              refuse $'h\ri' 'carriage return'
 
-            touch $out
-          '';
+              # Bearer/basic credentials and the shapes consumers actually bind
+              # must keep working, including one that is only structurally safe.
+              accept 'sk-abc123DEF' 'opaque token'
+              accept 'AbC0._~-+/=' 'base64url and padding'
+              accept 'user:pa55word' 'basic-auth style'
+              accept 'project-1234' 'identifier'
+              accept "" 'empty'
 
-      # Offline runtime delivery check: the pinned collector binary, a
-      # build-directory state path and local mock receivers. Nothing here
-      # reaches a live endpoint or needs a credential.
-      checks.telemetry-delivery =
-        pkgs.runCommand "telemetry-delivery-check"
-          {
-            nativeBuildInputs = telemetryTestInputs;
-          }
-          ''
-            export OTELCOL=${collector}/bin/otelcol-contrib
-            export CONFIG=$PWD/delivery.yaml
-            export SMALL_CONFIG=$PWD/overflow.yaml
-            export BLOCKED_CONFIG=$PWD/blocked.yaml
-            export LATE_CONFIG=$PWD/late-flush.yaml
-            export EXHAUSTED_CONFIG=$PWD/exhausted.yaml
-            export EXHAUSTED_STATE=$PWD/exhausted
-            export RECEIVE_PORT=14318
-            export BACKEND_PORTS=19001,19002,19003
-            export SMALL_BACKEND=19004
-            export LATE_BACKEND=19005
-            export LATE_FLUSH_SECONDS=${toString lateFlushSeconds}
-            sed "s|@STATE@|$PWD|g" ${deliveryConfig} > "$CONFIG"
-            sed "s|@STATE@|$PWD|g" ${smallQueueConfig} > "$SMALL_CONFIG"
-            sed "s|@STATE@|$PWD|g" ${blockedStorageConfig} > "$BLOCKED_CONFIG"
-            sed "s|@STATE@|$PWD|g" ${lateFlushConfig} > "$LATE_CONFIG"
-            sed "s|@STATE@|$PWD|g" ${exhaustedStorageConfig} > "$EXHAUSTED_CONFIG"
-            # Config validity against the pinned binary, before anything runs: the
-            # harness only proves semantics if the config it starts is one the
-            # collector accepts. (The blocked-storage config is validated by
-            # phase 4, which requires it to be rejected at start-up.)
-            ${collector}/bin/otelcol-contrib validate --config=file:"$CONFIG"
-            ${collector}/bin/otelcol-contrib validate --config=file:"$SMALL_CONFIG"
-            ${collector}/bin/otelcol-contrib validate --config=file:"$LATE_CONFIG"
-            ${collector}/bin/otelcol-contrib validate --config=file:"$EXHAUSTED_CONFIG"
-            python3 ${../../tests/telemetry/delivery_check.py}
-            touch $out
-          '';
+              touch $out
+            '';
 
-      # Offline gateway check: producer and ingress listeners, admitted-signal
-      # enforcement and origin identity across the relay, against the same
-      # rendered settings and local mock receivers.
-      checks.telemetry-ingress =
-        pkgs.runCommand "telemetry-ingress-check"
-          {
-            nativeBuildInputs = telemetryTestInputs;
-          }
-          ''
-            export OTELCOL=${collector}/bin/otelcol-contrib
-            export CONFIG=$PWD/ingress.yaml
-            export LOCAL_PORT=14318
-            export INGRESS_ADDR=127.0.0.2
-            export INGRESS_PORT=14319
-            export BACKEND_PORT=19011
-            sed "s|@STATE@|$PWD|g" ${ingressConfig} > "$CONFIG"
-            ${collector}/bin/otelcol-contrib validate --config=file:"$CONFIG"
-            python3 ${../../tests/telemetry/ingress_check.py}
-            touch $out
-          '';
+        # Offline runtime delivery check: the pinned collector binary, a
+        # build-directory state path and local mock receivers. Nothing here
+        # reaches a live endpoint or needs a credential.
+        telemetry-delivery =
+          pkgs.runCommand "telemetry-delivery-check"
+            {
+              nativeBuildInputs = telemetryTestInputs;
+            }
+            ''
+              export OTELCOL=${collector}/bin/otelcol-contrib
+              export CONFIG=$PWD/delivery.yaml
+              export SMALL_CONFIG=$PWD/overflow.yaml
+              export BLOCKED_CONFIG=$PWD/blocked.yaml
+              export LATE_CONFIG=$PWD/late-flush.yaml
+              export EXHAUSTED_CONFIG=$PWD/exhausted.yaml
+              export EXHAUSTED_STATE=$PWD/exhausted
+              export RECEIVE_PORT=14318
+              export BACKEND_PORTS=19001,19002,19003
+              export SMALL_BACKEND=19004
+              export LATE_BACKEND=19005
+              export LATE_FLUSH_SECONDS=${toString lateFlushSeconds}
+              sed "s|@STATE@|$PWD|g" ${deliveryConfig} > "$CONFIG"
+              sed "s|@STATE@|$PWD|g" ${smallQueueConfig} > "$SMALL_CONFIG"
+              sed "s|@STATE@|$PWD|g" ${blockedStorageConfig} > "$BLOCKED_CONFIG"
+              sed "s|@STATE@|$PWD|g" ${lateFlushConfig} > "$LATE_CONFIG"
+              sed "s|@STATE@|$PWD|g" ${exhaustedStorageConfig} > "$EXHAUSTED_CONFIG"
+              # Config validity against the pinned binary, before anything runs: the
+              # harness only proves semantics if the config it starts is one the
+              # collector accepts. (The blocked-storage config is validated by
+              # phase 4, which requires it to be rejected at start-up.)
+              ${collector}/bin/otelcol-contrib validate --config=file:"$CONFIG"
+              ${collector}/bin/otelcol-contrib validate --config=file:"$SMALL_CONFIG"
+              ${collector}/bin/otelcol-contrib validate --config=file:"$LATE_CONFIG"
+              ${collector}/bin/otelcol-contrib validate --config=file:"$EXHAUSTED_CONFIG"
+              python3 ${../../tests/telemetry/delivery_check.py}
+              touch $out
+            '';
+
+        # Offline gateway check: producer and ingress listeners, admitted-signal
+        # enforcement and origin identity across the relay, against the same
+        # rendered settings and local mock receivers.
+        telemetry-ingress =
+          pkgs.runCommand "telemetry-ingress-check"
+            {
+              nativeBuildInputs = telemetryTestInputs;
+            }
+            ''
+              export OTELCOL=${collector}/bin/otelcol-contrib
+              export CONFIG=$PWD/ingress.yaml
+              export LOCAL_PORT=14318
+              export INGRESS_ADDR=127.0.0.2
+              export INGRESS_PORT=14319
+              export BACKEND_PORT=19011
+              sed "s|@STATE@|$PWD|g" ${ingressConfig} > "$CONFIG"
+              ${collector}/bin/otelcol-contrib validate --config=file:"$CONFIG"
+              python3 ${../../tests/telemetry/ingress_check.py}
+              touch $out
+            '';
+      };
     };
 }

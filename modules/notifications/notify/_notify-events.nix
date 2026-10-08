@@ -5,9 +5,20 @@
 #
 # on hosts where the notify aspect is co-selected; the aspect validates the
 # target unit, renders the policy map, and attaches the native systemd
-# OnFailure=/OnSuccess= hooks. The option lives inside the notify aspect: if
-# notify is absent, a registration fails as an unknown option — an invalid
-# composition, reported as such.
+# OnFailure=/OnSuccess= hooks.
+#
+# Registering aspects import THIS fragment, so the option is declared wherever a
+# registration is written — including on a host that never selects the notify
+# aspect. A registration is therefore INERT BY DESIGN without notify: it
+# evaluates, it is visible in the merged configuration, and it produces no hook
+# and no dispatcher, because attaching hooks is the notify aspect's job alone.
+# Silence here is deliberate rather than an accident of evaluation: the fleet
+# baseline requires notify on every managed host, and checking that a host's
+# registrations are realized is the consumer composition's job — not something
+# this declaration-only fragment can enforce. (An enable flag or a
+# realized-marker guard would trade an inert registration for a second
+# enablement dialect and a duplicate-ownership hazard; the notify aspect is the
+# one place a unit gets its hooks.)
 #
 # Success events fire when a unit enters the inactive state — meaningful for
 # scheduled/oneshot jobs whose completion is a semantic event, but also fired

@@ -1,15 +1,19 @@
-# VictoriaMetrics vmagent contributor to flake.modules.nixos.telemetry — a
-# sibling flake-parts file merging the same aspect, not a public aspect and not
-# a private module tree. It renders `services.telemetry.scrape` into nixpkgs'
+# VictoriaMetrics vmagent scrape realization. Composition starts the agent,
+# which renders `services.telemetry.scrape` into nixpkgs'
 # `services.vmagent` and the selected metrics fanout into vmagent's own
 # `-remoteWrite.*` arguments.
+#
+# The provider also registers its own loopback management endpoint as a scrape
+# source: backlog and send-error visibility is part of the metrics lane, and the
+# consumer never has to re-derive the port the unit binds.
 #
 # vmagent is a scrape-and-forward agent: it speaks Prometheus remote write and
 # nothing else, so every destination the contract's metrics pipeline selects
 # must be `prometheus-remote-write`. One it cannot write to is a named failure,
 # never a silently narrowed fanout.
-_: {
-  flake.modules.nixos.telemetry =
+{ config, ... }:
+let
+  impl =
     {
       config,
       lib,
@@ -18,9 +22,6 @@ _: {
     }:
     let
       telemetry = config.services.telemetry;
-
-      # The capability selector, exactly as the collector adapter reads its own.
-      servesPrometheusScrape = telemetry.providers.prometheusScrape == "vmagent";
 
       # A scrape source the contract registered, in Prometheus scrape-config shape.
       # The registration name is the job name. `services.vmagent.checkConfig` (left
@@ -38,11 +39,16 @@ _: {
           }
         ];
       }) telemetry.scrape;
-      hasScrapes = scrapeConfigs != [ ];
 
-      # Scrape work is this provider's business only when it is the selected scrape
-      # provider and something registered a source.
-      scrapeWork = servesPrometheusScrape && hasScrapes;
+      # This provider's own health surface: the loopback management endpoint it
+      # always binds, registered as a scrape source like any other, so the
+      # host's selected collector carries vmagent's pending-bytes and
+      # send-error metrics to the metrics store. One value feeds both the
+      # `-httpListenAddr` argument and the registration, so the scrape target
+      # cannot drift from the bound port.
+      healthPort = 8429;
+      healthJob = "vmagent-health";
+      healthIdentity = "${config.networking.hostName}:vmagent";
 
       metricsDestinations = telemetry.resolvedPipelines.metrics;
       unwritable = builtins.filter (
@@ -153,7 +159,7 @@ _: {
         ++ [
           "-remoteWrite.tmpDataPath=%S/vmagent/remote_write_tmp"
           # Management/inspection endpoint: loopback only, no firewall rule.
-          "-httpListenAddr=127.0.0.1:8429"
+          "-httpListenAddr=127.0.0.1:${toString healthPort}"
         ]
         ++ map (_: "-remoteWrite.maxDiskUsagePerURL=${toString queueBytes}") remoteWriteTargets
         ++ lib.optionals hasHeaders (
@@ -194,33 +200,41 @@ _: {
       # credential checks evaluate.
       guardNames = map envName boundSecretIds;
 
-      # All three mistakes fail closed by name; none leaves a unit behind that would
-      # push scraped metrics somewhere the contract never selected.
-      fanoutOk = metricsDestinations != [ ] && unwritable == [ ] && literalFailures == [ ];
     in
     {
-      imports = [ ../notifications/notify/_notify-events.nix ];
+      key = "nix-fleet/telemetry-vmagent";
+      imports = [
+        ../../lib/telemetry-contract.nix
+        ../notifications/notify/_notify-events.nix
+      ];
 
       config = lib.mkMerge [
         {
-          assertions = lib.optionals scrapeWork [
+          services.telemetry.scrapeRealization = "vmagent";
+          assertions = [
             {
-              assertion = metricsDestinations != [ ];
-              message = "telemetry: ${toString (builtins.length scrapeConfigs)} scrape source(s) are registered but the metrics pipeline has no destination to carry them";
+              assertion = metricsDestinations != [ ] || telemetry.scrape == { };
+              message = "telemetry: scrape sources are registered but the metrics pipeline has no destination to carry them";
             }
             {
               assertion = unwritable == [ ];
               message = "telemetry: the metrics pipeline selects ${
                 lib.concatMapStringsSep ", " destinationWithProtocol unwritable
-              } for metrics, which the scrape provider vmagent cannot write to — vmagent speaks prometheus-remote-write only. Repoint those destinations or select services.telemetry.providers.prometheusScrape = \"otel-collector\".";
+              } for metrics, which the scrape realization vmagent cannot write to — vmagent speaks prometheus-remote-write only. Repoint those destinations or compose telemetry-otel-collector-scrape instead.";
             }
             {
               assertion = literalFailures == [ ];
-              message = "telemetry: the metrics pipeline selects values vmagent's argument parser would treat as structure — ${lib.concatStringsSep "; " literalFailures} — because its remote-write arguments are comma-separated arrays: a comma, caret, bracket, brace, parenthesis, quote or newline would move a header onto another destination. Change the value or select services.telemetry.providers.prometheusScrape = \"otel-collector\".";
+              message = "telemetry: the metrics pipeline selects values vmagent's argument parser would treat as structure — ${lib.concatStringsSep "; " literalFailures} — because its remote-write arguments are comma-separated arrays: a comma, caret, bracket, brace, parenthesis, quote or newline would move a header onto another destination. Change the value or compose telemetry-otel-collector-scrape instead.";
             }
           ];
         }
-        (lib.mkIf (scrapeWork && fanoutOk) {
+        {
+          services.telemetry.scrape.${healthJob} = {
+            target = "127.0.0.1";
+            port = healthPort;
+            labels.instance = healthIdentity;
+          };
+
           services.vmagent = {
             enable = true;
             prometheusConfig.scrape_configs = scrapeConfigs;
@@ -262,7 +276,15 @@ _: {
               + "\n";
             restartUnits = [ "vmagent.service" ];
           };
-        })
+        }
       ];
     };
+in
+{
+  flake.modules.nixos.telemetry-vmagent = {
+    imports = [
+      config.flake.modules.nixos.telemetry
+      impl
+    ];
+  };
 }

@@ -1,10 +1,10 @@
-# telemetry-collection Specification
+# Spec Delta
 
 ## Purpose
 
-Define a shared host-local telemetry vocabulary with explicit signal admission, dormant source registrations and runtime capabilities selected by composition.
+Narrow the host-local producer interface to a shared vocabulary plus explicit capability selection, and drop the requirement that providers infer their own activation.
 
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: One host-local producer interface
 
@@ -19,20 +19,6 @@ The system SHALL expose one shared telemetry contract namespace. Producers SHALL
 
 - **WHEN** a host declares trace ingest, local scraping and journald shipping
 - **THEN** each signal is carried by the realization composed for it, and any signal whose lane is not composed ships nothing
-
-### Requirement: Explicit OTLP signal admission
-
-The host SHALL explicitly declare a unique set of signals accepted by its OTLP input. The default admitted set SHALL be empty, and each admitted signal SHALL resolve to a nonempty compatible destination pipeline.
-
-#### Scenario: Trace-only input
-
-- **WHEN** a host admits traces and binds a traces destination
-- **THEN** its OTLP input accepts traces but does not silently accept metrics or logs
-
-#### Scenario: Input without export
-
-- **WHEN** a host admits traces without a valid traces destination
-- **THEN** evaluation fails with a named telemetry error identifying the unserved signal
 
 ### Requirement: Local URLs promise a realized input
 
@@ -62,11 +48,10 @@ The system SHALL reject unknown selected destinations, signal and protocol misma
 - **WHEN** a producer registers a scrape source and the host composes no telemetry realization
 - **THEN** evaluation succeeds and the registration stays dormant rather than failing as an orphan
 
-### Requirement: Provider-bound credentials
+## REMOVED Requirements
 
-Each provider SHALL bind only credentials referenced by its active exporters. Unknown or unbound referenced credentials SHALL fail closed, and credentials SHALL NOT appear in store-resident configuration.
+### Requirement: Providers run only for declared work
 
-#### Scenario: Unused backend credential
+**Reason**: Activation inferred from configuration values cannot distinguish a composed capability from an incidental one, and it forced every realization to read a fixed point that a realization itself can contribute to. Selection replaces inference: a realization runs because its aspect is composed, and a host that composes a lane ships that lane.
 
-- **WHEN** an active provider's pipelines do not select a declared destination containing a secret-backed header
-- **THEN** that provider renders neither its exporter nor its secret binding
+**Migration**: Replace `imports = [ nixos.telemetry ]` with the lane aspects the host ships (`telemetry-metrics`, `telemetry-logs`, `telemetry-otlp`), and replace any `services.telemetry.providers.*` override with an explicit realization aspect import. The cases previously covered by this requirement are now covered by "Capability selection determines what runs" in the `telemetry-composition` capability, and by "One realization per signal" for arbitration.
