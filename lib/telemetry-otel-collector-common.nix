@@ -17,7 +17,25 @@ let
       prometheus-remote-write = "prometheusremotewrite";
     }
     .${protocol};
-  active = lib.unique cfg.exporterDestinations;
+  active = builtins.attrValues (
+    builtins.listToAttrs (
+      map (instance: {
+        name = instance.id;
+        value = instance;
+      }) cfg.exporterInstances
+    )
+  );
+  # An exporter id is a persistent state identity: two destinations claiming one
+  # id would merge into a single exporter and share its queue and WAL, which is
+  # exactly the isolation the id scheme exists to provide. The ids are declared
+  # by the realizing aspect, so a shared id is a bug, not a dedupe.
+  idClaims = lib.foldl' (
+    claims: instance:
+    claims // { ${instance.id} = (claims.${instance.id} or [ ]) ++ [ instance.destination ]; }
+  ) { } cfg.exporterInstances;
+  conflictingIds = builtins.attrNames (
+    lib.filterAttrs (_: destinations: builtins.length (lib.unique destinations) > 1) idClaims
+  );
   ready =
     id:
     (telemetry.secretFiles.${id} or null) != null && builtins.pathExists telemetry.secretFiles.${id};
@@ -37,14 +55,14 @@ let
     };
   };
   render =
-    name:
+    instance:
     let
-      d = telemetry.destinations.${name};
+      d = telemetry.destinations.${instance.destination};
       protocol = component d.protocol;
       headers = lib.mapAttrs (
         _: h:
         if !(builtins.hasAttr h.secret telemetry.secretFiles) || !(ready h.secret) then
-          throw "telemetry: destination '${name}' header references unknown or unbound secret '${h.secret}'"
+          throw "telemetry: destination '${instance.destination}' header references unknown or unbound secret '${h.secret}'"
         else
           "${h.prefix}\${env:${envName h.secret}}"
       ) d.headers;
@@ -66,26 +84,31 @@ let
               enabled = true;
               queue_size = 10000;
             };
-            wal.directory = "${stateRoot}/queue/wal-${name}";
+            wal.directory = "${stateRoot}/queue/wal-${instance.id}";
           }
         else
           persistentQueue;
     in
     {
-      "${protocol}/${name}" = lib.recursiveUpdate (base // delivery) (cfg.exporterExtra.${name} or { });
+      "${protocol}/${instance.id}" = lib.recursiveUpdate (base // delivery) (
+        cfg.exporterExtra.${instance.destination} or { }
+      );
     };
   referencedSecretIds = lib.unique (
     lib.concatMap (
-      name: map (header: header.secret) (lib.attrValues telemetry.destinations.${name}.headers)
+      instance:
+      map (header: header.secret) (lib.attrValues telemetry.destinations.${instance.destination}.headers)
     ) active
   );
   secretIds = builtins.filter ready referencedSecretIds;
   overrides = lib.concatMap (
-    name:
+    instance:
     lib.mapAttrsToList (
       header: _:
-      "exporters::${component telemetry.destinations.${name}.protocol}/${name}::headers::${header}=stub"
-    ) telemetry.destinations.${name}.headers
+      "exporters::${
+        component telemetry.destinations.${instance.destination}.protocol
+      }/${instance.id}::headers::${header}=stub"
+    ) telemetry.destinations.${instance.destination}.headers
   ) active;
   generatedResource = cfg.resourceAttributes != { };
   processors =
@@ -120,8 +143,19 @@ in
       type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
       default = { };
     };
-    exporterDestinations = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
+    exporterInstances = lib.mkOption {
+      type = lib.types.listOf (
+        lib.types.submodule {
+          options = {
+            id = lib.mkOption { type = lib.types.str; };
+            destination = lib.mkOption { type = lib.types.str; };
+            route = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+            };
+          };
+        }
+      );
       default = [ ];
       internal = true;
     };
@@ -131,6 +165,10 @@ in
       {
         assertion = !generatedResource || !(cfg.processors ? resource);
         message = "otel-collector: configure the resource processor through resourceAttributes, not processors.resource";
+      }
+      {
+        assertion = conflictingIds == [ ];
+        message = "telemetry: exporter id(s) ${lib.concatStringsSep ", " conflictingIds} are claimed by more than one destination; a shared id would merge their delivery state, so the ids must be distinct.";
       }
     ];
     services.otel-collector.processors.memory_limiter = lib.mkDefault {

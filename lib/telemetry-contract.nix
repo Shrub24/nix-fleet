@@ -155,15 +155,31 @@ let
   ];
   ingressBinds = lib.concatMap (
     listener:
-    lib.optional (listener.httpPort != null) {
+    lib.optional ((listener.httpPort or null) != null) {
       inherit (listener) host;
       port = listener.httpPort;
     }
-    ++ lib.optional (listener.grpcPort != null) {
+    ++ lib.optional ((listener.grpcPort or null) != null) {
       inherit (listener) host;
       port = listener.grpcPort;
     }
   ) ingressHosts;
+  routeIngressBinds = lib.concatMap (
+    route:
+    let
+      listener = routeIngress route;
+    in
+    lib.optional (listener != null && listener.httpPort != null) {
+      inherit route;
+      inherit (listener) host;
+      port = listener.httpPort;
+    }
+    ++ lib.optional (listener != null && listener.grpcPort != null) {
+      inherit route;
+      inherit (listener) host;
+      port = listener.grpcPort;
+    }
+  ) routeNames;
   # Reported as the consumer spelled it, so the named error points at the value
   # that has to change.
   listenerCollisions = map (bind: "${bind.host}:${toString bind.port}") (
@@ -173,8 +189,98 @@ let
   );
   ingressTransports = lib.concatMap (
     listener:
-    lib.optional (listener.httpPort != null) "http" ++ lib.optional (listener.grpcPort != null) "grpc"
+    lib.optional ((listener.httpPort or null) != null) "http"
+    ++ lib.optional ((listener.grpcPort or null) != null) "grpc"
   ) ingressHosts;
+  localIngressBinds = lib.concatMap (
+    listener:
+    lib.optional ((listener.httpPort or null) != null) {
+      inherit (listener) host;
+      port = listener.httpPort;
+    }
+    ++ lib.optional ((listener.grpcPort or null) != null) {
+      inherit (listener) host;
+      port = listener.grpcPort;
+    }
+  ) localBinds;
+
+  # Named routes: additional, explicitly selected OTLP inputs. A route inherits
+  # nothing — neither the general route's pipelines nor destination presence —
+  # because "this backend exists" is not "this audience wants it". Route
+  # identity is the listener a producer sends to; no span or resource attribute
+  # ever selects the route, and this contract adds no authentication.
+  routeNames = builtins.attrNames cfg.routes;
+  routeSignals = route: cfg.routes.${route}.signals;
+  routeIngress = route: cfg.routes.${route}.ingress;
+  duplicatesOf =
+    values:
+    builtins.filter (
+      value: builtins.length (builtins.filter (other: other == value) values) > 1
+    ) values;
+  routePipelineNames = lib.genAttrs routeNames (
+    route:
+    lib.genAttrs allSignals (
+      signal:
+      builtins.seq validatedDestinationCount (
+        let
+          selected = cfg.routes.${route}.pipelines.${signal};
+        in
+        map (
+          name:
+          if !(builtins.hasAttr name cfg.destinations) then
+            throw "telemetry: route '${route}' ${signal} pipeline references unknown destination '${name}'"
+          else if !(acceptsSignal signal name) then
+            throw "telemetry: route '${route}' ${signal} pipeline selects destination '${name}', which does not accept ${signal} (accepts ${
+              lib.concatStringsSep ", " cfg.destinations.${name}.signals
+            })"
+          else
+            name
+        ) (if selected == null then [ ] else selected)
+      )
+    )
+  );
+  validatedRoutePipelines = builtins.deepSeq routePipelineNames (builtins.length routeNames);
+  invalidRouteNames = builtins.filter (name: builtins.match "[A-Za-z0-9_]+" name == null) routeNames;
+  emptyRouteSignals = builtins.filter (route: routeSignals route == [ ]) routeNames;
+  duplicateRouteSignals = lib.unique (
+    builtins.filter (route: duplicatesOf (routeSignals route) != [ ]) routeNames
+  );
+  unservedRouteSignals = lib.concatMap (
+    route:
+    map (signal: "route '${route}' pipeline for ${signal}") (
+      builtins.filter (signal: routePipelineNames.${route}.${signal} == [ ]) (routeSignals route)
+    )
+  ) routeNames;
+  missingRouteIngress = builtins.filter (route: routeIngress route == null) routeNames;
+  routeIngressHosts = builtins.filter (route: routeIngress route != null) routeNames;
+  wildcardRouteIngress = builtins.filter (
+    route: (routeIngress route).host == "" || builtins.elem (routeIngress route).host wildcardHosts
+  ) routeIngressHosts;
+  transportlessRouteIngress = builtins.filter (
+    route: (routeIngress route).httpPort == null && (routeIngress route).grpcPort == null
+  ) routeIngressHosts;
+  equalPortRouteIngress = builtins.filter (
+    route:
+    (routeIngress route).httpPort != null
+    && (routeIngress route).grpcPort != null
+    && (routeIngress route).httpPort == (routeIngress route).grpcPort
+  ) routeIngressHosts;
+  routeBindLabel = bind: "${bind.host}:${toString bind.port}";
+  routeCollisions = lib.concatMap (
+    bind:
+    lib.optional (builtins.any (localBind: bindsSameSocket localBind bind) localIngressBinds)
+      "route '${bind.route}' binds ${routeBindLabel bind}, the same address and transport port as the local producer listener"
+    ++
+      lib.optional (builtins.any (generalBind: bindsSameSocket generalBind bind) ingressBinds)
+        "route '${bind.route}' binds ${routeBindLabel bind}, the same address and transport port as services.telemetry.otlp.ingress"
+    ++
+      map
+        (
+          other:
+          "route '${bind.route}' binds ${routeBindLabel bind}, the same address and transport port as route '${other.route}'"
+        )
+        (builtins.filter (other: other.route != bind.route && bindsSameSocket other bind) routeIngressBinds)
+  ) routeIngressBinds;
 
   # Credential vocabulary. Provider-independent: validating secret wiring must
   # not depend on whether an OTel instance happens to run, because the scrape
@@ -299,6 +405,82 @@ in
       };
     };
 
+    routes = mkOption {
+      type = types.attrsOf (
+        types.submodule {
+          options = {
+            signals = mkOption {
+              type = types.listOf (types.enum allSignals);
+              default = [ ];
+              description = ''
+                Signals this route's listener accepts, as a unique nonempty set.
+                A route is a second, explicitly selected OTLP input: it admits
+                its own signals and inherits nothing from `otlp.signals`, which
+                stays the general route's admission set.
+              '';
+            };
+            pipelines = lib.genAttrs allSignals (
+              signal:
+              mkOption {
+                type = types.nullOr (types.listOf types.str);
+                default = null;
+                description = ''
+                  Destination names carrying ${signal} on this route. Unlike the
+                  general route, a route derives nothing from destination
+                  presence: null (the default) and an empty list both name no
+                  destination, and a signal this route accepts with no
+                  destination fails closed by name. A route's destinations are
+                  only the ones its own pipelines name.
+                '';
+              }
+            );
+            ingress = mkOption {
+              type = types.nullOr (
+                types.submodule {
+                  options = {
+                    host = mkOption {
+                      type = types.str;
+                      description = ''
+                        Address this route's listener binds — the consumer's
+                        tailnet (or other) bind address. Required and explicit:
+                        there is no automatic address discovery, and a wildcard
+                        or empty value fails closed by name.
+                      '';
+                    };
+                    httpPort = mkOption {
+                      type = types.nullOr types.port;
+                      default = 4318;
+                      description = "OTLP HTTP port for this route. Null disables the HTTP transport.";
+                    };
+                    grpcPort = mkOption {
+                      type = types.nullOr types.port;
+                      default = null;
+                      description = "OTLP gRPC port for this route. Null (the default) disables the gRPC transport.";
+                    };
+                  };
+                }
+              );
+              default = null;
+              description = ''
+                Listener that carries this route: the address and transport
+                port(s) a producer selects the route by sending to. Required for
+                every route — a route is an input, not a filter — and it must
+                not share a socket with the loopback producer listener, the
+                general `otlp.ingress`, or another route.
+              '';
+            };
+          };
+        }
+      );
+      default = { };
+      description = ''
+        Named routes, each with its own listener and its own destination
+        policy. Selecting a route is a routing decision, never an
+        authorization one: the contract adds no authentication, and the
+        consumer owns any admission and firewall policy in front of a listener.
+      '';
+    };
+
     scrape = mkOption {
       type = types.attrsOf (
         types.submodule {
@@ -360,7 +542,7 @@ in
           and case-sensitively — this is not `journalctl -u`: records the kernel
           or PID 1 logs about a unit usually carry `init.scope`, not the unit's
           own name, and a template instance needs its own exact name
-          (`foo@bar.service`, not `foo@.service`). Empty is not "no units" and
+          (`[EMAIL_REDACTED]`, not `foo@.service`). Empty is not "no units" and
           not by itself "every unit": it must be paired with `includeAll`.
           Unit names without a `.` get `.service` appended by the reader.
         '';
@@ -389,7 +571,7 @@ in
             Remote log-store ingest URL, including any path the backend needs
             (VictoriaLogs' HTTP JSON-line endpoint is
             `https://<store>/insert/jsonline`). Consumer policy: the aspect
-            names no backend, and the whole URL is one value so repointing is
+            names no backend, and the whole URL is one value so repointing it is
             an edit here alone.
           '';
         };
@@ -497,10 +679,18 @@ in
       internal = true;
       description = "Destination names per signal after derivation and validation; consumed by the implementation.";
     };
+
+    resolvedRoutePipelines = mkOption {
+      type = types.attrsOf (types.attrsOf (types.listOf types.str));
+      readOnly = true;
+      internal = true;
+      description = "Destination names per route and signal after validation; consumed by an implementation that binds routes.";
+    };
   };
 
   config = {
     services.telemetry.resolvedPipelines = lib.genAttrs allSignals resolvedPipeline;
+    services.telemetry.resolvedRoutePipelines = builtins.seq validatedRoutePipelines routePipelineNames;
 
     assertions = [
       {
@@ -516,12 +706,6 @@ in
         assertion = cfg.journald.sink.endpoint == null || validSinkUrl cfg.journald.sink.endpoint;
         message = "telemetry: journald sink endpoint '${cfg.journald.sink.endpoint}' must be an http:// or https:// URL.";
       }
-      # The whole-journal footgun, closed at the contract rather than in one
-      # provider: an empty allowlist used to mean "every unit", so a host that
-      # enabled shipping to satisfy the "logs go somewhere" wiring shipped the
-      # entire journal by accident. Exporting everything is now an explicit,
-      # named decision, and a contradictory pair is not a preference to resolve
-      # silently in either direction.
       {
         assertion = !cfg.journald.enable || cfg.journald.includeUnits != [ ] || cfg.journald.includeAll;
         message = "telemetry: journald shipping is enabled with an empty includeUnits and includeAll = false; an empty allowlist is not a whole-journal licence. List the operating units this host ships, or set services.telemetry.journald.includeAll = true to export the whole journal deliberately.";
@@ -573,6 +757,42 @@ in
       {
         assertion = listenerCollisions == [ ];
         message = "telemetry: services.telemetry.otlp.ingress binds ${lib.concatStringsSep ", " listenerCollisions}, the same address and transport port as the local producer listener; the two listeners must be distinct.";
+      }
+      {
+        assertion = invalidRouteNames == [ ];
+        message = "telemetry: route names must contain only letters, digits, or underscores; got ${lib.concatStringsSep ", " invalidRouteNames}.";
+      }
+      {
+        assertion = emptyRouteSignals == [ ];
+        message = "telemetry: route(s) ${lib.concatStringsSep ", " emptyRouteSignals} declare no signals; a route binds a listener, so it must carry at least one signal.";
+      }
+      {
+        assertion = duplicateRouteSignals == [ ];
+        message = "telemetry: route(s) ${lib.concatStringsSep ", " duplicateRouteSignals} name a signal more than once; a route's signals are a unique set.";
+      }
+      {
+        assertion = unservedRouteSignals == [ ];
+        message = "telemetry: ${lib.concatStringsSep ", " unservedRouteSignals} names no destination; a route's destinations are only the ones its own pipelines name, so a carried signal needs the destinations its audience requires — name them, or drop the signal from the route.";
+      }
+      {
+        assertion = missingRouteIngress == [ ];
+        message = "telemetry: route(s) ${lib.concatStringsSep ", " missingRouteIngress} declare no ingress; a route is selected by the listener its producers send to, so bind one (host plus an httpPort or grpcPort).";
+      }
+      {
+        assertion = wildcardRouteIngress == [ ];
+        message = "telemetry: route(s) ${lib.concatStringsSep ", " wildcardRouteIngress} ingress.host must be an explicit bind address, not wildcard or empty; a wildcard route listener would expose the collector on every interface.";
+      }
+      {
+        assertion = transportlessRouteIngress == [ ];
+        message = "telemetry: route(s) ${lib.concatStringsSep ", " transportlessRouteIngress} ingress sets no HTTP or gRPC port; declare at least one transport or remove the ingress.";
+      }
+      {
+        assertion = equalPortRouteIngress == [ ];
+        message = "telemetry: route(s) ${lib.concatStringsSep ", " equalPortRouteIngress} ingress.httpPort and grpcPort must differ when both transports are enabled.";
+      }
+      {
+        assertion = routeCollisions == [ ];
+        message = "telemetry: ${lib.concatStringsSep "; " routeCollisions}; the listeners must be distinct.";
       }
       {
         assertion = secretIds == builtins.attrNames cfg.secretKeys;

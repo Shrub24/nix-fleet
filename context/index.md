@@ -64,7 +64,7 @@
 
 ## T
 
-- [telemetry-composition.md](telemetry-composition.md) — lane selection is explicit; registrations and credentials may remain dormant
+- [telemetry-composition.md](telemetry-composition.md) — lane selection is explicit; registrations and credentials may remain dormant; routes carry their own listener and destination policy
 
 ## U
 

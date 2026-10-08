@@ -35,8 +35,23 @@ let
           prometheus-remote-write = "prometheusremotewrite";
         }
         .${protocol};
-      exporterIds =
-        names: map (name: "${component telemetry.destinations.${name}.protocol}/${name}") names;
+      # One exporter instance per (route, destination) pair: an exporter id is a
+      # persistent state identity, so a route that shares a destination with the
+      # general route still gets its own exporter, queue, WAL and retry scope.
+      instanceId =
+        route: destination: if route == null then destination else "route-${route}-${destination}";
+      instance =
+        route: destination:
+        {
+          id = instanceId route destination;
+          inherit destination;
+        }
+        // lib.optionalAttrs (route != null) { inherit route; };
+      exporterRef =
+        instance: "${component telemetry.destinations.${instance.destination}.protocol}/${instance.id}";
+      exporterIds = names: map (name: exporterRef (instance null name)) names;
+      routeNames = builtins.attrNames telemetry.routes;
+      routeReceiver = route: "otlp/route-${route}";
       resource = cfg.resourceAttributes != { };
       processors =
         lib.optionals (cfg.processors ? memory_limiter) [ "memory_limiter" ]
@@ -66,13 +81,16 @@ let
       }) telemetry.scrape;
       ingress = telemetry.otlp.ingress;
       ingressActive = otlp && admitted != [ ] && ingress != null;
-      ingressProtocols =
-        lib.optionalAttrs (ingressActive && ingress.httpPort != null) {
-          http.endpoint = bind ingress.host ingress.httpPort;
+      routesActive = otlp && routeNames != [ ];
+      protocolsFor =
+        listener:
+        lib.optionalAttrs (listener.httpPort != null) {
+          http.endpoint = bind listener.host listener.httpPort;
         }
-        // lib.optionalAttrs (ingressActive && ingress.grpcPort != null) {
-          grpc.endpoint = bind ingress.host ingress.grpcPort;
+        // lib.optionalAttrs (listener.grpcPort != null) {
+          grpc.endpoint = bind listener.host listener.grpcPort;
         };
+      ingressProtocols = lib.optionalAttrs ingressActive (protocolsFor ingress);
       scrapePipeline = {
         "metrics/scrape" = {
           receivers = [ "prometheus" ];
@@ -100,13 +118,51 @@ let
           };
         }) (lib.optionals ingressActive admitted)
       );
-      served = builtins.all (signal: telemetry.resolvedPipelines.${signal} != [ ]) admitted;
-      selectedDestinations = lib.unique (
-        lib.concatMap (signal: telemetry.resolvedPipelines.${signal}) (
-          lib.optionals (otlp && served) admitted
-        )
-        ++ lib.optionals (realization == "scrape") telemetry.resolvedPipelines.metrics
+      # A route is an input of its own: its own receiver instance and one
+      # pipeline per signal it carries, exporting only through the route-scoped
+      # exporter instances its own pipelines select. Route pipelines are exempt
+      # from locally received enrichment for the same reason the general ingress
+      # is — the origin identity of forwarded telemetry is preserved.
+      routeReceivers = builtins.listToAttrs (
+        map (route: {
+          name = routeReceiver route;
+          value.protocols = protocolsFor telemetry.routes.${route}.ingress;
+        }) routeNames
       );
+      routePipelines = builtins.listToAttrs (
+        lib.concatMap (
+          route:
+          map (signal: {
+            name = "${signal}/route-${route}";
+            value = {
+              receivers = [ (routeReceiver route) ];
+              processors = ingressProcessors;
+              exporters = map (
+                name: exporterRef (instance route name)
+              ) telemetry.resolvedRoutePipelines.${route}.${signal};
+            };
+          }) telemetry.routes.${route}.signals
+        ) routeNames
+      );
+      served = builtins.all (signal: telemetry.resolvedPipelines.${signal} != [ ]) admitted;
+      generalInstances = map (destination: instance null destination) (
+        lib.unique (
+          lib.concatMap (signal: telemetry.resolvedPipelines.${signal}) (
+            lib.optionals (otlp && served) admitted
+          )
+        )
+      );
+      routeInstances = lib.concatMap (
+        route:
+        map (destination: instance route destination) (
+          lib.unique (
+            lib.concatMap (
+              signal: telemetry.resolvedRoutePipelines.${route}.${signal}
+            ) telemetry.routes.${route}.signals
+          )
+        )
+      ) (lib.optionals otlp routeNames);
+      scrapeInstances = map (destination: instance null destination) telemetry.resolvedPipelines.metrics;
     in
     {
       key = "nix-fleet/telemetry-otel-collector-${realization}";
@@ -115,9 +171,9 @@ let
         ../notifications/notify/_notify-events.nix
       ];
       config = {
-        services.otel-collector.exporterDestinations = lib.mkIf (
-          otlp && admitted != [ ] || realization == "scrape"
-        ) selectedDestinations;
+        services.otel-collector.exporterInstances =
+          lib.optionals (otlp && (admitted != [ ] || routeNames != [ ])) (generalInstances ++ routeInstances)
+          ++ lib.optionals (realization == "scrape") scrapeInstances;
         services.telemetry.scrapeRealization = lib.mkIf (realization == "scrape") "otel-collector";
         services.telemetry.otlp.httpUrl = lib.mkIf otlp (endpoint telemetry.otlp.httpPort);
         services.telemetry.otlp.grpcUrl = lib.mkIf otlp (endpoint telemetry.otlp.grpcPort);
@@ -128,8 +184,8 @@ let
           }
           ++ lib.optionals otlp [
             {
-              assertion = admitted != [ ];
-              message = "telemetry: OTLP realization requires at least one admitted signal in services.telemetry.otlp.signals";
+              assertion = admitted != [ ] || routeNames != [ ];
+              message = "telemetry: OTLP realization requires at least one admitted signal in services.telemetry.otlp.signals or at least one declared route";
             }
             {
               assertion = admitted == [ ] || served;
@@ -147,13 +203,15 @@ let
                 };
               }
               // lib.optionalAttrs ingressActive { "otlp/ingress".protocols = ingressProtocols; }
+              // lib.optionalAttrs routesActive routeReceivers
               // lib.optionalAttrs (realization == "scrape") {
                 prometheus.config.scrape_configs = scrapeConfigs;
               };
             service.pipelines =
               (lib.optionalAttrs (realization == "scrape") scrapePipeline)
               // lib.optionalAttrs otlp otlpPipelines
-              // ingressPipelines;
+              // ingressPipelines
+              // lib.optionalAttrs routesActive routePipelines;
           };
         };
       };

@@ -27,6 +27,20 @@ imports = [
 
 Composing a lane is enablement — there is no top-level enable flag.
 
+Two migration consequences follow from that split. Importing the bare
+`telemetry` aspect selects no realization, so it contributes the vocabulary and
+its validation while leaving every provider disabled — select the lanes the host
+ships instead. And a realization owns the health registration that belongs to its
+own listener: `vmagent-health` (`:8429`) is registered by `telemetry-vmagent`,
+`vector-health` (`:9598`) by `telemetry-vector` while journald shipping is
+active, and `otel-collector-health` by whichever collector realization is
+composed. A host that registered one of those jobs itself under the older
+single-aspect composition must drop its own definition when it selects the lane:
+the registration is a plain value owned by the provider, so two definitions of
+one job name conflict by design rather than merging. Overriding the provider's
+job is possible with `lib.mkForce`, and it deliberately repoints a health scrape
+away from the listener the provider bound.
+
 A host can also act as an explicit relay or gateway: it forwards only to the
 destinations its pipelines select, and it can bind a separate, explicitly
 addressed network ingress next to its loopback producer listener. Discovery,
@@ -133,6 +147,53 @@ entries fail the same way (`… otlp.signals names traces more than once`).
 
 **A destination is not admission.** A metrics destination alone composes no OTLP
 realization and advertises no OTLP receiver; only the OTLP lane binds one.
+
+### Explicit named routes
+
+`services.telemetry.routes.<name>` declares an additional OTLP listener and its
+own audience policy. Producers select a route by sending to that route's
+listener; the route is never inferred from span names, resource attributes,
+destination presence or backend credentials. A route is a routing input, not an
+authorization boundary — the consumer owns any admission and firewall policy in
+front of it.
+
+```nix
+services.telemetry.routes.aiSession = {
+  signals = [ "traces" ];
+  ingress = {
+    host = "<consumer bind address>";
+    httpPort = 4320;
+    grpcPort = null;
+  };
+  pipelines.traces = [ "langfuse" ];
+};
+```
+
+The route's `pipelines.<signal>` names only the destinations for that route;
+`null` means no destination (not the general route's derivation), and a signal
+that the route admits must name at least one destination. The general
+`otlp.signals`, `pipelines.<signal>` and `otlp.ingress` remain the existing
+general input and policy. Thus a general producer remains general even when
+AI-specific destinations are configured, and an AI stream reaches the general
+store only if the AI route's own policy names it.
+
+Every route has a separate receiver and pipeline, and every (route,
+destination) pair has its own exporter identity, persistent queue/retry scope
+and remote-write WAL path. A shared destination explicitly selected by two
+routes therefore receives both streams through separate exporters; a backend
+failure cannot redirect one route's backlog to another audience. Listener
+addresses/ports must not collide with the loopback producer, general ingress or
+another route. Route-specific credentials remain destination-owned, and
+selecting a route does not authenticate or authorize its sender.
+
+Routes are additive: declaring one leaves the general input, policy and listener
+untouched, so a host gains a route without changing what it already ships.
+Removing the declaration removes that route's listener, receiver, pipeline and
+exporters in the same edit; producers still sending to it must be repointed at
+the general ingress or another route, and a destination that other routes also
+name keeps receiving from them. Nothing falls back to a specialized destination
+when a route is removed, and a destination named by no route's pipeline receives
+nothing at all.
 
 ## Producer registrations
 

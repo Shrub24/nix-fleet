@@ -655,6 +655,110 @@ let
             port = 9187;
           };
         };
+      telemetryRouteChecks =
+        let
+          modules = [
+            aspects.telemetry-otel-collector-otlp
+            {
+              services.telemetry = {
+                otlp.signals = [ "traces" ];
+                destinations.general = {
+                  protocol = "otlp-http";
+                  endpoint = "https://victoria.invalid/v1/traces";
+                  signals = [ "traces" ];
+                };
+                destinations.langfuse = {
+                  protocol = "otlp-http";
+                  endpoint = "https://langfuse.invalid/api/public/otel/v1/traces";
+                  signals = [ "traces" ];
+                };
+                pipelines.traces = [ "general" ];
+                routes.ai = {
+                  signals = [ "traces" ];
+                  pipelines.traces = [ "langfuse" ];
+                  ingress = {
+                    host = "127.0.0.2";
+                    httpPort = 14320;
+                    grpcPort = null;
+                  };
+                };
+              };
+            }
+          ];
+          host = admissionEval modules;
+          settings = host.config.services.opentelemetry-collector.settings;
+          routeRejects =
+            message: extra: builtins.any (lib.hasPrefix message) (admissionFailures (modules ++ [ extra ]));
+        in
+        admissionAccepts modules
+        && settings.service.pipelines.traces.exporters == [ "otlphttp/general" ]
+        && settings.service.pipelines."traces/route-ai".exporters == [ "otlphttp/route-ai-langfuse" ]
+        && settings.service.pipelines."traces/route-ai".receivers == [ "otlp/route-ai" ]
+        && settings.receivers."otlp/route-ai".protocols.http.endpoint == "127.0.0.2:14320"
+        && settings.exporters ? "otlphttp/general"
+        && settings.exporters ? "otlphttp/route-ai-langfuse"
+        && settings.exporters."otlphttp/route-ai-langfuse".sending_queue.storage == "file_storage"
+        && settings.service.pipelines."traces/route-ai".exporters != [ "otlphttp/route-ai-general" ]
+        && telemetryRejects [ aspects.telemetry-otel-collector-otlp ] {
+          services.telemetry = {
+            otlp.signals = [ "traces" ];
+            destinations.general = {
+              protocol = "otlp-http";
+              endpoint = "https://victoria.invalid/v1/traces";
+              signals = [ "traces" ];
+            };
+            routes.ai = {
+              signals = [ "traces" ];
+              pipelines.traces = [ "missing" ];
+              ingress.host = "127.0.0.2";
+              ingress.httpPort = 14320;
+            };
+          };
+        }
+        && routeRejects "telemetry: route(s) empty declare no signals" {
+          services.telemetry.routes.empty = lib.mkForce {
+            signals = [ ];
+            ingress.host = "127.0.0.2";
+            ingress.httpPort = 14321;
+          };
+        }
+        && routeRejects "telemetry: route(s) ai ingress.host must be an explicit bind address" {
+          services.telemetry.routes.ai.ingress.host = lib.mkForce "0.0.0.0";
+        }
+        && routeRejects "telemetry: route 'ai' binds 127.0.0.2:14320" {
+          services.telemetry.routes.second = {
+            signals = [ "traces" ];
+            pipelines.traces = [ "langfuse" ];
+            ingress.host = "127.0.0.2";
+            ingress.httpPort = 14320;
+          };
+        }
+        # Fan-out to the general store is a route's own selection, never a
+        # default: naming it gives the route both destinations as separate
+        # instances while the general route keeps exporting through its own.
+        && (
+          let
+            dual =
+              (admissionEval (
+                modules
+                ++ [
+                  {
+                    services.telemetry.routes.ai.pipelines.traces = lib.mkForce [
+                      "langfuse"
+                      "general"
+                    ];
+                  }
+                ]
+              )).config.services.opentelemetry-collector.settings;
+          in
+          builtins.sort builtins.lessThan dual.service.pipelines."traces/route-ai".exporters == [
+            "otlphttp/route-ai-general"
+            "otlphttp/route-ai-langfuse"
+          ]
+          && dual.service.pipelines.traces.exporters == [ "otlphttp/general" ]
+          && dual.exporters ? "otlphttp/route-ai-general"
+          && dual.exporters ? "otlphttp/general"
+        );
       telemetryAdmissionChecks =
         let
           traceOnlyEndpoint = builtins.tryEval (pushOnlyEndpoint {
@@ -1661,6 +1765,10 @@ let
       telemetry-rejects = {
         message = "telemetry: a destination, fanout or secret mistake no longer fails closed";
         ok = telemetryMutationChecks;
+      };
+      telemetry-routes = {
+        message = "telemetry: explicit route selection no longer isolates general and AI-session destinations";
+        ok = telemetryRouteChecks;
       };
       telemetry-named-rejections = {
         message = "telemetry: a named admission rejection is missing, misnamed or no longer rejects";
@@ -2814,6 +2922,39 @@ in
             services.otel-collector.resourceAttributes."host.name" = "gateway";
           })
       );
+      # One gateway, two routes: the loopback producer listener exports only to
+      # the general backend, while an explicitly declared route has its own
+      # listener and exports only to the route backend. The batch processor is
+      # switched on deliberately — the production default renders none — so the
+      # runtime check observes route boundaries through a real batch window
+      # rather than only through per-item delivery.
+      routeConfig = (pkgs.formats.yaml { }).generate "telemetry-routes.yaml" (
+        testPlumbing
+          {
+            queueSize = 268435456;
+            statePath = "routes";
+          }
+          (harnessSettings {
+            services.telemetry.otlp.signals = [ "traces" ];
+            services.telemetry.otlp.httpPort = 14338;
+            services.telemetry.otlp.grpcPort = 14337;
+            services.telemetry.destinations.general = tracesDestination 19031;
+            services.telemetry.destinations.ai = tracesDestination 19032;
+            services.telemetry.pipelines.traces = [ "general" ];
+            services.telemetry.routes.ai = {
+              signals = [ "traces" ];
+              pipelines.traces = [ "ai" ];
+              ingress = {
+                host = "127.0.0.2";
+                httpPort = 14339;
+                grpcPort = null;
+              };
+            };
+            services.otel-collector.processors.batch = {
+              timeout = "1s";
+            };
+          })
+      );
       # Delivery storage that cannot be created: the harness makes the parent
       # path a regular file, so the extension cannot make its directory.
       blockedStorageConfig = (pkgs.formats.yaml { }).generate "telemetry-storage-failure.yaml" (
@@ -2884,6 +3025,7 @@ in
         "telemetry-journald"
         "telemetry-named-rejections"
         "telemetry-rejects"
+        "telemetry-routes"
         "vmagent"
       ];
       contractChecks = lib.mapAttrs contractLeaf contract;
@@ -3086,6 +3228,29 @@ in
               sed "s|@STATE@|$PWD|g" ${ingressConfig} > "$CONFIG"
               ${collector}/bin/otelcol-contrib validate --config=file:"$CONFIG"
               python3 ${../../tests/telemetry/ingress_check.py}
+              touch $out
+            '';
+
+        # Offline route-isolation check: a general listener and an explicitly
+        # declared route listener, each exporting only through its own
+        # route-scoped exporter. The route backend starts down, so queue/retry
+        # isolation across routes is observable rather than assumed.
+        telemetry-route-isolation =
+          pkgs.runCommand "telemetry-route-isolation-check"
+            {
+              nativeBuildInputs = telemetryTestInputs;
+            }
+            ''
+              export OTELCOL=${collector}/bin/otelcol-contrib
+              export CONFIG=$PWD/routes.yaml
+              export LOCAL_PORT=14338
+              export ROUTE_ADDR=127.0.0.2
+              export ROUTE_PORT=14339
+              export GENERAL_BACKEND_PORT=19031
+              export AI_BACKEND_PORT=19032
+              sed "s|@STATE@|$PWD|g" ${routeConfig} > "$CONFIG"
+              ${collector}/bin/otelcol-contrib validate --config=file:"$CONFIG"
+              python3 ${../../tests/telemetry/route_check.py}
               touch $out
             '';
       };

@@ -31,3 +31,64 @@ A consumer may declare a destination and bind its credential even when the corre
 **Reason:** destination and credential declarations are policy data, not evidence that an exporter is active. Rejecting a dormant secret because no selected realization currently consumes it would reintroduce graph inference through validation and force configuration to be staged in lockstep with aspect selection. Validation instead checks declared destination/header relationships, while the lane determines whether a renderer materializes the destination's exporter, secret file, headers or pipelines.
 
 **Rejected alternative:** require a separate "credential consumed" marker or require the destination to be active before accepting a binding. Both duplicate exporter selection and reject a safe declaration that is intentionally dormant.
+
+## A route is a listener-bound stream with its own destination policy
+
+**Id:** 77b08223-5f02-42a5-9b06-67ae2b40814a
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `openspec/changes/telemetry-stream-routing/design.md`, 2026-10-08
+
+`services.telemetry.routes.<route>` declares the signals a route accepts, its own per-signal destination selection and the ingress listener that carries it. The general route keeps the top-level `pipelines` and the existing `otlp.ingress`; a route inherits nothing from it.
+**Reason:** Traces used to fan out to every resolved destination, so an AI-observability backend received general infrastructure traces and diagnostic probes. Isolation has to be stated where the data enters, because the sender is the party that knows which audience a trace belongs to. Absence of inheritance is deliberate: if a route inherited the general policy, naming an AI backend would silently make the general store a destination of the AI route. Route selection is the listener a producer sends to; span names and resource attributes describe telemetry and never classify it.
+
+**Rejected alternative:** one pipeline with a routing processor splitting records by attribute — queue and retry state stay shared per destination, so two audiences sharing a destination interleave in one queue and route identity is re-derived from record content instead of from where the record entered
+
+**Rejected alternative:** replacing the top-level pipelines with `routes.general` — it rewrites a surface that already states the general case correctly, with no behavioural gain
+
+## Route isolation is per exporter instance, not per pipeline
+
+**Id:** 0202f481-a6aa-4ac3-a7c7-994f57801382
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `openspec/changes/telemetry-stream-routing/design.md`, `modules/telemetry/otel-collector.nix`, 2026-10-08
+
+Each route gets its own receiver, its own pipeline names and its own exporter instance per destination (`<protocol>/route-<route>-<destination>`). The general route keeps `<protocol>/<destination>`.
+**Reason:** A sending queue is per exporter component. Sharing one exporter between two routes would put both audiences in one queue, so one backend's outage would hold the other audience's data behind it and a retry burst could deliver records that route never selected for that destination. Separate instances scope an outage to the route and destination that experienced it.
+
+**Rejected alternative:** one exporter per destination behind a router — it shares the queue the isolation depends on
+
+## The route-isolation check runs the pinned collector against mock backends
+
+**Id:** 98b97ef5-dcb9-4a0a-a775-4f40ae4af5a0
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `tests/telemetry/route_check.py`, `modules/flake/fixture.nix`, 2026-10-08
+
+Route isolation is verified at runtime: the pinned collector runs a rendered two-route config with a 1 s pipeline batch processor against two local mock backends, posting traces to each listener and asserting absence at the other backend through a bounded settle window. The check is named `telemetry-route-isolation`.
+**Reason:** Evaluation proves what the pipelines contain; only a running collector proves that a record entering one listener cannot leave through another route's exporter, which is the guarantee consumers are being asked to rely on. The harness enables a batch processor because production renders none by default, so the boundary is exercised through a real batch window rather than only per-item delivery. The name avoids `telemetry-routes`, which is a contract leaf: `contractChecks // { ... }` would have shadowed the leaf silently, and two checks claiming one name evaluate to one of them with no error.
+
+## Routing is not admission
+
+**Id:** 8fd5ee58-ad30-4d8b-8e7a-e81afc636c89
+**Type:** constraint
+**Status:** active
+**Evidence:** confirmed
+**Source:** user directive, 2026-10-08
+
+Route selection is routing only. The contract adds no authentication, authorization, credential or enrollment mechanism to a route listener, and a consumer still owns any admission in front of its listeners. A host must not describe a route as authenticated or enrolled, and sender span attributes or an absent credential must never be treated as admission. Authenticated enrollment for specialized routes is a separate, still-unimplemented change.
+**Reason:** The requirement is audience-aware routing: only explicitly AI-related telemetry reaches the AI backends. Who may select a route is an independent problem, and carrying an implied authentication promise would make a plain listener read as an access boundary. Descriptive telemetry content is not authorization either.
+
+## A realization owns its own listener's health registration
+
+**Id:** 7d9e94c8-aa8a-4411-9cd7-fdea8dd333cd
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** feedback from a consumer migration, 2026-10-08
+
+`vmagent-health` (`:8429`), `vector-health` (`:9598`) and `otel-collector-health` are plain values registered by the realization that binds the listener. A host that registered one of those jobs itself under the older single-aspect composition must drop its own definition; two definitions of one job name conflict rather than merge, and `lib.mkForce` is the deliberate override.
+**Reason:** One value feeds both the listener argument and the registration, so the bound port and the scraped target cannot drift apart. A defaults-merge would let a host silently repoint the health scrape away from the listener the provider bound, which is the drift ownership exists to prevent.
