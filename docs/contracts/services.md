@@ -60,11 +60,12 @@ fails fleet validation during `nix flake check`.
 
 The `otel-collector` endpoints are distinct audience inputs: `otlp` is the
 general OTLP/HTTP ingress and `ai-otlp` is the explicitly selected AI ingress.
-Resolve the latter with
-`lib.serviceEndpoints.url config.fleet { service = "otel-collector"; endpoint =
-"ai-otlp"; via = "tailnet"; }`. Backend fan-out is gateway policy; selecting
-either endpoint authenticates no producer.
-
+Resolve the latter with `lib.serviceEndpoints.url config.fleet {
+  service = "otel-collector";
+  endpoint = "ai-otlp";
+  via = "tailnet";
+}`. Backend fan-out is gateway policy; selecting either endpoint authenticates
+no producer.
 `docs-mcp` is the remote instance. A dotfiles-local localhost instance is
 consumer-local; docs-mcp may call bifrost's cross-host embeddings endpoint.
 No credentials, Tailscale enablement probes, or NixOS/system-manager

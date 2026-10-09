@@ -195,6 +195,62 @@ name keeps receiving from them. Nothing falls back to a specialized destination
 when a route is removed, and a destination named by no route's pipeline receives
 nothing at all.
 
+### Destination-specific output views
+
+A route selects an input audience; its outputs need not retain identical
+payloads. A mixed application can send one intact stream to a deliberately
+selected listener, with a lean operational copy sent to the trace store and
+rich copies sent to its selected AI backends. This does not make general-route
+traffic eligible for those backends.
+
+Use native `services.opentelemetry-collector.settings` to compose sibling
+trace pipelines from the same route receiver. Declare every destination in the
+route so the fleet renders its exporter, credentials and delivery state; then
+assign each exporter to one effective output pipeline. Keep the existing
+exporter names so queue identities survive the change. After a native override,
+**the rendered pipelines determine effective routing**: the route declaration
+alone proves which exporters exist, not which pipeline uses them. Consumer
+checks should inspect receiver, processor and exporter assignments and ensure
+that each selected destination has one output path.
+
+Define branch-specific processors in native `settings.processors` and reference
+them explicitly from their pipelines. Do not put a trace-only redactor or
+adapter in `services.otel-collector.processors`, whose definitions are included
+in generated pipelines for other signals too. Preserve resource identity and
+redact before the lean export queue; gateway redaction does not protect rich
+content already stored by producers, relay queues or an application's own
+request history.
+
+All records entering a shared listener receive its configured profiles unless
+the processing explicitly has conditions. Reusing the AI listener therefore
+applies the lean/rich policy to both AI-native and mixed applications. A separate
+mixed-stream route is useful when destination or processing policy differs,
+not merely because another application has been added. Conditions on descriptive
+resource attributes can specialize payload processing, but are neither audience
+routing nor authenticated identity.
+
+The initial policy preserves every received span, including ordinary-only
+requests and later trace continuations. It does not reconstruct absent
+instrumentation or wait for an LLM marker. For applications with sparse LLM
+activity, measure ordinary-only trace volume before introducing a bounded
+selector into the rich branch; late spans, selector restarts and capacity limits
+need an explicit policy. Backend retention is not automatic semantic cleanup.
+
+Latitude 0.3.118's consumer deployment requires an explicit
+`X-Latitude-Project` header and uncompressed OTLP export
+(`services.otel-collector.exporterExtra.<destination>.compression = "none"`).
+Keep these destination-owned settings when moving its exporter into a sibling
+pipeline; do not restate credentials or project policy in a new exporter.
+
+Its message parser reads span attributes, not span events. For event-based
+Hindsight capture, a Latitude-only adapter must use the exact
+`gen_ai.input.messages` and `gen_ai.output.messages` names with supported message
+representations, preserving existing canonical values. Do not synthesize empty
+message keys: their presence can prevent another supported carrier from being
+selected. Keep the original event carrier for Langfuse and remove both content
+carriers from the lean view. Offline parser compatibility is separate from live
+project resolution, storage and UI verification.
+
 ## Producer registrations
 
 Prometheus scrape sources — the self-registration case:
@@ -346,6 +402,25 @@ endpoint = (inputs.nix-fleet.lib.serviceEndpoints.resolveEndpoint config.fleet {
   via = "tailnet";
 }).url;
 ```
+
+For a producer whose stream is deliberately AI-oriented, resolve the separate
+AI ingress instead; this selects a route, not an authenticated identity:
+
+```nix
+# AI producer: explicit AI audience, still routing-only
+endpoint = (inputs.nix-fleet.lib.serviceEndpoints.resolveEndpoint config.fleet {
+  service = "otel-collector";
+  endpoint = "ai-otlp";
+  via = "tailnet";
+}).url;
+```
+
+The `otlp` endpoint remains the general trace ingress. The `ai-otlp` endpoint
+selects the gateway's AI route; current deployment fans it to VictoriaTraces,
+Langfuse and Latitude. A route listener does not authenticate or authorize the
+producer. Mixed applications needing destination-specific views should use the
+separately documented output-view composition below, rather than sending all
+application telemetry to an AI-only endpoint.
 
 **Origin identity is preserved.** `services.otel-collector.resourceAttributes`
 is applied to locally received telemetry (the loopback listener and local scrape
