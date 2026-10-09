@@ -54,8 +54,16 @@ fails fleet validation during `nix flake check`.
 | niks3-write     | api          | oci-melb-1   | 5751  | `/`                |
 | bifrost         | embeddings   | oci-melb-1   | 7411  | `/v1`              |
 | otel-collector  | otlp         | home-forge   | 4318  | `/`                |
+| otel-collector  | ai-otlp      | home-forge   | 4319  | `/`                |
 | victoriametrics | remote-write | home-forge   | 8428  | `/api/v1/write`    |
 | victorialogs    | jsonline     | home-forge   | 9428  | `/insert/jsonline` |
+
+The `otel-collector` endpoints are distinct audience inputs: `otlp` is the
+general OTLP/HTTP ingress and `ai-otlp` is the explicitly selected AI ingress.
+Resolve the latter with
+`lib.serviceEndpoints.url config.fleet { service = "otel-collector"; endpoint =
+"ai-otlp"; via = "tailnet"; }`. Backend fan-out is gateway policy; selecting
+either endpoint authenticates no producer.
 
 `docs-mcp` is the remote instance. A dotfiles-local localhost instance is
 consumer-local; docs-mcp may call bifrost's cross-host embeddings endpoint.

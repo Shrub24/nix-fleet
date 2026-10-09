@@ -25,11 +25,12 @@ configuration. See [the service catalog](services.md).
 The [service catalog](services.md) publishes the write routes every lane uses;
 consumers resolve them with `lib.serviceEndpoints.url` and append nothing:
 
-| Lane                     | Service / endpoint                 | Route                              |
-| ------------------------ | ---------------------------------- | ---------------------------------- |
-| Traces (agent → gateway) | `otel-collector` / `otlp`          | home-forge `:4318`, OTLP/HTTP      |
-| Metrics remote write     | `victoriametrics` / `remote-write` | home-forge `:8428/api/v1/write`    |
-| Journal JSON-line ingest | `victorialogs` / `jsonline`        | home-forge `:9428/insert/jsonline` |
+| Lane                                 | Service / endpoint                 | Route                              |
+| ------------------------------------ | ---------------------------------- | ---------------------------------- |
+| General traces (agent → gateway)     | `otel-collector` / `otlp`          | home-forge `:4318`, OTLP/HTTP      |
+| Explicit AI traces (agent → gateway) | `otel-collector` / `ai-otlp`       | home-forge `:4319`, OTLP/HTTP      |
+| Metrics remote write                 | `victoriametrics` / `remote-write` | home-forge `:8428/api/v1/write`    |
+| Journal JSON-line ingest             | `victorialogs` / `jsonline`        | home-forge `:9428/insert/jsonline` |
 
 The gateway's own trace backends are gateway-local policy and are not catalog
 entries. These routes carry no credential: reachability is tailnet grants.
@@ -74,7 +75,10 @@ composes no OTel realization and runs no OTel process.
 
 1. Admit only the signals its producers use, normally
    `services.telemetry.otlp.signals = [ "traces" ]`.
-2. Select one gateway destination using protocol `otlp-http`, accepting traces.
+2. Select a gateway destination using protocol `otlp-http`, accepting traces,
+   for the stream's intended audience: `otel-collector` / `otlp` for general
+   telemetry, or `otel-collector` / `ai-otlp` for an explicitly selected AI
+   stream. Backend presence does not select that audience.
    Remove old direct trace-backend legs when adopting the gateway; retaining
    both exports the same trace twice.
 3. Stamp canonical host identity through

@@ -32,6 +32,10 @@
     host = "home-forge";
     port = 4318;
   };
+  otel-collector.endpoints.ai-otlp.tailnet = {
+    host = "home-forge";
+    port = 4319;
+  };
   # Store write routes: the full ingest path is the base path, so a consumer
   # resolves one URL per lane and appends nothing.
   victoriametrics.endpoints.remote-write.tailnet = {
