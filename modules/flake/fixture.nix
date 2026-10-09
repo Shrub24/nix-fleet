@@ -378,45 +378,19 @@ let
       # credential vocabulary is shared, so it is enforced without OTel: a
       # vmagent host must not silently accept a bad secret id or an unpaired file
       telemetryCredentialRejectionChecks =
-        admissionRejects "telemetry: secretFiles and secretKeys IDs must match" [
-          aspects.telemetry
-          aspects.telemetry-vmagent
-          {
-            services.telemetry.scrape.app = {
-              target = "127.0.0.1";
-              port = 9100;
-            };
-            services.telemetry.destinations.victoria = {
-              protocol = "prometheus-remote-write";
-              endpoint = "https://metrics.invalid/api/v1/write";
-              signals = [ "metrics" ];
-              headers.Authorization.secret = "token";
-            };
-            services.telemetry.secretFiles.token = fixtureSecretFile;
-            services.telemetry.secretKeys.other = "metrics/token";
-          }
-        ]
-        && admissionRejects "telemetry: destination header(s) reference unknown secret(s) absent" [
-          aspects.telemetry
-          {
-            services.telemetry.destinations.bad = {
-              protocol = "otlp-http";
-              endpoint = "https://invalid.example";
-              signals = [ "traces" ];
-              headers.Authorization.secret = "absent";
-            };
-          }
-        ]
-        &&
-          admissionRejects
-            "telemetry: bound credentials have no declared destination header reference: unused"
-            [
-              aspects.telemetry
-              {
-                services.telemetry.secretFiles.unused = fixtureSecretFile;
-                services.telemetry.secretKeys.unused = "unused/key";
-              }
-            ]
+        # The ID-pairing and unknown-header-secret refusals are the mutation
+        # leaf's cases — same contract assertion, cheaper hosts — so what is
+        # credential-specific here is an unused binding, and a dormant header
+        # that must stay accepted.
+        admissionRejects
+          "telemetry: bound credentials have no declared destination header reference: unused"
+          [
+            aspects.telemetry
+            {
+              services.telemetry.secretFiles.unused = fixtureSecretFile;
+              services.telemetry.secretKeys.unused = "unused/key";
+            }
+          ]
         && admissionAccepts [
           aspects.telemetry
           {
