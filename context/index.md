@@ -26,6 +26,8 @@
 
 ## C
 
+- [check-surface-trim.md](check-surface-trim.md) — what a check must own, the leaf-registry decision, and the removed checks
+
 ## D
 
 ## E

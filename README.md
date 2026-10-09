@@ -69,9 +69,8 @@ modules/
                      #   (one host collector service)
   access/
 tests/
-  telemetry/         # bounded offline runtime checks: local mock receivers, synthetic
-    delivery_check.py # OTLP ids, real collector binary (no live endpoint, no credential)
-    ingress_check.py
+  telemetry/             # one bounded offline runtime check: the pinned collector
+    output_views_check.py # against local mock backends (no live endpoint, no credential)
 .envrc               # direnv: use flake
 justfile             # fmt / fmt-check / check / lock
 lefthook.yml         # pre-commit fmt+statix+deadnix, pre-push flake check

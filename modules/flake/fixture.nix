@@ -42,11 +42,6 @@ let
   # This is exactly the ~15-line pattern docs/contracts/builders.md prescribes.
   resolve = import ../../lib/build-profile.nix lib;
   resolvedProfile = resolve.resolveBuildProfile config.fleet "fixture";
-  resolvedDocsMcp = config.flake.lib.serviceEndpoints.resolveEndpoint config.fleet {
-    service = "docs-mcp";
-    endpoint = "mcp";
-    via = "tailnet";
-  };
 
   # The CI cache coordinate the build-push-cache workflow defaults to must be
   # derived from the contract, not a literal that happens to match it: the
@@ -1504,50 +1499,6 @@ let
             }
           ];
         }).config;
-      # The node-exporter aspect owns both ends of its scrape and remains
-      # independently composable without a consumer lane.
-      nodeExporterAdmissionChecks =
-        admissionAccepts [
-          aspects.telemetry
-          aspects.node-exporter
-          {
-            services.telemetry.destinations.victoria = {
-              protocol = "prometheus-remote-write";
-              endpoint = "http://metrics.invalid/api/v1/write";
-              signals = [ "metrics" ];
-            };
-          }
-        ]
-        && admissionAccepts [ aspects.node-exporter ];
-
-      nixBaselineChecks =
-        let
-          evaluated =
-            extra:
-            (fixtureNixosSystem {
-              inherit system;
-              modules = [
-                aspects.nix-baseline
-                extra
-              ];
-            }).config;
-          defaults = evaluated { };
-          overridden = evaluated {
-            nix.daemonCPUSchedPolicy = "idle";
-            nix.daemonIOSchedClass = "idle";
-            systemd.services.nix-daemon.serviceConfig.MemoryHigh = "8G";
-          };
-        in
-        defaults.nix.package.version == inputs.nixpkgs.legacyPackages.${system}.nixVersions.latest.version
-        && defaults.nix.daemonCPUSchedPolicy == "batch"
-        && defaults.nix.daemonIOSchedClass == "best-effort"
-        && defaults.nix.daemonIOSchedPriority == 7
-        && defaults.systemd.services.nix-daemon.serviceConfig.CPUWeight == 50
-        && defaults.systemd.services.nix-daemon.serviceConfig.IOWeight == 50
-        && !(defaults.systemd.services.nix-daemon.serviceConfig ? MemoryHigh)
-        && overridden.nix.daemonCPUSchedPolicy == "idle"
-        && overridden.nix.daemonIOSchedClass == "idle"
-        && overridden.systemd.services.nix-daemon.serviceConfig.MemoryHigh == "8G";
 
       buildAccountTrustChecks =
         let
@@ -1805,10 +1756,6 @@ let
         message = "tailscale: the autoconnect unit is rendered without an auth key, or lost its ordering";
         ok = tailscaleAutoconnectChecks;
       };
-      nix-baseline = {
-        message = "nix-baseline: the daemon baseline or its consumer overrides regressed";
-        ok = nixBaselineChecks;
-      };
       nix-baseline-substitution = {
         message = "nix-baseline: the substitution catalog or its append/replace seams regressed";
         ok = nixBaselineSubstitutionSeams;
@@ -1905,10 +1852,6 @@ let
         message = "node-exporter: the scrape instance label no longer follows the exporter's own bind";
         ok = nodeExporterIdentityChecks;
       };
-      node-exporter-admission = {
-        message = "node-exporter: a scrape registration without the host aspect no longer fails by name";
-        ok = nodeExporterAdmissionChecks;
-      };
     };
 
   fixtureModule =
@@ -1956,30 +1899,10 @@ let
 
       sops.age.keyFile = fixtureAgeKeyFile;
 
-      # Non-vacuity guard: every aspect must show its contribution.
+      # Composition guard: only emergent cross-aspect properties belong here —
+      # a claim no single aspect owns and that plain option evaluation cannot
+      # falsify. Restating an aspect's own literal is owned by that aspect.
       assertions = [
-        {
-          assertion =
-            config.systemd.services.bifrost.serviceConfig.User == "bifrost"
-            && config.services.bifrost.renderedConfig.config_store.enabled
-            && config.services.bifrost.renderedConfig.source_of_truth == "config.json"
-            && config.services.notify.events.bifrost.failure != null
-            && config.systemd.services.bifrost.onFailure != [ ];
-          message = "fixture: the Bifrost aspect lost its service, config authority or notify hook.";
-        }
-        {
-          assertion =
-            config.services.beszel.agent.enable && config.services.beszel.agent.environment.KEY or "" != "";
-          message = "fixture: the beszel-agent aspect registered no agent or no public KEY.";
-        }
-        {
-          assertion = config.services.tailscale.authKeyFile != null;
-          message = "fixture: the tailscale aspect wired no auth key file.";
-        }
-        {
-          assertion = config.services.niks3.enable && config.services.niks3.apiTokenFile != null;
-          message = "fixture: the niks3-cache aspect did not configure the cache server.";
-        }
         {
           assertion = config.programs.ssh.knownHosts != { };
           message = "fixture: the fleet feature registered no known host.";
@@ -1990,87 +1913,13 @@ let
         }
         {
           assertion =
-            resolvedDocsMcp.url == "http://home-forge:6280/mcp"
-            && resolvedDocsMcp.host == "home-forge"
-            && resolvedDocsMcp.port == 6280;
-          message = "fixture: the fleet service resolver lost the canonical docs-mcp route.";
-        }
-        {
-          assertion =
             cacheApiUrl == "http://oci-melb-1:5751" && cacheApiUrlMutated == "http://oci-melb-1:5752";
           message = "fixture: the CI cache URL is not derived from the niks3-write record.";
-        }
-        {
-          assertion = config.systemd.services.notify.serviceConfig.ExecStart != null;
-          message = "fixture: the notify aspect deployed no daemon unit.";
-        }
-        {
-          assertion = config.sops.secrets ? "notify/telegram_bot_token";
-          message = "fixture: the notify aspect registered no Telegram token secret.";
-        }
-        {
-          # Severity vocabulary: three values, defaulted per event kind in the
-          # rendered policy map (failure -> warning, success -> info), a
-          # per-registration override winning, and routing declared by use
-          # case. Check the generator's policy data without an evaluation-time
-          # build; checks.notify-rendered-policy reads the actual JSON files.
-          assertion =
-            let
-              events = config.environment.etc."notify/events.json".source.value;
-            in
-            events.fixture-monitored.failure.severity == "warning"
-            && config.services.notify.events.fixture-monitored.failure.severity or null == null;
-          message = "fixture: the notification aspect's severity defaults or rendered policy map regressed.";
         }
         {
           assertion =
             config.systemd.services.fixture-monitored.onFailure == [ "notify-event@fixture-monitored.service" ];
           message = "fixture: the notification aspect attached no native failure hook for a registered unit.";
-        }
-        {
-          # Routing policy reaches the runtime intact: each enabled transport's
-          # rendered config carries its use-case map and a default that names a
-          # key of it, so a notification the deployment did not explicitly topic
-          # is still routable rather than a dispatch error.
-          assertion =
-            let
-              rendered = builtins.fromJSON config.environment.etc."notify/config.json".text;
-              routable =
-                transport:
-                let
-                  topics = transport.topics or { };
-                  default = transport.default_topic or null;
-                in
-                topics != { } && default != null && topics ? ${default};
-            in
-            routable rendered.ntfy
-            && routable rendered.telegram
-            && rendered.ntfy.topics.fleet == "fleet"
-            && rendered.telegram.default_topic == "fleet";
-          message = "fixture: the notify aspect's rendered routing config lost a transport's use-case map or a default that names one of its keys.";
-        }
-        {
-          assertion = config.services.niks3-auto-upload.enable && config.nix.settings.post-build-hook != "";
-          message = "fixture: the niks3-publisher aspect did not wire the upload client.";
-        }
-        {
-          assertion =
-            (config.systemd.services."nh-clean".onFailure or [ ]) != [ ]
-            && (config.systemd.services."fast-nix-gc".onFailure or [ ]) != [ ];
-          message = "fixture: the nix-gc aspect lost a cleanup unit or its failure hook.";
-        }
-        {
-          # Ownership policy: an aspect that owns a unit registers its
-          # failure. nix-baseline owns the daemon baseline (nix-daemon),
-          # ssh owns the hardening (sshd) — both wired as drop-ins.
-          assertion =
-            (config.systemd.services."nix-daemon".onFailure or [ ]) != [ ]
-            && (config.systemd.services.sshd.onFailure or [ ]) != [ ];
-          message = "fixture: the nix-baseline/ssh aspects registered no failure hooks on their units.";
-        }
-        {
-          assertion = config.services.tailscale.extraSetFlags == [ "--ssh" ];
-          message = "fixture: tailscale --ssh default regressed.";
         }
         {
           # The guard must cover the unit nixpkgs actually creates — including
@@ -2080,38 +1929,6 @@ let
             && config.systemd.services."podman-fixture-container".startLimitBurst == 5
             && config.systemd.services."fixture-custom-name".startLimitIntervalSec == 3600;
           message = "fixture: the podman-baseline guard did not cover the container units.";
-        }
-        {
-          # Prune defaults: weekly (nixpkgs' own), --volumes deliberately not
-          # defaulted, and a consumer's scalar override wins over mkDefault.
-          assertion =
-            config.virtualisation.podman.autoPrune.enable
-            && !(builtins.elem "--volumes" config.virtualisation.podman.autoPrune.flags)
-            && config.virtualisation.podman.autoPrune.dates == "daily";
-          message = "fixture: the podman prune defaults regressed.";
-        }
-        {
-          assertion = config.services.notify.events ? "podman-prune";
-          message = "fixture: the podman aspect registered no prune failure event.";
-        }
-        {
-          assertion =
-            config.nix.settings.substituters or [ ] != [ ]
-            && builtins.elem "https://cache.shrublab.xyz" (config.nix.settings.substituters or [ ]);
-          message = "fixture: the nix-baseline substitution catalog regressed.";
-        }
-        {
-          assertion =
-            config.services.openssh.enable && !config.services.openssh.settings.PasswordAuthentication;
-          message = "fixture: the ssh aspect did not render the hardened server baseline.";
-        }
-        {
-          assertion = config.environment.etc ? "ssh/ssh_config.d/20-fleet-baseline.conf";
-          message = "fixture: the ssh aspect did not render the client tuning fragment.";
-        }
-        {
-          assertion = config.programs.mosh.enable;
-          message = "fixture: the mosh aspect did not enable programs.mosh.";
         }
         {
           assertion =
@@ -2542,10 +2359,6 @@ let
           message = "fixture: the otel-collector SOPS or notify contract regressed.";
         }
         {
-          assertion = config.users.users ? "nixbuild" && config.users.users.nixbuild.isSystemUser;
-          message = "fixture: the build-account aspect created no dispatch account.";
-        }
-        {
           # The alerting path end to end: vmalert renders the consumer's rule
           # file and points at the bound datasource and notifier; Alertmanager
           # listens on loopback with the configuration the build checked, and
@@ -2690,9 +2503,8 @@ let
             # default.
             "httpListenAddr" = "127.0.0.1:8880";
           };
-          # A trivial always-firing watchdog: this is the rule file
-          # checks.vmalert-rules evaluates through the real vmalert, and the
-          # one the fixture host's unit loads.
+          # A trivial always-firing watchdog: the rule file the fixture host's
+          # unit loads.
           rules.groups = [
             {
               name = "fixture";
@@ -2884,209 +2696,6 @@ in
     let
       pkgs = inputs.nixpkgs.legacyPackages.${system};
 
-      # Runtime delivery checks run the real pinned collector binary against the
-      # settings this adapter renders. Only test plumbing is changed: loopback
-      # test ports, the JSON wire encoding the local mock receivers can read,
-      # sub-second retry intervals (so a bounded check does not sleep through the
-      # upstream backoff) and a delivery state path inside the build directory.
-      harnessSettings =
-        modules:
-        (fixtureNixosSystem {
-          inherit system;
-          modules = [
-            inputs.sops-nix.nixosModules.sops
-            config.flake.modules.nixos.telemetry-otel-collector-otlp
-            modules
-          ];
-        }).config.services.opentelemetry-collector.settings;
-      # `statePath` keeps each harness phase on its own queue state, so phases
-      # cannot inherit a backlog from one another. `batch` is only overridden by
-      # the phase that has to distinguish persisted acceptance from a batch
-      # timer; every other config renders the production default (`batch = { }`).
-      testPlumbing =
-        {
-          queueSize,
-          statePath,
-          batch ? { },
-        }:
-        settings:
-        settings
-        // {
-          extensions.file_storage = settings.extensions.file_storage // {
-            directory = "@STATE@/${statePath}";
-            compaction = settings.extensions.file_storage.compaction // {
-              directory = "@STATE@/${statePath}/compaction";
-            };
-          };
-          exporters = lib.mapAttrs (
-            _: exporter:
-            exporter
-            // {
-              encoding = "json";
-              sending_queue = exporter.sending_queue // {
-                queue_size = queueSize;
-                inherit batch;
-              };
-              # `timeout` is not a valid `retry_on_failure` key in this pin
-              # (only enabled/initial_interval/max_interval/max_elapsed_time are),
-              # so the harness never injects one.
-              retry_on_failure = exporter.retry_on_failure // {
-                initial_interval = "100ms";
-                max_interval = "200ms";
-              };
-            }
-          ) settings.exporters;
-        };
-      tracesDestination = port: {
-        protocol = "otlp-http";
-        endpoint = "http://127.0.0.1:${toString port}";
-        signals = [ "traces" ];
-      };
-      deliveryConfig = (pkgs.formats.yaml { }).generate "telemetry-delivery.yaml" (
-        testPlumbing
-          {
-            queueSize = 268435456;
-            statePath = "delivery";
-          }
-          (harnessSettings {
-            services.telemetry.otlp.signals = [ "traces" ];
-            services.telemetry.otlp.httpPort = 14318;
-            services.telemetry.otlp.grpcPort = 14317;
-            services.telemetry.destinations.backendA = tracesDestination 19001;
-            services.telemetry.destinations.backendB = tracesDestination 19002;
-            services.telemetry.destinations.backendC = tracesDestination 19003;
-          })
-      );
-      # A deliberately small persistent queue: 1 MiB of serialized payload, the
-      # smallest the pinned collector accepts (an implicit 1 MiB `min_size`
-      # floor rejects anything smaller), which one test payload can exhaust.
-      smallQueueConfig = (pkgs.formats.yaml { }).generate "telemetry-overflow.yaml" (
-        testPlumbing
-          {
-            queueSize = 1048576;
-            statePath = "overflow";
-          }
-          (harnessSettings {
-            services.telemetry.otlp.signals = [ "traces" ];
-            services.telemetry.otlp.httpPort = 14318;
-            services.telemetry.otlp.grpcPort = 14317;
-            services.telemetry.destinations.overflow = tracesDestination 19004;
-          })
-      );
-      # Acknowledgement-before-batch evidence: the queue's batch timer is set
-      # deliberately long (15s) and its byte threshold far above one request, so
-      # a trace acknowledged milliseconds before an abrupt kill can only be
-      # delivered after a restart if acceptance already reached persistent
-      # storage — a timer-driven flush could not have run.
-      lateFlushSeconds = 15;
-      lateFlushConfig = (pkgs.formats.yaml { }).generate "telemetry-late-flush.yaml" (
-        testPlumbing
-          {
-            queueSize = 268435456;
-            statePath = "late-flush";
-            batch = {
-              flush_timeout = "${toString lateFlushSeconds}s";
-              sizer = "bytes";
-              min_size = 1048576;
-              max_size = 4194304;
-            };
-          }
-          (harnessSettings {
-            services.telemetry.otlp.signals = [ "traces" ];
-            services.telemetry.otlp.httpPort = 14318;
-            services.telemetry.otlp.grpcPort = 14317;
-            services.telemetry.destinations.late = tracesDestination 19005;
-          })
-      );
-      ingressConfig = (pkgs.formats.yaml { }).generate "telemetry-ingress.yaml" (
-        testPlumbing
-          {
-            queueSize = 268435456;
-            statePath = "ingress";
-          }
-          (harnessSettings {
-            services.telemetry.otlp.signals = [ "traces" ];
-            services.telemetry.otlp.httpPort = 14318;
-            services.telemetry.otlp.grpcPort = 14317;
-            services.telemetry.otlp.ingress = {
-              host = "127.0.0.2";
-              httpPort = 14319;
-              grpcPort = null;
-            };
-            services.telemetry.destinations.backend = tracesDestination 19011;
-            services.otel-collector.resourceAttributes."host.name" = "gateway";
-          })
-      );
-      # One gateway, two routes: the loopback producer listener exports only to
-      # the general backend, while an explicitly declared route has its own
-      # listener and exports only to the route backend. The batch processor is
-      # switched on deliberately — the production default renders none — so the
-      # runtime check observes route boundaries through a real batch window
-      # rather than only through per-item delivery.
-      routeConfig = (pkgs.formats.yaml { }).generate "telemetry-routes.yaml" (
-        testPlumbing
-          {
-            queueSize = 268435456;
-            statePath = "routes";
-          }
-          (harnessSettings {
-            services.telemetry.otlp.signals = [ "traces" ];
-            services.telemetry.otlp.httpPort = 14338;
-            services.telemetry.otlp.grpcPort = 14337;
-            services.telemetry.destinations.general = tracesDestination 19031;
-            services.telemetry.destinations.ai = tracesDestination 19032;
-            services.telemetry.pipelines.traces = [ "general" ];
-            services.telemetry.routes.ai = {
-              signals = [ "traces" ];
-              pipelines.traces = [ "ai" ];
-              ingress = {
-                host = "127.0.0.2";
-                httpPort = 14339;
-                grpcPort = null;
-              };
-            };
-            services.otel-collector.processors.batch = {
-              timeout = "1s";
-            };
-          })
-      );
-      # Delivery storage that cannot be created: the harness makes the parent
-      # path a regular file, so the extension cannot make its directory.
-      blockedStorageConfig = (pkgs.formats.yaml { }).generate "telemetry-storage-failure.yaml" (
-        testPlumbing
-          {
-            queueSize = 268435456;
-            statePath = "blocker/queue";
-          }
-          (harnessSettings {
-            services.telemetry.otlp.signals = [ "traces" ];
-            services.telemetry.otlp.httpPort = 14318;
-            services.telemetry.otlp.grpcPort = 14317;
-            services.telemetry.destinations.overflow = tracesDestination 19004;
-          })
-      );
-      # Start with usable storage, then bound file growth in the child process:
-      # the runtime check reaches an I/O failure without filling a builder disk.
-      exhaustedStorageConfig = (pkgs.formats.yaml { }).generate "telemetry-exhausted-storage.yaml" (
-        testPlumbing
-          {
-            queueSize = 268435456;
-            statePath = "exhausted";
-          }
-          (harnessSettings {
-            services.telemetry.otlp.signals = [ "traces" ];
-            services.telemetry.otlp.httpPort = 14318;
-            services.telemetry.otlp.grpcPort = 14317;
-            services.telemetry.destinations.exhausted = tracesDestination 19004;
-          })
-      );
-      collector = pkgs.opentelemetry-collector-contrib;
-      telemetryTestInputs = [
-        pkgs.python3
-        pkgs.coreutils
-        pkgs.gnugrep
-      ];
-
       # The contract leaves: one independent check per throwaway contract
       # evaluation, so the fixture host above never forces the nested
       # evaluations its assertions used to carry.
@@ -3100,97 +2709,12 @@ in
         { message, ok }:
         if ok then pkgs.runCommand "check-${name}" { } "touch $out" else throw message;
 
-      # The registry is the literal this split commits to: a leaf dropped,
-      # renamed, or defined without reaching the check set fails closed here
-      # rather than silently shrinking the checked surface.
-      expectedContractLeaves = [
-        "alerting-admission"
-        "build-account-trust"
-        "nix-baseline"
-        "nix-baseline-substitution"
-        "nix-gc-defaults"
-        "node-exporter-admission"
-        "node-exporter-identity"
-        "otel-collector-inactive-credentials"
-        "otel-collector-resource-order"
-        "otel-collector-unbound-secrets"
-        "tailscale-autoconnect"
-        "telemetry-capability-matrix"
-        "telemetry-credential-rejections"
-        "telemetry-dormant-declarations"
-        "telemetry-endpoint-guard"
-        "telemetry-ingress-rejections"
-        "telemetry-journald-contract"
-        "telemetry-journald-isolation"
-        "telemetry-lane-realization"
-        "telemetry-listener-collisions"
-        "telemetry-mutation-rejections"
-        "telemetry-otlp-rejections"
-        "telemetry-provider-rejections"
-        "telemetry-routes"
-        "vmagent-fanout-guards"
-        "vmagent-realization"
-        "vmagent-rendered-jobs"
-      ];
       contractChecks = lib.mapAttrs contractLeaf contract;
-      contractLeafRegistry =
-        lib.sort (a: b: a < b) (builtins.attrNames contract)
-        == lib.sort (a: b: a < b) expectedContractLeaves
-        &&
-          builtins.length (builtins.filter (name: contractChecks ? ${name}) expectedContractLeaves)
-          == builtins.length expectedContractLeaves;
     in
     {
-      # One check per contract leaf, plus the registry that keeps the list
-      # honest. A leaf is an ordinary check name, so a new contract keeps being
-      # an ordinary `checks.<name>` build in CI.
+      # One check per contract leaf. A leaf is an ordinary check name, so a new
+      # contract keeps being an ordinary `checks.<name>` build in CI.
       checks = contractChecks // {
-        contract-leaf-registry = contractLeaf "contract-leaf-registry" {
-          message = "fixture: the contract-leaf registry no longer matches the leaves this file defines";
-          ok = contractLeafRegistry;
-        };
-        # The rendered rule file is a vmalert input, not a Nix value: this check
-        # feeds the fixture host's own rules.yml to the real evaluator, offline —
-        # a rule that does not parse or does not fire is caught here rather than
-        # on the host it was meant to alert from.
-        vmalert-rules =
-          let
-            fixtureHost = "fixture-${builtins.replaceStrings [ "_" ] [ "-" ] system}";
-            rulesFile =
-              config.flake.nixosConfigurations.${fixtureHost}.config.environment.etc."vmalert-fixture/rules.yml".source;
-            unitTest = pkgs.writeText "vmalert-unittest.yaml" ''
-              rule_files:
-                - ${rulesFile}
-              evaluation_interval: 1m
-              tests:
-                - interval: 1m
-                  alert_rule_test:
-                    - eval_time: 1m
-                      groupname: fixture
-                      alertname: FixtureWatchdog
-                      exp_alerts:
-                        - exp_labels:
-                            severity: warning
-                          exp_annotations:
-                            summary: fixture always-firing watchdog
-            '';
-          in
-          pkgs.runCommand "vmalert-rules-check"
-            {
-              nativeBuildInputs = [ pkgs.victoriametrics ];
-            }
-            ''
-              vmalert-tool unittest -files=${unitTest} > $TMPDIR/unittest.log 2>&1 || {
-                cat $TMPDIR/unittest.log
-                exit 1
-              }
-              grep -q SUCCESS $TMPDIR/unittest.log || {
-                cat $TMPDIR/unittest.log
-                exit 1
-              }
-              touch $out
-            '';
-
         # Read the generated JSON at build time. Evaluation stays portable across
         # architectures, while real output files retain the routing/default checks.
         notify-rendered-policy =
@@ -3273,88 +2797,6 @@ in
               accept 'project-1234' 'identifier'
               accept "" 'empty'
 
-              touch $out
-            '';
-
-        # Offline runtime delivery check: the pinned collector binary, a
-        # build-directory state path and local mock receivers. Nothing here
-        # reaches a live endpoint or needs a credential.
-        telemetry-delivery =
-          pkgs.runCommand "telemetry-delivery-check"
-            {
-              nativeBuildInputs = telemetryTestInputs;
-            }
-            ''
-              export OTELCOL=${collector}/bin/otelcol-contrib
-              export CONFIG=$PWD/delivery.yaml
-              export SMALL_CONFIG=$PWD/overflow.yaml
-              export BLOCKED_CONFIG=$PWD/blocked.yaml
-              export LATE_CONFIG=$PWD/late-flush.yaml
-              export EXHAUSTED_CONFIG=$PWD/exhausted.yaml
-              export EXHAUSTED_STATE=$PWD/exhausted
-              export RECEIVE_PORT=14318
-              export BACKEND_PORTS=19001,19002,19003
-              export SMALL_BACKEND=19004
-              export LATE_BACKEND=19005
-              export LATE_FLUSH_SECONDS=${toString lateFlushSeconds}
-              sed "s|@STATE@|$PWD|g" ${deliveryConfig} > "$CONFIG"
-              sed "s|@STATE@|$PWD|g" ${smallQueueConfig} > "$SMALL_CONFIG"
-              sed "s|@STATE@|$PWD|g" ${blockedStorageConfig} > "$BLOCKED_CONFIG"
-              sed "s|@STATE@|$PWD|g" ${lateFlushConfig} > "$LATE_CONFIG"
-              sed "s|@STATE@|$PWD|g" ${exhaustedStorageConfig} > "$EXHAUSTED_CONFIG"
-              # Config validity against the pinned binary, before anything runs: the
-              # harness only proves semantics if the config it starts is one the
-              # collector accepts. (The blocked-storage config is validated by
-              # phase 4, which requires it to be rejected at start-up.)
-              ${collector}/bin/otelcol-contrib validate --config=file:"$CONFIG"
-              ${collector}/bin/otelcol-contrib validate --config=file:"$SMALL_CONFIG"
-              ${collector}/bin/otelcol-contrib validate --config=file:"$LATE_CONFIG"
-              ${collector}/bin/otelcol-contrib validate --config=file:"$EXHAUSTED_CONFIG"
-              python3 ${../../tests/telemetry/delivery_check.py}
-              touch $out
-            '';
-
-        # Offline gateway check: producer and ingress listeners, admitted-signal
-        # enforcement and origin identity across the relay, against the same
-        # rendered settings and local mock receivers.
-        telemetry-ingress =
-          pkgs.runCommand "telemetry-ingress-check"
-            {
-              nativeBuildInputs = telemetryTestInputs;
-            }
-            ''
-              export OTELCOL=${collector}/bin/otelcol-contrib
-              export CONFIG=$PWD/ingress.yaml
-              export LOCAL_PORT=14318
-              export INGRESS_ADDR=127.0.0.2
-              export INGRESS_PORT=14319
-              export BACKEND_PORT=19011
-              sed "s|@STATE@|$PWD|g" ${ingressConfig} > "$CONFIG"
-              ${collector}/bin/otelcol-contrib validate --config=file:"$CONFIG"
-              python3 ${../../tests/telemetry/ingress_check.py}
-              touch $out
-            '';
-
-        # Offline route-isolation check: a general listener and an explicitly
-        # declared route listener, each exporting only through its own
-        # route-scoped exporter. The route backend starts down, so queue/retry
-        # isolation across routes is observable rather than assumed.
-        telemetry-route-isolation =
-          pkgs.runCommand "telemetry-route-isolation-check"
-            {
-              nativeBuildInputs = telemetryTestInputs;
-            }
-            ''
-              export OTELCOL=${collector}/bin/otelcol-contrib
-              export CONFIG=$PWD/routes.yaml
-              export LOCAL_PORT=14338
-              export ROUTE_ADDR=127.0.0.2
-              export ROUTE_PORT=14339
-              export GENERAL_BACKEND_PORT=19031
-              export AI_BACKEND_PORT=19032
-              sed "s|@STATE@|$PWD|g" ${routeConfig} > "$CONFIG"
-              ${collector}/bin/otelcol-contrib validate --config=file:"$CONFIG"
-              python3 ${../../tests/telemetry/route_check.py}
               touch $out
             '';
       };

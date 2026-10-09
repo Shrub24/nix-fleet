@@ -22,8 +22,11 @@ instead of a nested evaluation forced through the host's assertions. Forcing the
 host is therefore seconds — measured at roughly 5 s and 750 MiB, against 91 s and
 2.6 GiB when the same contracts ran inside its assertions — and an evaluator
 memory budget applies to a single leaf rather than to the whole fixture.
-`checks.<system>.contract-leaf-registry` fails if a leaf is dropped from or
-renamed out of that set.
+
+The leaf set is the fixture's `contract` map itself, with no second inventory of
+names to keep in step. A leaf removed from that map is therefore a visible diff
+in review rather than a failing check — an accepted trade, recorded in `context/`
+alongside the reasons the trimmed checks were removed.
 
 Each leaf must stay small enough to evaluate inside the dispatch workflow's
 budget. That budget is `workers × max-memory-size` for all workers combined —

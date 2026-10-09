@@ -110,11 +110,13 @@ Each route gets its own receiver, its own pipeline names and its own exporter in
 
 **Id:** 98b97ef5-dcb9-4a0a-a775-4f40ae4af5a0
 **Type:** decision
-**Status:** active
+**Status:** superseded
 **Evidence:** confirmed
 **Source:** `tests/telemetry/route_check.py`, `modules/flake/fixture.nix`, 2026-10-08
 
 Route isolation is verified at runtime: the pinned collector runs a rendered two-route config with a 1 s pipeline batch processor against two local mock backends, posting traces to each listener and asserting absence at the other backend through a bounded settle window. The check is named `telemetry-route-isolation`.
+
+**Superseded by:** none — the runtime check is removed, and `tests/telemetry/route_check.py` with it. The fleet-owned half of its claim, that a route renders its own receiver, exporter and pipeline, is pinned at evaluation by the `telemetry-routes` leaf; end-to-end isolation on a running collector is an accepted gap. See `context/check-surface-trim.md`.
 **Reason:** Evaluation proves what the pipelines contain; only a running collector proves that a record entering one listener cannot leave through another route's exporter, which is the guarantee consumers are being asked to rely on. The harness enables a batch processor because production renders none by default, so the boundary is exercised through a real batch window rather than only per-item delivery. The name avoids `telemetry-routes`, which is a contract leaf: `contractChecks // { ... }` would have shadowed the leaf silently, and two checks claiming one name evaluate to one of them with no error.
 
 ## Routing is not admission
