@@ -20,8 +20,10 @@
 #
 # Native overrides decide delivery, so the declaration alone proves nothing:
 # `telemetry-output-view-composition` inspects the effective rendered pipelines,
-# and `telemetry-output-view-isolation` runs the pinned Collector against mock
-# backends to show both payloads leaving one receiver.
+# including the exporters each one actually carries, and
+# `telemetry-output-view-projection` runs the pinned Collector against mock
+# backends to assert what the lean profile strips and what the Latitude bridge
+# fills.
 #
 # Everything here is consumer policy: the endpoints are synthetic, the
 # bindings below are placeholder paths, and no view is enabled by default.

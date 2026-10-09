@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
-"""Bounded runtime check for the native Collector output-view recipe.
+"""Bounded runtime check for the native Collector output-view projection.
 
-Runs the pinned Collector against loopback mock OTLP/HTTP backends. It verifies
-that the selected route sends independent lean/rich copies, ordinary-only and
-late-continuation spans remain whole, general traffic stays general, and the
-Latitude view exposes parser-compatible attributes for the separate pinned
-Latitude 0.3.118 parser probe. No live endpoint, credential or tail sampler.
+Runs the pinned Collector against loopback mock OTLP/HTTP backends and asserts
+what this repository authors, not what the Collector already does:
+
+  * the lean profile removes every named content carrier while span identity —
+    IDs, parents, timing, status — and useful operational metadata survive;
+  * the Latitude-only bridge fills the deprecated message carriers for a span
+    that carries no canonical message carrier, leaves a span's canonical
+    carriers untouched and adds no legacy carrier beside them, preserves a
+    producer-set legacy key, and supplies system instructions.
+
+It also writes the final Latitude span-attribute map — the input of the
+separately pinned Latitude 0.3.118 parser probe. No live endpoint, credential
+or tail sampler.
+
+Runtime is the only layer that sees this: a hand-doubled backslash once
+produced a syntactically valid, semantically wrong OTTL regex, which both
+evaluation and the Collector's own configuration validation accept.
 """
 
 import gzip
@@ -23,14 +35,17 @@ import urllib.request
 
 OTELCOL = os.environ["OTELCOL"]
 CONFIG = os.environ["CONFIG"]
-GENERAL_PORT = int(os.environ["GENERAL_PORT"])
 ROUTE_ADDR = os.environ["ROUTE_ADDR"]
 ROUTE_PORT = int(os.environ["ROUTE_PORT"])
-GENERAL_BACKEND_PORT = int(os.environ["GENERAL_BACKEND_PORT"])
 STORE_BACKEND_PORT = int(os.environ["STORE_BACKEND_PORT"])
-LANGFUSE_BACKEND_PORT = int(os.environ["LANGFUSE_BACKEND_PORT"])
 LATITUDE_BACKEND_PORT = int(os.environ["LATITUDE_BACKEND_PORT"])
 LATITUDE_ATTRS_OUT = os.environ["LATITUDE_ATTRS_OUT"]
+
+# Span identities of the mixed payload. They are named because the assertions
+# below compare the projected copies against them.
+ROOT_SPAN = "0000000000000001"
+LLM_SPAN = "0000000000000002"
+TOOL_SPAN = "0000000000000003"
 
 
 def fail(message):
@@ -39,7 +54,7 @@ def fail(message):
 
 
 def log(message):
-    print("telemetry-output-view-isolation: " + message, flush=True)
+    print("telemetry-output-view-projection: " + message, flush=True)
 
 
 def tail(path, limit=3000):
@@ -158,15 +173,6 @@ class Backend(http.server.ThreadingHTTPServer):
         ))
 
 
-def absent(backend, trace_id, seconds, message):
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        if backend.records_for(trace_id):
-            fail(message)
-        time.sleep(0.1)
-    log("trace %s absent on backend %d" % (trace_id, backend.server_port))
-
-
 def otlp_attr(key, value):
     if isinstance(value, bool):
         encoded = {"boolValue": value}
@@ -243,9 +249,9 @@ def precedence_payload(trace_id):
 def mixed_payload(trace_id, prefix):
     input_messages, output_messages = message_arrays(prefix)
     spans = [
-        make_span(trace_id, "0000000000000001", "", "hindsight.reflect", 1700000000000000000, 1700000000000000900,
+        make_span(trace_id, ROOT_SPAN, "", "hindsight.reflect", 1700000000000000000, 1700000000000000900,
                   {"hindsight.operation": "reflect", "http.request.method": "POST", "http.response.status_code": 200}),
-        make_span(trace_id, "0000000000000002", "0000000000000001", "hindsight.reflect", 1700000000000000100, 1700000000000000800,
+        make_span(trace_id, LLM_SPAN, ROOT_SPAN, "hindsight.reflect", 1700000000000000100, 1700000000000000800,
                   {"hindsight.scope": "reflect", "gen_ai.provider.name": "openai", "gen_ai.request.model": "synthetic-model", "gen_ai.usage.input_tokens": 17, "gen_ai.usage.output_tokens": 11, "hindsight.private_marker": prefix + "-USEFUL-SENTINEL"},
                   [
                       make_event("gen_ai.client.inference.operation.details", {
@@ -258,22 +264,12 @@ def mixed_payload(trace_id, prefix):
                       make_event("exception", {"exception.type": "ValueError", "exception.message": prefix + "-EXCEPTION-SENTINEL", "exception.stacktrace": "stack " + prefix + "-EXCEPTION-SENTINEL"}),
                   ],
                   {"code": 2, "message": prefix + "-STATUS-SENTINEL"}),
-        make_span(trace_id, "0000000000000003", "0000000000000002", "hindsight.reflect_tool_exec.done", 1700000000000000200, 1700000000000000700,
+        make_span(trace_id, TOOL_SPAN, LLM_SPAN, "hindsight.reflect_tool_exec.done", 1700000000000000200, 1700000000000000700,
                   {"hindsight.tool.name": "done", "hindsight.tool.arguments": '{"answer":"' + prefix + '-TOOL-ARG-SENTINEL"}', "hindsight.tool.duration_ms": 19}),
     ]
     return {"resourceSpans": [{
         "resource": {"attributes": [otlp_attr("service.name", "hindsight-probe"), otlp_attr("deployment.environment.name", "synthetic")]},
         "scopeSpans": [{"scope": {"name": "hindsight.synthetic", "version": "0.10.0"}, "spans": spans}],
-    }]}
-
-
-def simple_payload(trace_id, span_id, name, resource="probe-general"):
-    return {"resourceSpans": [{
-        "resource": {"attributes": [otlp_attr("service.name", resource)]},
-        "scopeSpans": [{"scope": {"name": "telemetry-output-view-check"}, "spans": [
-            make_span(trace_id, span_id, "", name, 1700000000000000000, 1700000000000000100,
-                      {"http.route": "/ordinary-only", "app.marker": "ordinary"})
-        ]}],
     }]}
 
 
@@ -301,11 +297,11 @@ def send(address, port, payload, label):
 
 def assert_structure(records, trace_id, expect_content):
     by_id = {record["spanId"]: record for record in records if record["traceId"] == trace_id}
-    expected = {"0000000000000001", "0000000000000002", "0000000000000003"}
+    expected = {ROOT_SPAN, LLM_SPAN, TOOL_SPAN}
     if set(by_id) != expected:
         fail("trace %s did not preserve its full span set: %r" % (trace_id, sorted(by_id)))
     root, llm, tool = (by_id[name] for name in sorted(expected))
-    if llm["parentSpanId"] != "0000000000000001" or tool["parentSpanId"] != "0000000000000002":
+    if llm["parentSpanId"] != ROOT_SPAN or tool["parentSpanId"] != LLM_SPAN:
         fail("trace %s changed parent IDs" % trace_id)
     if (llm["startTimeUnixNano"], llm["endTimeUnixNano"]) != ("1700000000000000100", "1700000000000000800"):
         fail("trace %s changed timing" % trace_id)
@@ -333,49 +329,31 @@ def assert_structure(records, trace_id, expect_content):
 
 
 def main():
-    ports = [GENERAL_BACKEND_PORT, STORE_BACKEND_PORT, LANGFUSE_BACKEND_PORT, LATITUDE_BACKEND_PORT]
-    if any(bound("127.0.0.1", port) for port in ports):
+    if bound("127.0.0.1", STORE_BACKEND_PORT) or bound("127.0.0.1", LATITUDE_BACKEND_PORT):
         fail("a mock backend port is already in use")
 
-    general = Backend(GENERAL_BACKEND_PORT)
     store = Backend(STORE_BACKEND_PORT)
-    langfuse = Backend(LANGFUSE_BACKEND_PORT)
     latitude = Backend(LATITUDE_BACKEND_PORT)
-    backends = [general, store, langfuse, latitude]
-    for backend in [general, store, langfuse]:
+    backends = [store, latitude]
+    for backend in backends:
         backend.start()
 
     log_file = open("collector.log", "ab")
     collector = subprocess.Popen([OTELCOL, "--config=file:" + CONFIG], stdout=log_file, stderr=log_file, start_new_session=True)
     try:
-        if not wait_bound("127.0.0.1", GENERAL_PORT):
-            fail("general receiver failed to bind; collector log:\n" + tail("collector.log"))
         if not wait_bound(ROUTE_ADDR, ROUTE_PORT):
             fail("selected receiver failed to bind; collector log:\n" + tail("collector.log"))
-        if bound("127.0.0.1", ROUTE_PORT) or bound(ROUTE_ADDR, GENERAL_PORT):
-            fail("general and route listeners are not isolated sockets")
 
-        # Rich Latitude unavailable: queue that destination only while the lean
-        # store and the other rich destination continue independently.
+        # One received trace, two projected copies: the store receives the lean
+        # profile and Latitude the bridged rich copy.
         trace = "a1000000000000000000000000000001"
-        log("phase 1: Latitude outage leaves lean and Langfuse exports live")
-        send(ROUTE_ADDR, ROUTE_PORT, mixed_payload(trace, "MIXED"), "mixed trace while Latitude is down")
-        lean = store.await_trace(trace, 3)
-        rich_lang = langfuse.await_trace(trace, 3)
-        assert_structure(lean, trace, expect_content=False)
-        assert_structure(rich_lang, trace, expect_content=True)
-        absent(general, trace, 2, "general backend received selected-route traffic")
+        send(ROUTE_ADDR, ROUTE_PORT, mixed_payload(trace, "MIXED"), "mixed trace")
+        assert_structure(store.await_trace(trace, 3), trace, expect_content=False)
+        log("lean profile removed every named content carrier and kept span identity")
 
-        latitude.start()
-        if not wait_bound("127.0.0.1", LATITUDE_BACKEND_PORT, 10):
-            fail("Latitude mock backend did not recover")
-        rich_lat = latitude.await_trace(trace, 3, 45)
-        assert_structure(rich_lat, trace, expect_content=True)
-        absent(general, trace, 2, "general backend received selected-route traffic after recovery")
-
-        # Actual parser probe input: the harness writes the final span-attribute
-        # map; the independent worker imports Latitude's real pinned parser.
-        llm = next(record for record in rich_lat if record["spanId"] == "0000000000000002")
+        rich = latitude.await_trace(trace, 3, 45)
+        assert_structure(rich, trace, expect_content=True)
+        llm = next(record for record in rich if record["spanId"] == LLM_SPAN)
         attrs = llm["attributes"]
         if attrs.get("gen_ai.prompt") is None or attrs.get("gen_ai.completion") is None:
             fail("Latitude view did not set parser-supported legacy message attributes")
@@ -395,51 +373,9 @@ def main():
             json.dump([{"spanId": llm["spanId"], "attributes": attrs}], output, ensure_ascii=False, indent=2)
         log("Latitude attribute artifact written to %s" % LATITUDE_ATTRS_OUT)
 
-        # Shared-input mutation must remain branch-local: Langfuse keeps its
-        # original event and does not gain Latitude-specific legacy carriers.
-        lang_llm = next(record for record in rich_lang if record["spanId"] == "0000000000000002")
-        if "gen_ai.prompt" in lang_llm["attributes"] or "gen_ai.completion" in lang_llm["attributes"]:
-            fail("Latitude adapter mutated Langfuse attributes")
-        if not any(event.get("name") == "gen_ai.client.inference.operation.details" for event in lang_llm["events"]):
-            fail("Latitude adapter removed the rich inference event")
-
-        log("phase 2: ordinary-only selected-route trace")
-        ordinary = "a2000000000000000000000000000002"
-        send(ROUTE_ADDR, ROUTE_PORT, simple_payload(ordinary, "0000000000000011", "ordinary-only"), "ordinary-only selected trace")
-        for backend in [store, langfuse, latitude]:
-            records = backend.await_trace(ordinary, 1)
-            if len(records) != 1:
-                fail("ordinary-only trace duplicated at backend %d" % backend.server_port)
-        absent(general, ordinary, 2, "ordinary-only selected trace reached general backend")
-
-        log("phase 3: late continuation in a later export request")
-        late = "a3000000000000000000000000000003"
-        first = mixed_payload(late, "LATE")
-        first["resourceSpans"][0]["scopeSpans"][0]["spans"] = first["resourceSpans"][0]["scopeSpans"][0]["spans"][:1]
-        send(ROUTE_ADDR, ROUTE_PORT, first, "trace root")
-        continuation = mixed_payload(late, "LATE")
-        continuation["resourceSpans"][0]["scopeSpans"][0]["spans"] = continuation["resourceSpans"][0]["scopeSpans"][0]["spans"][1:2]
-        send(ROUTE_ADDR, ROUTE_PORT, continuation, "late continuation")
-        for backend in [store, langfuse, latitude]:
-            records = backend.await_trace(late, 2)
-            if {record["spanId"] for record in records} != {"0000000000000001", "0000000000000002"}:
-                fail("late continuation changed the received span set at backend %d" % backend.server_port)
-            child = next(record for record in records if record["spanId"] == "0000000000000002")
-            if child["parentSpanId"] != "0000000000000001":
-                fail("late continuation changed its parent ID at backend %d" % backend.server_port)
-        absent(general, late, 2, "late selected-route continuation reached general backend")
-
-        log("phase 4: adjacent general-route traffic stays general")
-        general_trace = "a4000000000000000000000000000004"
-        send("127.0.0.1", GENERAL_PORT, simple_payload(general_trace, "0000000000000044", "general-adjacent"), "general adjacent trace")
-        general.await_trace(general_trace, 1)
-        for backend in [store, langfuse, latitude]:
-            absent(backend, general_trace, 3, "general-route traffic crossed into backend %d" % backend.server_port)
-
-        log("phase 5: existing canonical and producer-set legacy carriers take precedence")
+        log("bridge precedence: canonical carriers untouched, producer-set carriers preserved")
         precedence = "a5000000000000000000000000000005"
         send(ROUTE_ADDR, ROUTE_PORT, precedence_payload(precedence), "mixed-precedence trace")
-        expected_input, expected_output = message_arrays("MIXED")
         latitude_spans = {record["spanId"]: record["attributes"] for record in latitude.await_trace(precedence, 2)}
         canonical = latitude_spans[CANONICAL_SPAN]
         if canonical.get("gen_ai.input.messages") != CANONICAL_INPUT or canonical.get("gen_ai.output.messages") != CANONICAL_OUTPUT:
@@ -453,15 +389,6 @@ def main():
             fail("Latitude view overwrote a producer-set gen_ai.prompt: %r" % producer.get("gen_ai.prompt"))
         if producer.get("gen_ai.completion") != expected_output:
             fail("Latitude view did not bridge completion where the canonical counterpart is absent: %r" % producer.get("gen_ai.completion"))
-        shared = next(
-            record["attributes"] for record in langfuse.await_trace(precedence, 2) if record["spanId"] == CANONICAL_SPAN
-        )
-        if (
-            shared.get("gen_ai.input.messages") != CANONICAL_INPUT
-            or "gen_ai.prompt" in shared
-            or "gen_ai.system_instructions" in shared
-        ):
-            fail("the Latitude bridge reached the Langfuse view of the same span: %r" % shared)
         log("OK")
     finally:
         try:

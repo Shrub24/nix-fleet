@@ -140,3 +140,57 @@ Route selection is routing only. The contract adds no authentication, authorizat
 
 `vmagent-health` (`:8429`), `vector-health` (`:9598`) and `otel-collector-health` are plain values registered by the realization that binds the listener. A host that registered one of those jobs itself under the older single-aspect composition must drop its own definition; two definitions of one job name conflict rather than merge, and `lib.mkForce` is the deliberate override.
 **Reason:** One value feeds both the listener argument and the registration, so the bound port and the scraped target cannot drift apart. A defaults-merge would let a host silently repoint the health scrape away from the listener the provider bound, which is the drift ownership exists to prevent.
+
+## The output-view runtime check keeps only the artifacts this repo authors
+
+**Id:** 7a2c9e51-4d38-4f6b-8e21-5c9b0a3f7d64
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** check-surface trim, `modules/telemetry/output-view-checks.nix`, `tests/telemetry/output_views_check.py`, 2026-10-09
+
+`telemetry-output-view-projection` (renamed from `…-isolation`) runs the pinned
+Collector against local mock backends and asserts what the rendered configuration
+cannot: one mixed trace arrives whole in the lean view with parents, timing,
+status and resource identity intact and none of the five content markers, arrives
+in the rich view with those markers and the canonical message carriers, and the
+Latitude bridge obeys its precedence rule — canonical carriers untouched, no
+legacy carrier added beside them, the producer's own legacy keys preserved, and
+system instructions supplied whenever the span lacks them. Everything else it
+used to assert — one receiver feeding two pipelines, an unavailable rich
+destination not diverting the lean branch, listener isolation — is readable from
+rendered config and is now asserted at evaluation, including each view
+pipeline's exporter membership as a set equality.
+
+**Reason:** a syntactically valid but semantically wrong OTTL regex passes both
+evaluation and `otelcol validate`, because the failure is in what a statement
+does with a record, not whether the config loads. That is not hypothetical: a
+hand-doubled backslash produced exactly that during this work. The remaining
+phases are the ones where a runtime observation is the only evidence we can have;
+the deleted ones were Collector plumbing that evaluation states directly.
+
+**Rejected alternative:** keep the plumbing phases for confidence. They cost a
+second and third mock backend apiece and re-prove upstream behaviour, which is
+what the trim removes.
+
+**Rejected alternative:** delete the runtime check entirely and accept the
+projection as covered by evaluation. That would leave the regex class uncovered,
+which is the class that has actually failed here.
+
+## The parser-probe artifact is written and asserted non-empty
+
+**Id:** e41b7c08-9d25-4a63-b5f7-8c02d9e6143a
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** check-surface trim, `tests/telemetry/output_views_check.py`, 2026-10-09
+
+The runtime check still emits the attribute artifact the pinned Latitude probe
+consumes, and the derivation fails if it is missing or empty.
+
+**Reason:** the 0.3.118 compatibility claim — that Latitude parses our carrier
+through the deprecated `gen_ai.prompt`/`gen_ai.completion` pair — is only
+re-derivable while something still writes the attributes it reads. Losing that
+file would not fail anything; the probe would simply stop meaning anything, and
+the claim would decay into point-in-time evidence. One file write in a phase that
+already runs the Collector buys the difference.

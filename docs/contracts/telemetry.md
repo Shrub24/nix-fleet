@@ -211,7 +211,12 @@ exporter names so queue identities survive the change. After a native override,
 **the rendered pipelines determine effective routing**: the route declaration
 alone proves which exporters exist, not which pipeline uses them. Consumer
 checks should inspect receiver, processor and exporter assignments and ensure
-that each selected destination has one output path.
+that each selected destination has one output path;
+`telemetry-output-view-composition` does that at evaluation for the checked
+example, down to the exact exporter membership of each view pipeline, and
+`telemetry-output-view-projection` is the runtime check that the lean profile
+strips the carriers it names and that the Latitude bridge fills only the
+carriers it is meant to.
 
 Define branch-specific processors in native `settings.processors` and reference
 them explicitly from their pipelines. Do not put a trace-only redactor or
