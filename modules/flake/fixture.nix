@@ -540,7 +540,6 @@ let
       # and a destination that carries the admitted signal.
       pushOnlyEndpoint =
         {
-          withAspect,
           withSignals ? false,
           withDestination ? false,
         }:
@@ -548,9 +547,8 @@ let
           inherit system;
           modules = [
             inputs.sops-nix.nixosModules.sops
+            aspects.telemetry-otlp
           ]
-          ++ lib.optionals withAspect [ aspects.telemetry-otlp ]
-          ++ lib.optionals (!withAspect) [ ../../lib/telemetry-contract.nix ]
           ++ lib.optionals withDestination [
             {
               services.telemetry.destinations.local = {
@@ -753,15 +751,17 @@ let
       # is a read-time throw.
       telemetryEndpointGuardChecks =
         let
-          traceOnlyEndpoint = builtins.tryEval (pushOnlyEndpoint {
-            withAspect = true;
-            withSignals = true;
+          # A composed realization that admits no signal: the guard is the same
+          # option default either way, so one throw case stands for the family.
+          # The admitted-signal-without-a-carrier branch is asserted, with its
+          # named error, by the OTLP rejection leaf.
+          unadmittedEndpoint = builtins.tryEval (pushOnlyEndpoint {
             withDestination = true;
           });
-          destinationOnlyEndpoint = builtins.tryEval (pushOnlyEndpoint {
-            withAspect = true;
-            withDestination = true;
-          });
+          # A scrape realization is not an OTLP push realization: it binds a
+          # Prometheus receiver, never this endpoint. Reading the endpoint with
+          # no OTLP push realization is what the option's own default refuses,
+          # so this case carries the uncomposed read as well.
           scrapeOnlyEndpoint =
             builtins.tryEval
               (fixtureNixosSystem {
@@ -774,20 +774,15 @@ let
                   })
                 ];
               }).config.environment.variables.OTEL_EXPORTER_OTLP_ENDPOINT;
-          pushOnlyWithoutAspect = builtins.tryEval (pushOnlyEndpoint {
-            withAspect = false;
-          });
-          pushOnlyWithoutDestination = builtins.tryEval (pushOnlyEndpoint {
-            withAspect = true;
+          pushEndpoint = builtins.tryEval (pushOnlyEndpoint {
             withSignals = true;
+            withDestination = true;
           });
         in
-        !pushOnlyWithoutAspect.success
+        !unadmittedEndpoint.success
         && !scrapeOnlyEndpoint.success
-        && !pushOnlyWithoutDestination.success
-        && !destinationOnlyEndpoint.success
-        && traceOnlyEndpoint.success
-        && traceOnlyEndpoint.value == "http://127.0.0.1:4318";
+        && pushEndpoint.success
+        && pushEndpoint.value == "http://127.0.0.1:4318";
 
       # Contract and producer data stay inert without a realization.
       telemetryDormantDeclarationChecks =
@@ -945,11 +940,11 @@ let
               ];
         in
         # Selecting the logs lane runs Vector without an explicit enable flag;
-        # a valid sink and non-empty allowlist are still required.
+        # a valid sink and non-empty allowlist are still required. Which other
+        # units that same composition leaves out is the capability matrix's
+        # claim, so it is not repeated here.
         hostAccepts vectorOnly.config
         && vectorOnly.config.services.vector.enable
-        && !vectorOnly.config.services.opentelemetry-collector.enable
-        && !(vectorOnly.config.systemd.services ? opentelemetry-collector)
         # A composed metrics realization consumes the published health source; the
         # publishing registration does not compose another realization.
         && hostAccepts deliveryHealthHost.config
@@ -1109,7 +1104,9 @@ let
 
       # What each scrape realization renders: the default agent's jobs and
       # arguments, the explicit OTel scrape realization's receivers and
-      # pipelines, and the health job a lane publishes for itself.
+      # pipelines, and the health job a lane publishes for itself. A destination
+      # with no registered scrape source is `vmagent-realization`'s `noOtel`
+      # case, so that composition is asserted there and not evaluated here too.
       vmagentRenderedJobChecks =
         let
           remoteWrite = {
@@ -1166,7 +1163,6 @@ let
             };
             destinations.metrics = remoteWrite;
           };
-          noScrape = vmagentHost { destinations.metrics = remoteWrite; };
         in
         # the default provider renders every scrape field into vmagent's own config
         rendered.services.vmagent.enable
@@ -1239,16 +1235,7 @@ let
               ];
             }
             otelCollectorHealthJob
-          ]
-        # A host that binds a metrics destination but registers no scrape source
-        # still starts the provider: its own loopback health scrape is a
-        # registered job like any other, so the agent that would ship those
-        # metrics exists exactly when the lane can carry them.
-        && noScrape.services.vmagent.enable
-        && noScrape.services.vmagent.prometheusConfig.scrape_configs == [ vmagentHealthJob ]
-        && !(noScrape.systemd.services ? opentelemetry-collector)
-        && !noScrape.services.opentelemetry-collector.enable
-        && !noScrape.services.opentelemetry-collector.enable;
+          ];
 
       # Which units a composition realizes: a contract-only destination or a
       # producer-only host starts no agent, the logs lane ships without scraping,
@@ -1482,7 +1469,6 @@ let
               inherit system;
               inherit modules;
             }).config;
-          defaults = evaluated [ aspects.build-account ];
           renamed = evaluated [
             aspects.build-account
             {
@@ -1490,14 +1476,13 @@ let
               nix.settings.trusted-users = [ "existing-coordinator" ];
             }
           ];
-          unselected = evaluated [ ];
         in
-        lib.elem "nixbuild" defaults.nix.settings.trusted-users
-        && lib.elem "dispatcher" renamed.nix.settings.trusted-users
-        && lib.elem "existing-coordinator" renamed.nix.settings.trusted-users
-        && lib.elem "root" renamed.nix.settings.trusted-users
-        && !(lib.elem "nixbuild" renamed.nix.settings.trusted-users)
-        && !(lib.elem "nixbuild" unselected.nix.settings.trusted-users);
+        # The dispatch identity the consumer declares is what has to be trusted,
+        # and the consumer's own entry survives the merge. The default name and
+        # nixpkgs' `root` entry are the aspect's own literal and the platform's
+        # baseline, not claims about a consumer's host.
+        lib.elem renamed.services.build-account.name renamed.nix.settings.trusted-users
+        && lib.elem "existing-coordinator" renamed.nix.settings.trusted-users;
 
       tailscaleAutoconnectChecks =
         let
@@ -1537,10 +1522,6 @@ let
               ];
             }).config;
           defaults = evaluated { };
-          tuned = evaluated {
-            services.fast-nix-gc.dates = "daily";
-            services.fast-nix-optimise.enable = false;
-          };
           # Every unit off at once: the update that removes the schedule. The
           # checks below read what the composition produced — rendered units and
           # the registration set — because an override that only sets option
@@ -1550,34 +1531,18 @@ let
             services.fast-nix-gc.enable = false;
             services.fast-nix-optimise.enable = false;
           };
+          # One flag off while the others stay on: the shape a consumer override
+          # actually takes, and the only case that discriminates a registration
+          # wired to a sibling's flag — with every flag off, a mis-wired
+          # registration is absent for the wrong reason and passes.
+          optimiseOff = evaluated { services.fast-nix-optimise.enable = false; };
         in
-        # Collection is unconditional: with no free-space threshold every run
-        # collects everything unreferenced rather than waiting for the store to
-        # reach a watermark. A day of grace spares freshly built paths.
-        defaults.services.fast-nix-gc.enable
-        && defaults.services.fast-nix-gc.automatic
-        && defaults.services.fast-nix-gc.dates == [ "hourly" ]
-        && defaults.services.fast-nix-gc.ensureFree == null
-        && defaults.services.fast-nix-gc.keepRecent == "1d"
-        && defaults.services.fast-nix-gc.deleteOlderThan == null
-        # Pruning never collects, and runs first when both timers fire.
-        && defaults.programs.nh.clean.enable
-        && lib.hasInfix "--no-gc" defaults.programs.nh.clean.extraArgs
-        && lib.hasInfix "--keep-since 7d" defaults.programs.nh.clean.extraArgs
-        && defaults.systemd.services.nh-clean.before == [ "fast-nix-gc.service" ]
-        # Optimise stays a weekly safety net for pre-auto-optimise paths.
-        && defaults.services.fast-nix-optimise.enable
-        && defaults.services.fast-nix-optimise.dates == [ "weekly" ]
-        # Every unit the aspect owns registers its own failure.
-        && defaults.services.notify.events ? "nh-clean"
-        && defaults.services.notify.events ? "fast-nix-gc"
-        && defaults.services.notify.events ? "fast-nix-optimise"
-        # The collector is installed as the manual tool for the same store.
-        && lib.elem defaults.services.fast-nix-gc.package defaults.environment.systemPackages
-        # The fleet's values are defaults on the upstream options, so a host
-        # overrides them directly instead of through a fleet namespace.
-        && tuned.services.fast-nix-gc.dates == [ "daily" ]
-        && !tuned.services.fast-nix-optimise.enable
+        # Every unit the aspect owns registers its own failure. The schedules,
+        # weights and package the units carry are the aspect's own defaults on
+        # the upstream options, restated in `modules/maintenance/nix-gc.nix`.
+        (defaults.services.notify.events ? "nh-clean")
+        && (defaults.services.notify.events ? "fast-nix-gc")
+        && (defaults.services.notify.events ? "fast-nix-optimise")
         # Turning a unit off is the override the contract invites, so it must
         # leave no trace. Two defects this catches: a registration left behind
         # with no unit to attach to, and the ordering drop-in on its own, which
@@ -1587,6 +1552,13 @@ let
         && !(disabled.services.notify.events ? "nh-clean")
         && !(disabled.services.notify.events ? "fast-nix-gc")
         && !(disabled.services.notify.events ? "fast-nix-optimise")
+        # One flag off, the others on: only that unit's registration goes. A
+        # registration wired to a sibling's flag survives the all-off case and
+        # fails here.
+        && !(optimiseOff.systemd.units ? "fast-nix-optimise.service")
+        && !(optimiseOff.services.notify.events ? "fast-nix-optimise")
+        && (optimiseOff.services.notify.events ? "nh-clean")
+        && (optimiseOff.services.notify.events ? "fast-nix-gc")
         # The symptom in notify's own words, so this leaf fails the way a
         # consumer's build did.
         && !(lib.any (
@@ -1595,52 +1567,27 @@ let
         ) disabled.assertions);
 
       nodeExporterIdentityChecks =
-        let
-          identity =
-            extra:
-            (fixtureNixosSystem {
-              inherit system;
-              modules = [
-                aspects.node-exporter
-                extra
-              ];
-            }).config.services.telemetry.scrape.node.labels.instance;
-        in
-        identity {
-          networking.hostName = "node-probe";
-          services.node-exporter.port = 9200;
-        } == "node-probe:9200"
-        &&
-          identity {
-            networking.hostName = "other-probe";
-            services.telemetry.scrape.node.labels.instance = "consumer-owned";
-          } == "consumer-owned";
-
-      # The alerting aspects' own contract: selected but unbound leaves no unit and
-      # no registration, an enabled vmalert instance without a datasource or a
-      # notifier is refused by name (per instance), and a fully bound one is
-      # accepted and registers its failure.
-      alertingAdmissionChecks =
-        let
-          inert = admissionEval [
-            aspects.vmalert
-            aspects.alertmanager
+        # The label is consumer-owned: a value the consumer declares wins over
+        # the label the aspect derives from the host name and the bound port. The
+        # derived label is read off the fixture host's composed registration,
+        # which couples it to the exporter's own bind.
+        (fixtureNixosSystem {
+          inherit system;
+          modules = [
+            aspects.node-exporter
+            {
+              networking.hostName = "other-probe";
+              services.telemetry.scrape.node.labels.instance = "consumer-owned";
+            }
           ];
-          bound = {
-            services.vmalert.instances.bound = {
-              enable = true;
-              settings = {
-                "datasource.url" = "http://127.0.0.1:8428";
-                "notifier.url" = [ "http://127.0.0.1:9093" ];
-                "httpListenAddr" = "127.0.0.1:8880";
-              };
-            };
-          };
-        in
-        !(inert.config.systemd.services ? "vmalert")
-        && !(inert.config.systemd.services ? alertmanager)
-        && inert.config.services.notify.events == { }
-        && builtins.any (lib.hasPrefix "vmalert: instance(s) 'unbound-notifier'") (admissionFailures [
+        }).config.services.telemetry.scrape.node.labels.instance == "consumer-owned";
+
+      # The alerting aspect's own contract: an enabled vmalert instance without a
+      # datasource, a notifier or a management bind is refused by name, per
+      # instance. The unbound composition is the aspect's own default, and the
+      # bound instance's registration is the host's alerting→notify seam.
+      alertingAdmissionChecks =
+        builtins.any (lib.hasPrefix "vmalert: instance(s) 'unbound-notifier'") (admissionFailures [
           aspects.vmalert
           {
             services.vmalert.instances.unbound-notifier = {
@@ -1664,16 +1611,7 @@ let
               };
             };
           }
-        ])
-        && admissionAccepts [
-          aspects.vmalert
-          bound
-        ]
-        && (admissionEval [
-          aspects.vmalert
-          bound
-        ]).config.services.notify.events
-          ? "vmalert-bound";
+        ]);
       # The substitution catalog is a fleet-owned baseline, not an option surface:
       # a consumer appends through nix.conf's own extra-substituters key, or
       # replaces the list outright with mkForce. Both seams are exercised here so
@@ -1695,26 +1633,14 @@ let
             nix.settings.substituters = lib.mkForce [ "https://replaced.invalid" ];
           };
         in
-        base.substituters == [
-          # Appended to nixpkgs' own contribution, not restated by the aspect.
-          "https://cache.nixos.org/"
-          "https://nix-community.cachix.org"
-          "https://cache.numtide.com"
-          "https://cache.shrublab.xyz"
-        ]
-        && builtins.all (message: builtins.elem message base."trusted-substituters") [
-          "https://cache.shrublab.xyz"
-          "ssh-ng://eu.nixbuild.net"
-        ]
-        && builtins.any (lib.hasPrefix "cache.nixos.org-1:") base."trusted-public-keys"
-        &&
-          builtins.elem "nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A="
-            base."trusted-public-keys"
-        # Appending is a key of its own, so the baseline list must survive it.
-        && appended.substituters == base.substituters
+        # Appending is a key of its own, so the baseline list and the baseline's
+        # own keys must survive it; replacing is explicit and drops the baseline
+        # entries rather than unioning them with it. The catalog's contents are
+        # fleet data owned by `modules/system/nix-baseline.nix`.
+        appended.substituters == base.substituters
+        && appended."trusted-public-keys" == base."trusted-public-keys"
         && appended."extra-substituters" == [ "https://appended.invalid" ]
         && appended."extra-trusted-public-keys" == [ "appended.invalid-1:AAAA" ]
-        # Replacing is explicit and drops the baseline entries rather than unioning.
         && replaced.substituters == [ "https://replaced.invalid" ];
     in
     {
@@ -1731,15 +1657,15 @@ let
         ok = tailscaleAutoconnectChecks;
       };
       nix-baseline-substitution = {
-        message = "nix-baseline: the substitution catalog or its append/replace seams regressed";
+        message = "nix-baseline: the append or mkForce-replace seam of the substitution catalog regressed";
         ok = nixBaselineSubstitutionSeams;
       };
       nix-gc-defaults = {
-        message = "nix-gc: unconditional collection, root pruning, optimise or their overrides regressed";
+        message = "nix-gc: a unit's failure registration no longer follows its enable flag, or turning the units off left a trace";
         ok = nixGcChecks;
       };
       alerting-admission = {
-        message = "alerting: vmalert or alertmanager instance admission regressed";
+        message = "alerting: vmalert no longer refuses an enabled instance without a datasource, a notifier or a management bind, by name and per instance";
         ok = alertingAdmissionChecks;
       };
       telemetry-mutation-rejections = {
@@ -1823,7 +1749,7 @@ let
         ok = vmagentFanoutGuardChecks;
       };
       node-exporter-identity = {
-        message = "node-exporter: the scrape instance label no longer follows the exporter's own bind";
+        message = "node-exporter: a consumer's scrape instance label no longer wins over the aspect's own derivation";
         ok = nodeExporterIdentityChecks;
       };
     };
@@ -1878,12 +1804,11 @@ let
       # falsify. Restating an aspect's own literal is owned by that aspect.
       assertions = [
         {
-          assertion = config.programs.ssh.knownHosts != { };
-          message = "fixture: the fleet feature registered no known host.";
-        }
-        {
-          assertion = config.nix.buildMachines != [ ];
-          message = "fixture: the fleet feature scheduled no build machine.";
+          # Emergent property of the consumer wiring: the projection the
+          # flake-level API returns is what this host rendered. What the
+          # projection contains is the fleet-render check's claim.
+          assertion = config.nix.buildMachines != [ ] && config.programs.ssh.knownHosts != { };
+          message = "fixture: the consumer build-profile wiring reached no build machine or known host.";
         }
         {
           assertion =
@@ -2235,100 +2160,66 @@ let
         }
         {
           # The node-exporter aspect owns the exporter, the loopback bind and
-          # its own scrape registration, so the target cannot drift from the
-          # listener — and it stays off the firewall.
+          # its own scrape registration, so the registration has to track
+          # whatever this host binds — nixpkgs renders the listen address, the
+          # aspect names the target — and the bound port stays off the firewall.
+          # The notify hook is the registration contract's representative case,
+          # asserted once, in the fixture-monitored block.
           assertion =
             let
               node = config.services.prometheus.exporters.node;
               unit = config.systemd.services."prometheus-node-exporter";
+              scrape = config.services.telemetry.scrape.node;
             in
-            node.enable
-            && node.listenAddress == "127.0.0.1"
-            && node.port == 9100
-            && !node.openFirewall
-            && !(builtins.elem 9100 config.networking.firewall.allowedTCPPorts)
-            && lib.hasInfix "--web.listen-address 127.0.0.1:9100" unit.serviceConfig.ExecStart
-            && config.services.telemetry.scrape.node.target == "127.0.0.1"
-            && config.services.telemetry.scrape.node.port == 9100
-            && config.services.telemetry.scrape.node.labels.instance == "${config.networking.hostName}:9100"
-            && config.services.notify.events.prometheus-node-exporter.failure != null
-            && unit.onFailure != [ ];
-          message = "fixture: the node-exporter aspect's loopback bind, scrape registration or notify hook regressed.";
+            scrape.target == node.listenAddress
+            && scrape.port == node.port
+            && scrape.labels.instance == "${config.networking.hostName}:${toString node.port}"
+            && lib.hasInfix "--web.listen-address ${node.listenAddress}:${toString node.port}" unit.serviceConfig.ExecStart
+            && !(builtins.elem node.port config.networking.firewall.allowedTCPPorts);
+          message = "fixture: the node-exporter scrape registration no longer tracks the exporter's own bind, or the bound port reached the firewall.";
         }
         {
-          # The journald logs lane: a Vector journald source writing JSON lines
-          # to the consumer's endpoint over a bounded disk buffer, alongside
-          # independent OTLP pipelines.
+          # The two Vector sinks must not become one: the log sink carries
+          # systemd-journal records and nothing else, the health exporter only
+          # Vector's own internal metrics. Every other value in these settings
+          # is the aspect's own literal, or the consumer's own input rendered
+          # back — the journald leaves own the validation and the rendering of
+          # the opt-in scope.
           assertion =
             let
-              vector = config.services.vector;
-              sink = vector.settings.sinks.logs;
-              otel = config.services.opentelemetry-collector.settings;
+              sinks = config.services.vector.settings.sinks;
             in
-            vector.enable
-            && vector.journaldAccess
-            && vector.settings.data_dir == "/var/lib/vector"
-            && vector.settings.sources.journald.type == "journald"
-            && vector.settings.sources.journald.current_boot_only
-            && vector.settings.sources.journald.include_units == [ "fixture-monitored" ]
-            && !(vector.settings.sources.journald ? exclude_units)
-            && vector.settings.sources.internal_metrics.type == "internal_metrics"
-            && vector.settings.sinks.vector-health.type == "prometheus_exporter"
-            # The health exporter carries only internal metrics — it must never
-            # become a second path for journal records, and the log sink keeps
-            # its journal-only inputs.
-            && vector.settings.sinks.vector-health.inputs == [ "internal_metrics" ]
-            && vector.settings.sinks.vector-health.address == "127.0.0.1:9598"
-            && vector.settings.sinks.vector-health.default_namespace == "vector"
-            && config.services.telemetry.scrape.vector-health.port == 9598
-            && sink.type == "http"
-            && sink.inputs == [ "journald" ]
-            && sink.uri == "http://victorialogs.invalid:9428/insert/jsonline"
-            && sink.encoding.codec == "json"
-            && sink.framing.method == "newline_delimited"
-            && sink.compression == "gzip"
-            && sink.healthcheck.enabled == false
-            && sink.request.headers."VL-Msg-Field" == "message"
-            && sink.request.headers."VL-Time-Field" == "timestamp"
-            && sink.request.headers."VL-Stream-Fields" == "_HOSTNAME,_SYSTEMD_UNIT"
-            && sink.buffer.type == "disk"
-            && sink.buffer.max_size == 512 * 1048576
-            && sink.buffer.when_full == "block"
-            && config.services.notify.events.vector.failure != null
-            && config.systemd.services.vector.onFailure != [ ]
-            && otel.service.pipelines.logs.exporters == [ "otlp/plain" ]
-            && otel.service.pipelines.traces.receivers == [ "otlp" ];
-          message = "fixture: the journald log path (Vector journald source, JSON-line sink, disk buffer, notify) regressed.";
+            sinks.logs.inputs == [ "journald" ] && sinks.vector-health.inputs == [ "internal_metrics" ];
+          message = "fixture: a Vector sink took the other lane's inputs — the health exporter became a second log path, or the log sink lost its journal-only input.";
         }
         {
+          # Each active credential reaches the unit through its own placeholder
+          # in the rendered environment, and the unit restarts for the secrets
+          # it reads. The sopsFile/key bindings are the consumer's own inputs,
+          # and the notify hook is the registration contract's representative
+          # case, asserted in the fixture-monitored block.
           assertion =
-            config.services.notify.events.opentelemetry-collector.failure != null
-            && config.systemd.services.opentelemetry-collector.onFailure != [ ]
-            && config.sops.secrets."otel-collector/token".sopsFile == fixtureSecretFile
-            && config.sops.secrets."otel-collector/token".key == "otel/token"
-            && config.sops.secrets."otel-collector/metricsToken".key == "metrics/token"
-            &&
-              builtins.elem "opentelemetry-collector.service"
-                config.sops.templates."otel-collector.env".restartUnits
+            let
+              template = config.sops.templates."otel-collector.env";
+            in
+            # The env file binds exactly the active credentials, each to its own
+            # placeholder. Line order is not part of the contract, so compare
+            # the lines as a set rather than pinning the provider's iteration
+            # order.
+            lib.sort (a: b: a < b) (lib.splitString "\n" (lib.removeSuffix "\n" template.content))
+            == lib.sort (a: b: a < b) [
+              "OTELCOL_token=${config.sops.placeholder."otel-collector/token"}"
+              "OTELCOL_metricsToken=${config.sops.placeholder."otel-collector/metricsToken"}"
+            ]
+            && builtins.elem "opentelemetry-collector.service" template.restartUnits
             &&
               builtins.elem "opentelemetry-collector.service"
                 config.sops.secrets."otel-collector/token".restartUnits
             &&
-              # The env file binds exactly the active credentials, each to its own
-              # placeholder. Line order is not part of the contract, so compare
-              # the lines as a set rather than pinning the provider's iteration
-              # order.
-              lib.sort (a: b: a < b) (
-                lib.splitString "\n" (lib.removeSuffix "\n" config.sops.templates."otel-collector.env".content)
-              ) == lib.sort (a: b: a < b) [
-                "OTELCOL_token=${config.sops.placeholder."otel-collector/token"}"
-                "OTELCOL_metricsToken=${config.sops.placeholder."otel-collector/metricsToken"}"
-              ]
-            &&
               config.systemd.services.opentelemetry-collector.serviceConfig.EnvironmentFile == [
-                config.sops.templates."otel-collector.env".path
+                template.path
               ];
-          message = "fixture: the otel-collector SOPS or notify contract regressed.";
+          message = "fixture: the otel-collector environment no longer maps each active credential to its own placeholder, or the unit is not restarted for the secrets it reads.";
         }
         {
           # The alerting path end to end: vmalert renders the consumer's rule

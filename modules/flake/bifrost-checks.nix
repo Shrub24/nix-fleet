@@ -110,9 +110,20 @@ in
       );
     in
     {
+      # The module's own contract: the unit it renders, the configuration
+      # authority it declares, the two option shapes it refuses by name and the
+      # failure it registers. Its own check, so a module regression names itself
+      # instead of surfacing as a runtime failure.
       checks.bifrost-module =
         assert valid && lifecycle && mutation;
-        pkgs.runCommand "bifrost-module-check"
+        pkgs.runCommand "bifrost-module-check" { } "touch $out";
+
+      # The live two-cycle authority test: the generated startup path restores
+      # the Nix-owned document on fresh state and on restart, and the running
+      # process never becomes a second source of truth. Owned runtime behaviour,
+      # so it runs the shipped command rather than restating it.
+      checks.bifrost-module-runtime =
+        pkgs.runCommand "bifrost-module-runtime-check"
           {
             nativeBuildInputs = [
               pkgs.python3
