@@ -49,7 +49,7 @@ The profile is an illustrative consumer-owned choice, not an automatically enabl
 
 ### 4. Latitude adaptation has its own pipeline
 
-Copy supported inference-detail message content into the pinned parser's accepted span-attribute representation only in the Latitude output. Existing canonical message attributes take precedence. Preserve event content and trace structure on the rich side; do not overwrite Langfuse's input carrier or introduce a message carrier into the lean side.
+Copy supported inference-detail message content into the pinned parser's accepted span-attribute representation only in the Latitude output. The fill never mixes carrier families inside one span: the two legacy message carriers are filled only when the span carries no canonical message carrier at all, and each is skipped when the producer set that legacy key, so an event-derived carrier cannot sit half-populated beside a canonical one. `gen_ai.system_instructions` is the same canonical key in both representations and is supplied whenever the span lacks it. Preserve event content and trace structure on the rich side; do not overwrite Langfuse's input carrier or introduce a message carrier into the lean side.
 
 Validate emitted attributes with the actual pinned Latitude 0.3.118 parsing code or an isolated test importing that code, not a hand-reimplemented parser. This is the consumer's deployed version, not a newer target. No live backend is required for this offline compatibility check. Failure to validate the mapping blocks claiming message compatibility.
 

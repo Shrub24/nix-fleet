@@ -79,14 +79,20 @@ let
 
   # Latitude 0.3.118 reads span attributes only. Its deprecated
   # gen_ai.prompt/completion parser accepts the exact role/content arrays that
-  # Hindsight emits, including system messages. The bridge fills a legacy
-  # carrier only where the span already carries neither that legacy key nor its
-  # current counterpart, so existing canonical (`gen_ai.input.messages`,
-  # `gen_ai.output.messages`) and producer-set legacy attributes keep
-  # precedence. It is deliberately a version-scoped compatibility bridge.
+  # Hindsight emits, including system messages. The bridge is version-scoped and
+  # never mixes carrier families inside one span: the two legacy message carriers
+  # are filled only when the span carries no canonical message carrier at all,
+  # and each is also skipped when the producer set that legacy key. The gate
+  # names only the canonical message keys because the statements below set the
+  # legacy ones, and OTTL runs them in order against the same span.
+  # gen_ai.system_instructions is the same canonical key in both
+  # representations, so supplying it when a span lacks it mixes nothing and is
+  # guarded only by its own presence.
+  canonicalMessageGate = ''span.attributes["gen_ai.input.messages"] == nil and span.attributes["gen_ai.output.messages"] == nil'';
+
   latitudeStatements = [
-    ''set(span.attributes["gen_ai.prompt"], spanevent.attributes["gen_ai.input.messages"]) where spanevent.name == "gen_ai.client.inference.operation.details" and spanevent.attributes["gen_ai.input.messages"] != nil and span.attributes["gen_ai.prompt"] == nil and span.attributes["gen_ai.input.messages"] == nil''
-    ''set(span.attributes["gen_ai.completion"], spanevent.attributes["gen_ai.output.messages"]) where spanevent.name == "gen_ai.client.inference.operation.details" and spanevent.attributes["gen_ai.output.messages"] != nil and span.attributes["gen_ai.completion"] == nil and span.attributes["gen_ai.output.messages"] == nil''
+    ''set(span.attributes["gen_ai.prompt"], spanevent.attributes["gen_ai.input.messages"]) where spanevent.name == "gen_ai.client.inference.operation.details" and spanevent.attributes["gen_ai.input.messages"] != nil and ${canonicalMessageGate} and span.attributes["gen_ai.prompt"] == nil''
+    ''set(span.attributes["gen_ai.completion"], spanevent.attributes["gen_ai.output.messages"]) where spanevent.name == "gen_ai.client.inference.operation.details" and spanevent.attributes["gen_ai.output.messages"] != nil and ${canonicalMessageGate} and span.attributes["gen_ai.completion"] == nil''
     ''set(span.attributes["gen_ai.system_instructions"], spanevent.attributes["gen_ai.system_instructions"]) where spanevent.name == "gen_ai.client.inference.operation.details" and spanevent.attributes["gen_ai.system_instructions"] != nil and span.attributes["gen_ai.system_instructions"] == nil''
   ];
 

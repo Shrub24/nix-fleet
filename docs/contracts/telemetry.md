@@ -242,14 +242,21 @@ Latitude 0.3.118's consumer deployment requires an explicit
 Keep these destination-owned settings when moving its exporter into a sibling
 pipeline; do not restate credentials or project policy in a new exporter.
 
-Its message parser reads span attributes, not span events. For event-based
-Hindsight capture, a Latitude-only adapter must use the exact
-`gen_ai.input.messages` and `gen_ai.output.messages` names with supported message
-representations, preserving existing canonical values. Do not synthesize empty
-message keys: their presence can prevent another supported carrier from being
-selected. Keep the original event carrier for Langfuse and remove both content
-carriers from the lean view. Offline parser compatibility is separate from live
-project resolution, storage and UI verification.
+Its message parser reads span attributes, not span events. Latitude 0.3.118
+accepts the role/content arrays a producer emits as events only through its
+deprecated `gen_ai.prompt` / `gen_ai.completion` attributes; its current-carrier
+parser expects parts-based `gen_ai.input.messages` / `gen_ai.output.messages`
+messages and does not surface plain-text system instructions. A Latitude-only
+adapter therefore bridges the event into the legacy pair, never mixing carrier
+families inside one span: the two legacy message carriers are filled only when
+the span carries no canonical message carrier at all, and each is skipped when
+the producer set that legacy key. `gen_ai.system_instructions` is the same
+canonical key in both representations, so it is supplied whenever the span lacks
+it. Never synthesize an empty message key. Keep the original event carrier for Langfuse
+and remove every content carrier from the lean view. An all-empty parse is
+silent, so compatibility needs a positive assertion on parsed content rather
+than the absence of an error, and offline parser compatibility is separate from
+live project resolution, storage and UI verification.
 
 ## Producer registrations
 
