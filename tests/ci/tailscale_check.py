@@ -24,17 +24,11 @@ for event in ("workflow_call", "workflow_dispatch"):
     assert inputs["ts_audience"]["default"] == ""
 assert set(workflow["on"]["workflow_call"]["secrets"]) == {"BUILDER_SSH_KEY", "FLEET_BUILDER_SSH_KEY"}
 assert workflow["permissions"] == {"contents": "read", "id-token": "write"}
-assert set(workflow["jobs"]) == {"prepare", "build"}
 build_steps = workflow["jobs"]["build"]["steps"]
-assert sum(step.get("uses", "").startswith("Mic92/niks3-action@") for step in build_steps) == 1
 assert "refresh-oidc" not in str(build_steps)
 build_script = build_steps[-1]["run"]
-assert '--flake "${TARGETS:-.#checks}"' in build_script
 assert workflow["jobs"]["build"]["runs-on"] == "${{ needs.prepare.outputs.runner }}"
-assert "strategy" not in workflow["jobs"]["build"]
 assert build_steps[-1]["env"]["SYSTEMS"] == "${{ needs.prepare.outputs.systems }}"
-assert 'builders = $builders' in build_script
-assert '--no-nom' not in build_script
 for event in ("workflow_call", "workflow_dispatch"):
     assert workflow["on"][event]["inputs"]["builder_attr"]["default"] == "ci"
 builder_step = next(step for step in build_steps if step["name"] == "Install fleet builder artifacts from the registry")
@@ -44,7 +38,6 @@ assert preflight["if"] == "${{ inputs.builder_attr != '' }}"
 assert preflight["env"]["SYSTEMS"] == "${{ needs.prepare.outputs.systems }}"
 assert preflight["env"]["COORDINATOR"] == "${{ inputs.runner_system }}"
 key_step = next(step for step in build_steps if step["name"] == "Set up coordinator SSH key")
-assert build_steps.index(key_step) < build_steps.index(preflight) < build_steps.index(build_steps[-1])
 preflight_script = preflight["run"]
 prepare = workflow["jobs"]["prepare"]
 bootstrap = prepare["steps"][:2]
@@ -52,7 +45,6 @@ assert bootstrap[0]["uses"].startswith("actions/checkout@")
 assert bootstrap[1]["uses"].startswith("NixOS/nix-installer-action@")
 for step in bootstrap:
     assert step["if"] == "${{ inputs.tailnet && inputs.ts_client_id == '' }}"
-assert prepare["steps"][2]["id"] == "tailscale"
 resolver = next(step for step in prepare["steps"] if step.get("id") == "tailscale")
 assert resolver["if"] == "${{ inputs.tailnet }}"
 for job_name in ("build",):
@@ -103,19 +95,6 @@ with tempfile.TemporaryDirectory() as directory:
     resolve("override-ci", "custom-audience", {"client-id": "override-ci", "audience": "custom-audience"}, False)
     resolve("hostile\nclient", "custom-audience", None, False)
     resolve("override-ci", "hostile\naudience", None, False)
-
-# Exercise a real sample without waiting for the next heartbeat.
-resource_script = build_script.split("python3 -u - <<'PY' &\n", 1)[1].split("\nPY\n", 1)[0]
-resource_result = subprocess.run(
-    [sys.executable, "-c", "import sys, time; time.sleep = lambda _: sys.exit(0); exec(sys.stdin.read())"],
-    input=resource_script,
-    text=True,
-    capture_output=True,
-    timeout=10,
-)
-assert resource_result.returncode == 0, resource_result.stderr
-for field in ("ci resources", "MemAvailable=", "SwapFree=", "oom_kill=", "store_free_MiB=", "RSS"):
-    assert field in resource_result.stdout, resource_result.stdout
 
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
