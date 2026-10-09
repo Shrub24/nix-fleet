@@ -31,7 +31,7 @@
 
 - [x] 6.1 Run targeted feature checks, formatting, `nix flake check`, `nix flake check --no-build --all-systems` and strict OpenSpec validation; verify all pass without duplicate evaluation claims or exceeding the established per-leaf budget.
 - [x] 6.2 Record confirmed rationale through the project's context workflow and sync accepted specs; verify `ktw-lint --strict` and strict spec validation pass, without changing unrelated output-view helpers or consumer policy.
-- [ ] 6.3 Deliver the verified revision/API and migration checklist to consumers; verify the handoff distinguishes checked rendering/runtime results from remaining live cross-signal identity, trace lookup, device visibility and backend-link configuration.
+- [x] 6.3 Deliver the verified revision/API and migration checklist to consumers; verify the handoff distinguishes checked rendering/runtime results from remaining live cross-signal identity, trace lookup, device visibility and backend-link configuration.
 
 ## Workflow follow-up
 
