@@ -2312,9 +2312,8 @@ let
             chatId = "-1000000000000";
             topics = {
               infra = "2";
-              fleet = "4";
             };
-            defaultTopic = "fleet";
+            defaultTopic = "infra";
           };
 
           ntfy = {
@@ -2322,9 +2321,8 @@ let
             serverUrl = "http://127.0.0.1:8082";
             topics = {
               infra = "infra";
-              fleet = "fleet";
             };
-            defaultTopic = "fleet";
+            defaultTopic = "infra";
           };
         };
 
@@ -2578,34 +2576,6 @@ in
       # One check per contract leaf. A leaf is an ordinary check name, so a new
       # contract keeps being an ordinary `checks.<name>` build in CI.
       checks = contractChecks // {
-        # Read the generated JSON at build time. Evaluation stays portable across
-        # architectures, while real output files retain the routing/default checks.
-        notify-rendered-policy =
-          let
-            fixtureHost = "fixture-${builtins.replaceStrings [ "_" ] [ "-" ] system}";
-            etc = config.flake.nixosConfigurations.${fixtureHost}.config.environment.etc;
-          in
-          pkgs.runCommand "notify-rendered-policy-check" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-            python3 - '${etc."notify/events.json".source}' '${etc."notify/config.json".source}' <<'PY'
-            import json
-            import sys
-
-            with open(sys.argv[1]) as source:
-                events = json.load(source)
-            with open(sys.argv[2]) as source:
-                config = json.load(source)
-            assert events["fixture-monitored"]["failure"]["severity"] == "warning"
-            for name in ("ntfy", "telegram"):
-                transport = config[name]
-                assert transport["topics"]
-                assert transport["default_topic"] in transport["topics"], name
-            assert config["ntfy"]["topics"]["fleet"] == "fleet"
-            assert config["telegram"]["default_topic"] == "fleet"
-            print("rendered notification policy and transport routing passed")
-            PY
-            touch $out
-          '';
-
         vmagent-secret-guard =
           pkgs.runCommand "vmagent-secret-guard-check"
             {

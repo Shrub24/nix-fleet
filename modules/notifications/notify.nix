@@ -259,9 +259,13 @@
             text = builtins.toJSON notifyConfig;
           };
 
+          # Rendered as text, like config.json: the policy map is a contract,
+          # and evaluation can read the file's own bytes back
+          # (`environment.etc.<name>.text`) rather than the value handed to a
+          # renderer.
           environment.etc."notify/events.json" = lib.mkIf (eventsJson != { }) {
             mode = "0444";
-            source = pkgs.writers.writeJSON "events.json" eventsJson;
+            text = builtins.toJSON eventsJson;
           };
 
           environment.systemPackages = [
