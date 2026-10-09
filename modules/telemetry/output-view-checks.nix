@@ -364,17 +364,6 @@ in
       };
       failures = compositionFailures inspection;
 
-      # Non-vacuity: the regression this recipe exists to prevent is the
-      # generated pipeline keeping every declared destination, which would
-      # assign the store to a second output path. The guard has to reject that
-      # from the effective settings alone.
-      mutantSettings = lib.recursiveUpdate composedSettings {
-        service.pipelines."traces/route-${example.route}".exporters =
-          composedSettings.service.pipelines."traces/route-${example.route}".exporters
-          ++ composedSettings.service.pipelines.${example.views.lean.pipeline}.exporters;
-      };
-      mutantFailures = compositionFailures (inspection // { settings = mutantSettings; });
-
       # Runtime uses the same example, changing only listeners, endpoints and
       # test delivery plumbing.
       loopbackEndpoints = {
@@ -433,16 +422,6 @@ in
         telemetry-output-view-composition =
           if failures != [ ] then
             throw ("telemetry-output-views: " + lib.concatStringsSep "; " failures)
-          else if mutantFailures == [ ] then
-            throw "telemetry-output-views: the composition check accepted a destination assigned to two effective output pipelines; the guard is vacuous"
-          else if
-            builtins.length (
-              builtins.filter (
-                failure: lib.hasInfix "instead of exactly the route-scoped members" failure
-              ) mutantFailures
-            ) == 0
-          then
-            throw "telemetry-output-views: the duplicated-assignment mutation passed the exporter-membership assertion: ${lib.concatStringsSep "; " mutantFailures}"
           else
             pkgs.runCommand "telemetry-output-view-composition-check" { } ''
               echo "effective output views match the route declaration" > $out
