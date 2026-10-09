@@ -40,6 +40,8 @@
 
 ## H
 
+- [host-telemetry.md](host-telemetry.md) — origin identity, conservative journal correlation and the temporary rootful Podman exporter adaptation
+
 ## I
 
 ## J

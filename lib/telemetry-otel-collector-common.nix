@@ -110,15 +110,24 @@ let
       }/${instance.id}::headers::${header}=stub"
     ) telemetry.destinations.${instance.destination}.headers
   ) active;
-  generatedResource = cfg.resourceAttributes != { };
+  identity = import ./telemetry-identity.nix { inherit lib; };
+  canonicalResource = identity.localResourceAttributes telemetry;
+  resourceConflicts = identity.resourceConflicts telemetry cfg.resourceAttributes;
+  generatedResource = canonicalResource != { };
+  renderResourceAttributes =
+    attrs:
+    lib.mapAttrsToList (key: value: {
+      inherit key value;
+      action = "upsert";
+    }) attrs;
   processors =
     cfg.processors
-    // lib.optionalAttrs generatedResource {
-      resource.attributes = lib.mapAttrsToList (key: value: {
-        inherit key value;
-        action = "upsert";
-      }) cfg.resourceAttributes;
+    // lib.optionalAttrs (cfg.resourceAttributes != { }) {
+      resource.attributes = renderResourceAttributes cfg.resourceAttributes;
     };
+  identityProcessor = lib.optionalAttrs generatedResource {
+    "resource/telemetry-identity".attributes = renderResourceAttributes canonicalResource;
+  };
 in
 {
   imports = [ ./notify-contract.nix ];
@@ -163,7 +172,11 @@ in
   config = {
     assertions = [
       {
-        assertion = !generatedResource || !(cfg.processors ? resource);
+        assertion = resourceConflicts == { };
+        message = "telemetry: services.otel-collector.resourceAttributes conflicts with canonical local identity: ${identity.conflictsMessage resourceConflicts}";
+      }
+      {
+        assertion = !(generatedResource || cfg.resourceAttributes != { }) || !(cfg.processors ? resource);
         message = "otel-collector: configure the resource processor through resourceAttributes, not processors.resource";
       }
       {
@@ -191,7 +204,7 @@ in
             directory = "${stateRoot}/queue/compaction";
           };
         };
-        inherit processors;
+        processors = processors // identityProcessor;
         exporters = lib.foldl' lib.recursiveUpdate { } (map render active);
         service = {
           extensions = [ "file_storage" ];

@@ -36,6 +36,18 @@ _: {
           # remote surface, and a remote scrape would be a different design.
           listenAddress = "127.0.0.1";
           inherit (cfg) port;
+
+          # Service-level coverage through the exporter that already runs here:
+          # systemd unit states and restart counts in the same process, so the
+          # host has no second systemd exporter, second unit and second scrape
+          # target to keep in agreement. `mkDefault` is the list-merge idiom:
+          # nixpkgs' own `enabledCollectors` default is `[ ]`, so a consumer that
+          # declares its own list still wins. Unit filters and the detailed
+          # counters stay nixpkgs' (`enabledCollectors`/`disabledCollectors`,
+          # `extraFlags`) — a `--collector.systemd.*` flag in `extraFlags`
+          # disables the detailed counters, which is the documented way to bound
+          # series growth.
+          enabledCollectors = lib.mkDefault [ "systemd" ];
         };
 
         services.telemetry.scrape.node = {

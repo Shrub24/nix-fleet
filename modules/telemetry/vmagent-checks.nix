@@ -50,7 +50,10 @@ in
         static_configs = [
           {
             targets = [ "127.0.0.1:8429" ];
-            labels.instance = "nixos:vmagent";
+            labels = {
+              host = "nixos";
+              instance = "nixos:vmagent";
+            };
           }
         ];
       };
@@ -62,7 +65,10 @@ in
         static_configs = [
           {
             targets = [ "127.0.0.1:9464" ];
-            labels.instance = "nixos:otel-collector";
+            labels = {
+              host = "nixos";
+              instance = "nixos:otel-collector";
+            };
           }
         ];
       };
@@ -174,6 +180,7 @@ in
                       {
                         targets = [ "10.0.0.5:9090" ];
                         labels = {
+                          host = "nixos";
                           service = "everything";
                           environment = "fixture";
                         };
@@ -221,7 +228,9 @@ in
                     static_configs = [
                       {
                         targets = [ "127.0.0.1:9187" ];
-                        labels = { };
+                        labels = {
+                          host = "nixos";
+                        };
                       }
                     ];
                   }

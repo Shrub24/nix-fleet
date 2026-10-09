@@ -25,6 +25,25 @@ _: {
       telemetry = config.services.telemetry;
       cfg = telemetry.journald;
 
+      identity = import ../../lib/telemetry-identity.nix { inherit lib; };
+      normalization = import ../../lib/telemetry-journal-normalization.nix { inherit lib; };
+
+      journalNormalize = if cfg.normalizeTraceContext then normalization.remapSource else null;
+      journalTransforms = {
+        journald-identity = {
+          type = "remap";
+          inputs = [ "journald" ];
+          source = normalization.identitySource (identity.localJournalFields telemetry);
+        };
+      }
+      // lib.optionalAttrs cfg.normalizeTraceContext {
+        journald-correlation = {
+          type = "remap";
+          inputs = [ "journald-identity" ];
+          source = journalNormalize;
+        };
+      };
+
       # Composition selects this realization; `journald.enable` controls whether
       # this optional workload has been configured.
 
@@ -86,10 +105,11 @@ _: {
                       type = "internal_metrics";
                     };
                   };
+                  transforms = journalTransforms;
                   sinks = {
                     ${sinkName} = {
                       type = "http";
-                      inputs = [ "journald" ];
+                      inputs = if cfg.normalizeTraceContext then [ "journald-correlation" ] else [ "journald-identity" ];
                       uri =
                         if cfg.sink.endpoint == null then
                           throw "telemetry: journald shipping is enabled but services.telemetry.journald.sink.endpoint is not set; the host's journal has nowhere to go"

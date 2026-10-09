@@ -99,6 +99,7 @@
               manualResource == [
                 "memory_limiter"
                 "resource"
+                "resource/telemetry-identity"
               ];
           }
         ];

@@ -48,11 +48,34 @@ _: {
 
       # Same idiom as the maintenance aspects: the fragment declares the
       # notify contract namespace unconditionally; the notify aspect realizes
-      # registrations only when co-selected.
-      imports = [ ../../lib/notify-contract.nix ];
+      # registrations only when co-selected. The telemetry fragment is the same
+      # shape: the daemon's local metrics endpoint is published as a dormant
+      # scrape source, so a host that ships no metrics lane evaluates and
+      # scrapes nothing.
+      imports = [
+        ../../lib/notify-contract.nix
+        ../../lib/telemetry-contract.nix
+      ];
 
       config = lib.mkMerge [
         {
+          # The daemon's own local metrics endpoint: tailscaled serves
+          # Prometheus metrics at the tailnet-local `100.100.100.100` magic
+          # address on port 80, which is reachable on this host without a
+          # listener of our own. Registering the source is the whole
+          # integration — no `--webclient`, no OAuth client, no additional
+          # firewall rule, and no tailnet-facing HTTP listener is enabled
+          # here, so this adds no exposure beyond the daemon the host already
+          # runs. The address is the daemon's contract, not a consumer policy
+          # input, so it is a literal with the port as the one overridable
+          # value: a consumer that must repoint the scrape edits the
+          # registration, and the listener is still the daemon's.
+          services.telemetry.scrape.tailscale = {
+            target = "100.100.100.100";
+            port = 80;
+            metricsPath = "/metrics";
+          };
+
           assertions = [
             {
               assertion = cfg.debugMtu == null || (cfg.debugMtu >= 576 && cfg.debugMtu <= 65535);

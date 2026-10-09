@@ -22,6 +22,7 @@ let
     }:
     let
       telemetry = config.services.telemetry;
+      identity = import ../../lib/telemetry-identity.nix { inherit lib; };
 
       # A scrape source the contract registered, in Prometheus scrape-config shape.
       # The registration name is the job name. `services.vmagent.checkConfig` (left
@@ -35,7 +36,7 @@ let
         static_configs = [
           {
             targets = [ "${source.target}:${toString source.port}" ];
-            inherit (source) labels;
+            labels = identity.localScrapeLabels telemetry // source.labels;
           }
         ];
       }) telemetry.scrape;

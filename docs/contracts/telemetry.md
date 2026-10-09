@@ -434,12 +434,25 @@ producer. Mixed applications needing destination-specific views should use the
 separately documented output-view composition below, rather than sending all
 application telemetry to an AI-only endpoint.
 
-**Origin identity is preserved.** `services.otel-collector.resourceAttributes`
-is applied to locally received telemetry (the loopback listener and local scrape
-pipelines) only. The ingress pipeline shares the selected exporter IDs but never
-inherits that enrichment, so a forwarded trace keeps the resource attributes the
-relay gave it. This narrows the previous globally-applied behaviour — see
-Migration below.
+**Origin identity is explicit across local signals.**
+`services.telemetry.identity.hostName` defaults to `networking.hostName` and may
+be overridden when the inventory name differs from the machine's configured
+name. The optional `services.telemetry.identity.environment` has no default.
+Local OTLP resources receive `host.name` and, when set,
+`deployment.environment.name`; scrape registrations receive default `host` and
+`environment` labels; Vector journal events receive `host_name` and
+`environment`. These are separate from `service.name`, scrape `job` / `instance`,
+`_HOSTNAME` and `_SYSTEMD_UNIT`. A source-level scrape label explicitly named
+`host` or `environment` overrides the local default for that target, allowing a
+remote probe to retain its target origin.
+
+OTLP enrichment applies only to local inputs (the loopback receiver and local
+scrape pipelines). General ingress and named-route pipelines retain the
+originating resource unchanged, including a missing host. Contradictory
+`services.otel-collector.resourceAttributes` values for the canonical keys fail
+with a named telemetry error; matching values are accepted. No resource
+identity is stamped onto forwarded signals. The added metric labels create new
+series identities; historical data is unchanged and must not be rewritten.
 
 Adding OTLP gateway ingress never enables remote scraping or journald shipping,
 and never routes metrics or journal logs through OTLP: those keep their own
@@ -881,7 +894,19 @@ realization sets `data_dir = "/var/lib/vector"` (the unit's `StateDirectory`,
 where checkpoints and the disk buffer live), `journaldAccess = true`, the
 explicit `current_boot_only = true`, and the JSON-line sink fields, and the
 module validates the config at build time through its own `vector validate`
-step. Secrets never enter the store: this path needs none (a private ingest
+step. A pre-sink remap adds canonical `host_name` and optional `environment`
+fields, then normalizes exact `trace_id` / `span_id` keys from journal fields or
+from the root of a JSON object in `message`. Root journal keys take precedence
+(including invalid keys), IDs must be nonzero hexadecimal strings of exactly 32
+(trace) or 16 (span) characters, and valid values are lowercased. A span is
+retained only with a valid trace. Parsing promotes only those allowlisted IDs;
+malformed, plain-text and non-object messages remain unchanged and deliverable.
+The message payload cannot replace journal metadata or canonical identity.
+`services.telemetry.journald.normalizeTraceContext = false` disables parsing
+and correlation normalization, but not independent host/environment enrichment.
+Trace/span IDs are not stream partition fields and do not authenticate identity
+or guarantee that the referenced trace was retained or exported; configure
+backend log-to-trace links separately. Secrets never enter the store: this path needs none (a private ingest
 route is authenticated by the network it sits on) and no value in the generated
 config is env-interpolated. The realization registers the `vector` unit's failure
 on the notification contract.

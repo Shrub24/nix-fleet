@@ -304,8 +304,27 @@ let
   # mistake this catches, not a stylistic preference.
   validSinkUrl = url: lib.hasPrefix "http://" url || lib.hasPrefix "https://" url;
 
+  identity = import ./telemetry-identity.nix { inherit lib; };
+
+  # Binds the identity fallback to the machine's configured name. Guarded by
+  # `options` so bare contract evaluations — which compose no networking
+  # module — keep their lightweight substrate: nothing forces the fallback
+  # until a realization renders identity.
+  identityBindsNetworking =
+    { config, options, ... }:
+    {
+      config = lib.mkIf (options ? networking.hostName) {
+        services.telemetry.identity.hostName = lib.mkDefault config.networking.hostName;
+      };
+    };
+
 in
 {
+  imports = [
+    identity.identityModule
+    identityBindsNetworking
+  ];
+
   options.services.telemetry = {
     scrapeRealization = mkOption {
       type =
@@ -563,6 +582,17 @@ in
         default = [ ];
         description = "Never ship entries whose `_SYSTEMD_UNIT` is listed.";
       };
+      normalizeTraceContext = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Normalize supported structured trace context (`trace_id` / `span_id`)
+          from journal records and JSON message payloads into lowercase
+          correlation fields, before the shipper's persistent export buffer.
+          Disabling preserves pass-through behavior apart from independent
+          identity enrichment.
+        '';
+      };
       sink = {
         endpoint = mkOption {
           type = types.nullOr types.nonEmptyStr;
@@ -693,6 +723,16 @@ in
     services.telemetry.resolvedRoutePipelines = builtins.seq validatedRoutePipelines routePipelineNames;
 
     assertions = [
+      {
+        assertion =
+          !(options.services.telemetry.identity.hostName.isDefined && cfg.identity.hostName == "");
+        message = "telemetry: services.telemetry.identity.hostName must be a nonempty string when bound.";
+      }
+      {
+        assertion =
+          !(options.services.telemetry.identity.environment.isDefined && cfg.identity.environment == "");
+        message = "telemetry: services.telemetry.identity.environment must be a nonempty string when bound.";
+      }
       {
         assertion = unusedBoundSecrets == [ ];
         message = "telemetry: bound credentials have no declared destination header reference: ${lib.concatStringsSep ", " unusedBoundSecrets}";

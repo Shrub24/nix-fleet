@@ -52,10 +52,11 @@ let
       exporterIds = names: map (name: exporterRef (instance null name)) names;
       routeNames = builtins.attrNames telemetry.routes;
       routeReceiver = route: "otlp/route-${route}";
-      resource = cfg.resourceAttributes != { };
+      identity = import ../../lib/telemetry-identity.nix { inherit lib; };
+      generatedIdentity = identity.localResourceAttributes telemetry != { };
       processors =
         lib.optionals (cfg.processors ? memory_limiter) [ "memory_limiter" ]
-        ++ lib.optionals (resource || cfg.processors ? resource) [ "resource" ]
+        ++ lib.optionals (cfg.resourceAttributes != { } || cfg.processors ? resource) [ "resource" ]
         ++ lib.optionals (cfg.processors ? batch) [ "batch" ]
         ++ builtins.filter (
           name:
@@ -66,7 +67,11 @@ let
           ])
         ) (builtins.attrNames cfg.processors);
       ingressProcessors =
-        if resource then builtins.filter (name: name != "resource") processors else processors;
+        if cfg.resourceAttributes != { } then
+          builtins.filter (name: name != "resource") processors
+        else
+          processors;
+      localOtlpProcessors = processors ++ lib.optional generatedIdentity "resource/telemetry-identity";
       scrapeConfigs = lib.mapAttrsToList (name: source: {
         job_name = name;
         scrape_interval = source.interval;
@@ -75,7 +80,7 @@ let
         static_configs = [
           {
             targets = [ "${source.target}:${toString source.port}" ];
-            inherit (source) labels;
+            labels = identity.localScrapeLabels telemetry // source.labels;
           }
         ];
       }) telemetry.scrape;
@@ -103,7 +108,7 @@ let
           name = signal;
           value = {
             receivers = [ "otlp" ];
-            inherit processors;
+            processors = localOtlpProcessors;
             exporters = exporterIds telemetry.resolvedPipelines.${signal};
           };
         }) admitted

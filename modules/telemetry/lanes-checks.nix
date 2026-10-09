@@ -53,7 +53,10 @@ in
         static_configs = [
           {
             targets = [ "127.0.0.1:8429" ];
-            labels.instance = "nixos:vmagent";
+            labels = {
+              host = "nixos";
+              instance = "nixos:vmagent";
+            };
           }
         ];
       };

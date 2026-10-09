@@ -386,6 +386,13 @@ let
       };
       system.stateVersion = "25.11";
 
+      # The host's own name, which the canonical telemetry identity defaults
+      # to. The fixture's fleet record names this host the same way, so the
+      # rendered identity label, the instance labels and the explicit
+      # collector resource attribute all agree rather than contradicting each
+      # other.
+      networking.hostName = "fixture-host";
+
       sops.age.keyFile = fixtureAgeKeyFile;
 
       # Composition guard: only emergent cross-aspect properties belong here —
@@ -474,6 +481,7 @@ let
                 "memory_limiter"
                 "resource"
                 "attributes"
+                "resource/telemetry-identity"
               ]
             &&
               settings.processors.resource.attributes == [
@@ -624,7 +632,10 @@ let
                   static_configs = [
                     {
                       targets = [ "127.0.0.1:9187" ];
-                      labels.service = "fixture-app";
+                      labels = {
+                        host = config.networking.hostName;
+                        service = "fixture-app";
+                      };
                     }
                   ];
                 }
@@ -636,7 +647,7 @@ let
                   static_configs = [
                     {
                       targets = [ "127.0.0.1:9101" ];
-                      labels = { };
+                      labels.host = config.networking.hostName;
                     }
                   ];
                 }
@@ -650,7 +661,10 @@ let
                   static_configs = [
                     {
                       targets = [ "127.0.0.1:9100" ];
-                      labels.instance = "${config.networking.hostName}:9100";
+                      labels = {
+                        host = config.networking.hostName;
+                        instance = "${config.networking.hostName}:9100";
+                      };
                     }
                   ];
                 }
@@ -667,7 +681,26 @@ let
                   static_configs = [
                     {
                       targets = [ "127.0.0.1:9464" ];
-                      labels.instance = "${config.networking.hostName}:otel-collector";
+                      labels = {
+                        host = config.networking.hostName;
+                        instance = "${config.networking.hostName}:otel-collector";
+                      };
+                    }
+                  ];
+                }
+                {
+                  # Contributed by the tailscale aspect, which registers the
+                  # daemon's own metrics endpoint at the tailnet-local magic
+                  # address: no listener of ours, and no instance label because
+                  # the endpoint is the daemon's rather than a local exporter's.
+                  job_name = "tailscale";
+                  metrics_path = "/metrics";
+                  scheme = "http";
+                  scrape_interval = "30s";
+                  static_configs = [
+                    {
+                      targets = [ "100.100.100.100:80" ];
+                      labels.host = config.networking.hostName;
                     }
                   ];
                 }
@@ -683,7 +716,10 @@ let
                   static_configs = [
                     {
                       targets = [ "127.0.0.1:9598" ];
-                      labels.instance = "${config.networking.hostName}:vector";
+                      labels = {
+                        host = config.networking.hostName;
+                        instance = "${config.networking.hostName}:vector";
+                      };
                     }
                   ];
                 }
@@ -698,7 +734,10 @@ let
                   static_configs = [
                     {
                       targets = [ "127.0.0.1:8429" ];
-                      labels.instance = "${config.networking.hostName}:vmagent";
+                      labels = {
+                        host = config.networking.hostName;
+                        instance = "${config.networking.hostName}:vmagent";
+                      };
                     }
                   ];
                 }
@@ -770,15 +809,21 @@ let
         {
           # The two Vector sinks must not become one: the log sink carries
           # systemd-journal records and nothing else, the health exporter only
-          # Vector's own internal metrics. Every other value in these settings
-          # is the aspect's own literal, or the consumer's own input rendered
-          # back — the journald leaves own the validation and the rendering of
-          # the opt-in scope.
+          # Vector's own internal metrics. The log sink is fed through the
+          # normalization chain, so "journal only" is the chain's terminal
+          # source rather than the sink's direct input. Every other value in
+          # these settings is the aspect's own literal, or the consumer's own
+          # input rendered back — the journald leaves own the validation and
+          # the rendering of the opt-in scope.
           assertion =
             let
               sinks = config.services.vector.settings.sinks;
+              transforms = config.services.vector.settings.transforms;
             in
-            sinks.logs.inputs == [ "journald" ] && sinks.vector-health.inputs == [ "internal_metrics" ];
+            sinks.logs.inputs == [ "journald-correlation" ]
+            && transforms."journald-correlation".inputs == [ "journald-identity" ]
+            && transforms."journald-identity".inputs == [ "journald" ]
+            && sinks.vector-health.inputs == [ "internal_metrics" ];
           message = "fixture: a Vector sink took the other lane's inputs — the health exporter became a second log path, or the log sink lost its journal-only input.";
         }
         {
