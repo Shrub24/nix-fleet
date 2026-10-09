@@ -10,13 +10,25 @@ new signal is an explicit host choice, not a baseline side effect.
 
 The existing `node-exporter` aspect enables the node-exporter's `systemd`
 collector. It reports unit state through the existing node-exporter process
-and scrape job; there is no second systemd-exporter
-service. The default collector series are available with this enablement. More
-detailed per-unit counters are optional and require native exporter flags, for
-example:
+and scrape job; there is no second systemd-exporter service. Unit state is what
+the collector emits by default, and reading it needs DBus over a unix socket,
+so the effective collector list also keeps `AF_UNIX` in the service's
+`RestrictAddressFamilies`.
+
+The contribution is one ordinary entry in nixpkgs' `enabledCollectors` list, so
+consumer additions concatenate rather than replace: a host setting
+`enabledCollectors = [ "textfile" ]` renders `[ "textfile" "systemd" ]`. A
+consumer that deliberately wants the fleet collector gone uses `lib.mkForce`.
+
+Restart, task and start-time counters are opt-in and require native exporter
+flags, for example:
 
 ```nix
-services.prometheus.exporters.node.extraFlags = [ "--collector.systemd.enable-restart-count" ];
+services.prometheus.exporters.node.extraFlags = [
+  "--collector.systemd.enable-restarts-metrics" # service_restart_total
+  "--collector.systemd.enable-task-metrics" # unit_tasks_current / unit_tasks_max
+  "--collector.systemd.enable-start-time-metrics" # unit_start_time_seconds
+];
 ```
 
 Keep `--collector.systemd.unit-include` / `--collector.systemd.unit-exclude`
@@ -24,6 +36,26 @@ policy in nixpkgs' `services.prometheus.exporters.node.extraFlags` (or its
 native options if the pinned module exposes them): systemd unit names and
 counter cardinality are consumer policy. The scrape `instance` remains the
 existing `host:port` value.
+
+## Tailscale client metrics
+
+Selecting `tailscale` registers the daemon's local
+`http://100.100.100.100/metrics` endpoint. It starts neither a separate exporter
+nor a scraper; a composed metrics realization consumes the registration.
+
+In pinned Tailscale 1.102.5, `/metrics` uses the daemon's own LocalAPI proxy
+before browser-session authorization. It does not inspect the scraper's UID:
+vmagent's DynamicUser needs no operator grant, supplementary group or Unix-socket
+access. The operator rule governs the separate LocalAPI socket path.
+`tailscale set --webclient` enables remote access and is not needed here. See the
+[pinned HTTP handler](https://github.com/tailscale/tailscale/blob/v1.102.5/client/web/web.go#L360-L364).
+
+Availability still depends on daemon state and consumer network policy. During
+startup or with the tailnet `disable-web-client` capability, the endpoint can
+return HTTP 200 with fallback HTML rather than metrics. On deployment, check
+scrape health and an expected series such as `tailscaled_health_messages`, not
+HTTP status alone. The UID conclusion is source-verified; a live DynamicUser
+smoke test was not performed.
 
 ## SMART disk metrics
 
@@ -96,8 +128,8 @@ replacement. PR merge by itself does not satisfy the pin condition.
   socket-client contract; the pinned nixpkgs podman module declares the system
   socket and `podman` group.
 - **Live Tailscale endpoint:** on this development host,
-  `curl http://100.100.100.100/metrics` returned HTTP 200 and 28
-  `tailscaled_*` metric families were observed. This is a live observation of
+  `curl http://100.100.100.100/metrics` returned HTTP 200 with Prometheus-formatted
+  `tailscaled_*` series. This is a live observation of
   this host's existing daemon only; it does not assert every consumer host's
   daemon exposes the endpoint.
 - **Podman guest smoke:** `checks.podman-exporter-vm` is the focused disposable

@@ -38,16 +38,17 @@ _: {
           inherit (cfg) port;
 
           # Service-level coverage through the exporter that already runs here:
-          # systemd unit states and restart counts in the same process, so the
-          # host has no second systemd exporter, second unit and second scrape
-          # target to keep in agreement. `mkDefault` is the list-merge idiom:
-          # nixpkgs' own `enabledCollectors` default is `[ ]`, so a consumer that
-          # declares its own list still wins. Unit filters and the detailed
-          # counters stay nixpkgs' (`enabledCollectors`/`disabledCollectors`,
-          # `extraFlags`) — a `--collector.systemd.*` flag in `extraFlags`
-          # disables the detailed counters, which is the documented way to bound
-          # series growth.
-          enabledCollectors = lib.mkDefault [ "systemd" ];
+          # systemd unit state in the same process, so the host has no second
+          # systemd exporter, second unit and second scrape target to keep in
+          # agreement. `mkAfter`, not `mkDefault`: `enabledCollectors` is a
+          # `listOf`, so an ordinary consumer list concatenates with this entry
+          # instead of replacing it — `[ "textfile" ]` becomes
+          # `[ "textfile" "systemd" ]` — while a consumer that means to replace
+          # the fleet list uses `mkForce`. Unit filters and opt-in detail
+          # counters stay nixpkgs' (`extraFlags`): the collector emits unit state
+          # by default; restart, task and start-time counters need the
+          # `--collector.systemd.enable-*-metrics` flags.
+          enabledCollectors = lib.mkAfter [ "systemd" ];
         };
 
         services.telemetry.scrape.node = {

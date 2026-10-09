@@ -35,6 +35,16 @@ in
       pkgs = inputs.nixpkgs.legacyPackages.${system};
       inherit (import ../../lib/contract-leaf.nix { inherit lib pkgs; }) leaf assertionFailures;
       node = hostFor system [ aspects.node-exporter ];
+      # Same aspect, ordinary consumer list additions and the deliberate
+      # replacement escape: the composed seam the default host alone cannot show.
+      nodeConsumerAdds = hostFor system [
+        aspects.node-exporter
+        { services.prometheus.exporters.node.enabledCollectors = [ "textfile" ]; }
+      ];
+      nodeConsumerForce = hostFor system [
+        aspects.node-exporter
+        { services.prometheus.exporters.node.enabledCollectors = lib.mkForce [ "textfile" ]; }
+      ];
       tailscale = hostFor system [ aspects.tailscale ];
       smart = hostFor system [ aspects.smartctl-exporter ];
       smartOverride = hostFor system [
@@ -103,6 +113,38 @@ in
             (tailscale.services.telemetry.scrape ? tailscale)
             && !(tailscale.systemd.services ? vmagent)
             && !(tailscale.systemd.services ? opentelemetry-collector);
+        }
+      ];
+
+      # The composition seam a consumer actually crosses: an ordinary collector
+      # addition rides on the fleet's systemd entry, and `mkForce` still replaces
+      # it. The default-host leaf above cannot show either.
+      checks.node-exporter-collector-composition = leaf "node-exporter-collector-composition" [
+        {
+          message = "an ordinary consumer collector addition replaced the fleet systemd collector, or the native module stopped deriving DBus socket access from the effective list";
+          ok =
+            let
+              native = nodeConsumerAdds.services.prometheus.exporters.node;
+              families =
+                nodeConsumerAdds.systemd.services."prometheus-node-exporter".serviceConfig.RestrictAddressFamilies
+                  or [ ];
+            in
+            native.enabledCollectors == [
+              "textfile"
+              "systemd"
+            ]
+            && builtins.elem "AF_UNIX" families;
+        }
+        {
+          message = "the deliberate mkForce replacement no longer removes the fleet collector from the effective list";
+          ok =
+            let
+              native = nodeConsumerForce.services.prometheus.exporters.node;
+              families =
+                nodeConsumerForce.systemd.services."prometheus-node-exporter".serviceConfig.RestrictAddressFamilies
+                  or [ ];
+            in
+            native.enabledCollectors == [ "textfile" ] && !(builtins.elem "AF_UNIX" families);
         }
       ];
 
