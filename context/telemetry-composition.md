@@ -18,6 +18,52 @@ The prior guarantee that registrations are never silently dropped is narrowed to
 
 **Rejected alternative:** make the telemetry vocabulary a hard import dependency of every producer. A host must be able to compose a producer for local consumption, or provision it before adding a signal lane, without also selecting telemetry.
 
+## Output views are native pipeline composition, not a fleet API
+
+**Id:** 3112615d-1b32-476a-9fec-1b6ae3d880b4
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `openspec/changes/telemetry-output-views/design.md`, `examples/telemetry-output-views.nix`, 2026-10-09
+
+A selected route may deliver different payload representations of the same received stream: a lean operational copy for the trace store and rich copies for explicitly selected AI backends. The destination set stays declared on the route, and native `services.opentelemetry-collector.settings` partitions the route's existing exporters into sibling trace pipelines. After such an override the rendered pipelines are the effective routing; the declaration only determines which exporters and credentials exist.
+
+**Reason:** a mixed application emits useful lifecycle spans and content-bearing LLM spans in one trace, so a per-application listener cannot express "lean copy here, rich copy there". Routes express who the stream belongs to; output views express what each destination may retain. The exporter already carries the credentials, queue identity and WAL path, so partitioning outputs reuses the delivery state the fleet renders rather than rebuilding it.
+
+**Rejected alternative:** a `routes.*.views` option namespace or a fleet processing DSL — it re-exposes the collector's processor model as fleet API surface before native composition has been exhausted
+
+**Rejected alternative:** branch-only processors added to `services.otel-collector.processors` — that list is included in generated pipelines for every signal, so a trace-only redactor or adapter would silently apply to metrics and logs too
+
+**Rejected alternative:** per-application listeners for mixed applications — Hindsight's ordinary requests and its LLM traffic share one causal trace, so separating them by listener would mean the producer guessing an audience per request
+
+## The Latitude adapter uses the version's supported message carrier
+
+**Id:** 4d3f2eff-17b5-467d-b679-ae6e470bb0d5
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `openspec/changes/telemetry-output-views/tasks.md`, pinned `latitude-dev/latitude-llm` v0.3.118 (`67c577ba`), 2026-10-09
+
+Hindsight's inference-detail event values are `{role, content}` arrays. Latitude 0.3.118 reads span attributes only, and its parser accepts those arrays through the deprecated `gen_ai.prompt`/`gen_ai.completion` carriers, so the Latitude view bridges the event into those two attributes. The bridge fills a legacy carrier only where the span already has neither that key nor its current counterpart; existing canonical (`gen_ai.input.messages`, `gen_ai.output.messages`) and producer-set legacy values keep precedence, and the other views are untouched.
+
+**Reason:** the current-carrier parser is reachable only with parts-based `{role, parts:[…]}` messages, and on the current carrier 0.3.118 does not surface plain-text system instructions. Copying Hindsight's arrays into the current names would parse to empty, and an empty parse is silent — so a compatibility claim needs a positive sentinel, not the absence of an error.
+
+**Rejected alternative:** restructure the arrays into parts-based messages at the gateway, or copy them into the current carriers — more transformation for a stream the deployed backend's supported carrier already parses correctly
+
+**Rejected alternative:** leave the adapter unclaimed and document the gap — it would make the AI backends a partial view of Hindsight sessions for the version the fleet actually runs
+
+## A regex in a rendered OTTL literal is escaped at the render site
+
+**Id:** 360869a3-b79f-4b0a-9f9b-cc2b392b99ae
+**Type:** workaround
+**Status:** active
+**Evidence:** confirmed
+**Source:** `examples/telemetry-output-views.nix`, 2026-10-09
+
+An OTTL string literal escapes backslashes, so a regex written with `\\.` reaches the collector as `\.`. The example escapes the pattern once in Nix (`lib.escape [ "\\\\" ]`) and writes the readable regex at the call site.
+
+**Reason:** hand-doubling the backslashes in the literal produced a silently wrong regex that still evaluated; the escaping belongs in one place where it can be read against the pattern it protects.
+
 ## Credentials may bind dormant destinations
 
 **Id:** cc767e32-98e7-4079-a95e-de6ff746df0b
