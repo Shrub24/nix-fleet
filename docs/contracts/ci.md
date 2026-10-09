@@ -25,13 +25,17 @@ memory budget applies to a single leaf rather than to the whole fixture.
 `checks.<system>.contract-leaf-registry` fails if a leaf is dropped from or
 renamed out of that set.
 
-One leaf is still heavier than that budget. `telemetry-admission` evaluates about
-ten throwaway systems, and the stock `nix-eval-jobs` accounting reports it over
-the 8192 MiB worker budget even when run alone, although its real footprint stays
-near 2 GiB — the tool charges roughly four times the measured peak. This is a
-known, accepted gap: it affects only this dispatch-gated workflow, not the
-`nix flake check` gate above, which evaluates natively. Split
-`telemetry-admission` per probe if it ever has to fit.
+Each leaf must stay small enough to evaluate inside the dispatch workflow's
+budget. That budget is `workers × max-memory-size` for all workers combined —
+2 × 2048 MiB as configured. A worker above its share is restarted after its job,
+and if the total is exceeded anyway the largest worker is killed and its job
+retried alone, so a leaf that cannot be evaluated alone inside the budget fails
+the build at evaluation, before any builder is contacted. The evaluator is stock
+`nix-eval-jobs`, which disables GC, so a leaf's peak grows roughly linearly with
+the nested system evaluations it forces: measured at about 250–300 MiB per
+system, a leaf forcing more than about six systems approaches one worker's share
+and a leaf forcing fifteen exceeds the whole budget. The remedy is to split a
+heavy leaf by contract — never to drop its probes.
 
 ## Model
 
@@ -64,10 +68,25 @@ Any coordinator allowed to build locally must also have the runner hook installe
 
 ### Coordinator resource budgets
 
-The build step uses two evaluation workers with a 2048 MiB memory restart
-threshold per worker, instead of the tool's four workers at 4096 MiB each. This reduces
-concurrent evaluation pressure; the threshold is not a hard RSS limit and does
-not interrupt an individual evaluation as soon as it crosses the threshold.
+The build step uses two evaluation workers at 2048 MiB each. nix-eval-jobs
+enforces `workers * max-memory-size` as a budget for all workers combined — so
+4096 MiB here, against the tool's default of four workers at 4096 MiB each (16
+GiB) — and it reports an attribute as an evaluation failure when its worker is
+killed for exceeding that. The per-worker figure is also the restart threshold:
+a worker above its share is restarted after its job, and only a worker that
+exceeds the combined budget is killed and retried alone.
+
+The stock evaluator disables GC, so a check's evaluation peak grows with the
+nested system evaluations it forces — measured at about 250–300 MiB per system.
+At two workers x 2048 MiB a leaf forcing fifteen or more systems is killed even
+when retried alone, while a leaf forcing six or fewer stays around 1.5–1.8 GiB
+and fits with both workers busy. That is the ceiling every contract leaf is held
+to. Raising the per-worker figure to 4096 MiB was measured to carry the whole
+check set before the leaves were split, and remains the escape hatch if a leaf
+ever genuinely needs more systems than the ceiling allows. The low budget is a
+deliberate choice rather than a resource limit — the runner has 16 GiB — because it
+keeps the ceiling tight enough that a leaf has to state one claim instead of
+exercising a surface.
 
 Local Nix scheduling uses `max-jobs = 1`, with no `cores` override. The workflow
 explicitly permits four concurrent nix-fast-build requests, so its worker pool
