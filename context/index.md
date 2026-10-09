@@ -34,7 +34,7 @@
 
 ## F
 
-- [flake-checks.md](flake-checks.md) — fixture integration boundary and named contract diagnostics
+- [flake-checks.md](flake-checks.md) — fixture integration boundary, canonical policy-check architecture and named contract diagnostics
 
 ## G
 

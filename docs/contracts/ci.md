@@ -7,26 +7,27 @@ hosts use. No builder coordinates live in workflow files or repo variables.
 
 On every push and pull request, `ci.yml` checks formatting, evaluates all declared
 systems, then builds **all native x86_64 checks** with `nix flake check`. This
-includes the fixture toplevel and its per-aspect contract leaf checks, Bifrost
-startup/plugin/module runtime checks, telemetry delivery/ingress checks and the
-vmagent credential guard. Adding a native check adds a CI gate without editing
-the workflow. ARM evaluation is covered; ARM builds require an ARM builder. The
-separately dispatch-gated fleet build workflow is not needed for these gates.
+includes the x86_64 fixture toplevel, canonical x86_64 policy checks, and
+per-system checks such as Bifrost runtime checks and the vmagent credential
+guard. Platform-independent policy leaves are registered once under
+`checks.x86_64-linux`; checks whose result can depend on the evaluated system
+remain per-system. The fixture toplevel is evaluated on both architectures and
+built natively on x86_64. Adding an x86_64 or per-system check adds a CI gate
+without editing the workflow. ARM evaluation is covered; ARM builds require an
+ARM builder. The separately dispatch-gated fleet build workflow is not needed
+for these gates.
 
-The fixture host asserts only what it can read from its own configuration. Every
-throwaway evaluation a contract needs — telemetry rejects/admission/journald,
-vmalert and alertmanager admission, build-account trust, tailscale autoconnect,
-nix-baseline and nix-gc defaults, node-exporter, the collector's own fail-closed
-paths, vmagent rendering — is one independent `checks.<system>.<name>` leaf
-instead of a nested evaluation forced through the host's assertions. Forcing the
-host is therefore seconds — measured at roughly 5 s and 750 MiB, against 91 s and
-2.6 GiB when the same contracts ran inside its assertions — and an evaluator
-memory budget applies to a single leaf rather than to the whole fixture.
-
-The leaf set is the fixture's `contract` map itself, with no second inventory of
-names to keep in step. A leaf removed from that map is therefore a visible diff
-in review rather than a failing check — an accepted trade, recorded in `context/`
-alongside the reasons the trimmed checks were removed.
+The fixture host asserts only what it can read from its own configuration. Contract
+checks are independent feature-owned leaves rather than nested evaluations forced
+through the host's assertions. Platform-independent policy leaves (including
+contract-only telemetry rejections) register once under `checks.x86_64-linux`;
+composition checks stay per-system when evaluated-system behavior could matter.
+Forcing the fixture host is therefore seconds — measured at roughly 5 s and
+750 MiB, against 91 s and 2.6 GiB when the same contracts ran inside its
+assertions — and an evaluator memory budget applies to a single leaf rather than
+to the whole fixture. These feature-owned checks are discovered through
+`import-tree`; there is no separate name registry. A dropped check does not
+fail CI by itself, so removal rationale belongs in `context/`.
 
 Each leaf must stay small enough to evaluate inside the dispatch workflow's
 budget. That budget is `workers × max-memory-size` for all workers combined —
