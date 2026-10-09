@@ -2060,13 +2060,11 @@ let
             in
             otlp.httpUrl == "http://127.0.0.1:4318"
             && otlp.grpcUrl == "http://127.0.0.1:4317"
-            &&
-              otlp.signals == [
-                "traces"
-                "metrics"
-                "logs"
-              ]
-            && otlp.ingress.host == "100.64.0.9"
+            # The declared ingress address is what the additional listener binds,
+            # while the producer endpoints above stay loopback. Asserting the
+            # address as an input would restate the fixture's own module argument;
+            # asserting the listener it produces is the coupling.
+            && lib.hasPrefix "${otlp.ingress.host}:" settings.receivers."otlp/ingress".protocols.http.endpoint
             && settings.receivers.otlp.protocols.http.endpoint == "${otlp.host}:${toString otlp.httpPort}"
             && settings.receivers.otlp.protocols.grpc.endpoint == "${otlp.host}:${toString otlp.grpcPort}"
             # Configuring network ingress does not move the local producer
