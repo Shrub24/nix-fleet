@@ -47,9 +47,9 @@ _: {
       };
 
       # Same idiom as the maintenance aspects: the fragment declares the
-      # notify-events namespace unconditionally; the notify aspect realizes
+      # notify contract namespace unconditionally; the notify aspect realizes
       # registrations only when co-selected.
-      imports = [ ../notifications/notify/_notify-events.nix ];
+      imports = [ ../../lib/notify-contract.nix ];
 
       config = lib.mkMerge [
         {

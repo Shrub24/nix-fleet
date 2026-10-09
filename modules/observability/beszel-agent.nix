@@ -16,7 +16,7 @@
       # Registration is unconditional in the class: the shared fragment declares
       # the namespace, and the notify aspect realizes it only when co-selected —
       # the same idiom the maintenance aspects use for their own units.
-      imports = [ ../notifications/notify/_notify-events.nix ];
+      imports = [ ../../lib/notify-contract.nix ];
 
       options.services.beszel-agent = {
         key = lib.mkOption {

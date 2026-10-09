@@ -121,7 +121,7 @@ let
     };
 in
 {
-  imports = [ ../modules/notifications/notify/_notify-events.nix ];
+  imports = [ ./notify-contract.nix ];
   options.services.otel-collector = {
     package = lib.mkOption {
       type = lib.types.package;

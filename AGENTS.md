@@ -43,7 +43,7 @@ Reference implementations live in the sibling repo `/mnt/LinuxData/Projects/dev/
 - fleet feature: `modules/fleet/` (schema.nix + inventory.nix + feature.nix) publishes ONE flakeModule (`flakeModules.fleet`): typed canonical inventory, validation, CI bundles (`packages.<profile>`, profile-driven), plus `lib/build-profile.nix` (`lib.buildProfile`) as the two-stage resolve → render API and `modules/fleet/build-account.nix` (dispatch-account aspect).
 - niks3-cache: `modules/cache/niks3-cache.nix`
 - niks3-publisher: `modules/cache/cache-publisher.nix` + `modules/cache/cache-publisher/upload-client.nix` (upstream post-build-hook module; nix-path-filter and post-deploy hooks stay homelab-side)
-- notify: `modules/notifications/notify.nix` + `notify/_notify-events.nix` contract + `pkgs/notify` (one package: CLI + systemd handler + loopback daemon on a shared dispatch library; native systemd OnFailure/OnSuccess with per-unit policy)
+- notify: `modules/notifications/notify.nix` + `lib/notify-contract.nix` contract + `pkgs/notify` (one package: CLI + systemd handler + loopback daemon on a shared dispatch library; native systemd OnFailure/OnSuccess with per-unit policy)
 - tailscale: `modules/flake/tailscale.nix`
 
 Behaviour parity with those sources is the acceptance bar; repo-local idioms (secret path derivation, policy imports) become typed options.

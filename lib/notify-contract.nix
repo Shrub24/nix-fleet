@@ -1,5 +1,5 @@
-# Registration contract for native systemd event notifications. Contributors
-# write
+# Registration contract for native systemd event notifications
+# (lib/notify-contract.nix). Contributors write
 #
 #   services.notify.events.<unit>.failure.severity = "critical";
 #

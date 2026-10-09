@@ -168,7 +168,7 @@ let
       key = "nix-fleet/telemetry-otel-collector-${realization}";
       imports = [
         ../../lib/telemetry-contract.nix
-        ../notifications/notify/_notify-events.nix
+        ../../lib/notify-contract.nix
       ];
       config = {
         services.otel-collector.exporterInstances =

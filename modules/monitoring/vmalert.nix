@@ -55,7 +55,7 @@ _: {
       named = names: lib.concatMapStringsSep ", " (name: "'${name}'") names;
     in
     {
-      imports = [ ../notifications/notify/_notify-events.nix ];
+      imports = [ ../../lib/notify-contract.nix ];
 
       config = lib.mkIf (enabledInstances != { }) {
         assertions = [

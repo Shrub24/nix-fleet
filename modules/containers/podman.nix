@@ -10,7 +10,7 @@
     {
       # Registration is unconditional in the class: the shared fragment declares
       # the namespace, and the notify aspect realizes it only when co-selected.
-      imports = [ ../notifications/notify/_notify-events.nix ];
+      imports = [ ../../lib/notify-contract.nix ];
 
       config = {
         virtualisation.podman = {

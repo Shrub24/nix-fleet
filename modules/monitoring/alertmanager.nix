@@ -22,7 +22,7 @@ _: {
   flake.modules.nixos.alertmanager =
     { config, lib, ... }:
     {
-      imports = [ ../notifications/notify/_notify-events.nix ];
+      imports = [ ../../lib/notify-contract.nix ];
 
       config = {
         services.prometheus.alertmanager = {

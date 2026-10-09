@@ -39,7 +39,7 @@
       configFile = json.generate "bifrost-config.json" renderedConfig;
     in
     {
-      imports = [ ../notifications/notify/_notify-events.nix ];
+      imports = [ ../../lib/notify-contract.nix ];
 
       options.services.bifrost = {
         package = lib.mkOption {

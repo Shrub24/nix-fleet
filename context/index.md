@@ -50,7 +50,7 @@
 
 ## N
 
-- [notify.md](notify.md) — a registration and a drop-in follow the unit they describe
+- [notify.md](notify.md) — a registration and a drop-in follow the unit they describe; contract is shared vocabulary, not a selectable capability
 
 ## O
 

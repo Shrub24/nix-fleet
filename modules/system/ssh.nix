@@ -8,7 +8,7 @@
   flake.modules.nixos.ssh =
     { config, ... }:
     {
-      imports = [ ../notifications/notify/_notify-events.nix ];
+      imports = [ ../../lib/notify-contract.nix ];
 
       options.services.ssh-baseline = {
         clientTuning = lib.mkOption {

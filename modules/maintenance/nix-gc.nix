@@ -16,7 +16,7 @@
     { config, ... }:
     {
       imports = [
-        ../notifications/notify/_notify-events.nix
+        ../../lib/notify-contract.nix
         inputs.fast-nix-gc.nixosModules.default
       ];
 

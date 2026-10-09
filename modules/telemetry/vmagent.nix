@@ -205,7 +205,7 @@ let
       key = "nix-fleet/telemetry-vmagent";
       imports = [
         ../../lib/telemetry-contract.nix
-        ../notifications/notify/_notify-events.nix
+        ../../lib/notify-contract.nix
       ];
 
       config = lib.mkMerge [

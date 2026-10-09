@@ -5,7 +5,7 @@
   flake.modules.nixos.nix-baseline =
     { pkgs, ... }:
     {
-      imports = [ ../notifications/notify/_notify-events.nix ];
+      imports = [ ../../lib/notify-contract.nix ];
 
       config = {
         nix.package = lib.mkDefault pkgs.nixVersions.latest;

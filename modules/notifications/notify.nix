@@ -4,7 +4,7 @@
 # consumer bindings. Secrets follow the two-step sops bootstrap.
 #
 # Registration contract: services.notify.events.<unit>.{failure,success}
-# (see notify/_notify-events.nix). The aspect validates each registered unit against
+# (see lib/notify-contract.nix). The aspect validates each registered unit against
 # the systemd service set, renders /etc/notify/events.json, and attaches the
 # native OnFailure=/OnSuccess= hooks — additive (mkBefore), never replacing
 # hooks an owner already set. Handlers use Wants= + After= on the daemon and
@@ -110,7 +110,7 @@
       ) registeredUnits;
     in
     {
-      imports = [ ./notify/_notify-events.nix ];
+      imports = [ ../../lib/notify-contract.nix ];
 
       options.services.notify = {
         port = lib.mkOption {

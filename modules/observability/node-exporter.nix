@@ -17,7 +17,7 @@ _: {
     {
       imports = [
         ../../lib/telemetry-contract.nix
-        ../notifications/notify/_notify-events.nix
+        ../../lib/notify-contract.nix
       ];
 
       options.services.node-exporter = {
