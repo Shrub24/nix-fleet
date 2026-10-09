@@ -98,3 +98,81 @@ user; deadnix, pinned at the highest formatter priority, removes it during
 **Reason:** recorded because it is the mechanical form of the rule that a helper
 stays only while a check still calls it — and because a trim that leaves dead
 bindings behind looks like drift in the next review.
+
+## What the trim removed, and what covers each claim
+
+**Id:** 5c81d0a4-6f27-4a5e-9b13-2e7f4c8a91b6
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** check-surface trim, `b524d38d` (the deletes), `c6e8a1bb` (the simplify rows), `2b393e8c` (the notify row), 2026-10-09
+
+Surface: 49 checks to 43 — seven deleted, one added (the `bifrost-module` /
+`bifrost-module-runtime` split, so a module-option regression fails under the
+module's own name rather than as a runtime failure).
+
+Every removal below was checked for what would break while ordinary evaluation
+and `nix flake check` stay valid. Where nothing we own would break, the check
+went; where something would, the claim stays somewhere else and that place is
+named.
+
+**Upstream behaviour we were re-proving.** `telemetry-delivery`,
+`telemetry-ingress` and `telemetry-route-isolation` (1,162 lines of Python) ran
+the Collector to observe queue/WAL fan-out, listener admission and per-pipeline
+isolation. nixpkgs validates the collector config at build, and the fleet-owned
+half of each claim is rendered configuration: the StateDirectory coupling and
+the processor boundary in the host's ingress block, the pipeline set in
+`telemetry-capability-matrix`, the route→receiver/exporter mapping in
+`telemetry-routes`. Accepted gap, explicit: persistence on an impermanent
+machine is a consumer integration property, not something a fleet check can
+settle.
+
+**Nothing repo-owned.** `vmalert-rules` tested a rule file that is consumer
+data rendered by nixpkgs. `nix-baseline` pinned `nixVersions.latest` and
+scheduling weights — `mkDefault`s on upstream options, evaluated by plain
+`nix flake check`. `node-exporter-admission` claimed in its message that "a
+scrape registration without the host aspect no longer fails by name" while its
+body performed no rejection: the aspect imports the contract and stays valid
+standalone, and inertness is owned by `telemetry-capability-matrix` and
+`telemetry-dormant-declarations`. A check whose message outruns its body is the
+decay this trim exists to remove.
+
+**Literal restatements.** Twenty fixture-host assertion blocks, fourteen of them
+restating an aspect's own literal and four duplicating a leaf that survives. The
+concentration was the pattern, not the claims: the host had grown into "every
+aspect shows its contribution". Same reasoning in the simplify rows —
+`build-account-trust` now reads the renamed identity through the option instead
+of the literal, `nix-baseline-substitution` asserts the append seam covers the
+key list, the nix-gc leaf dropped twenty-four restated defaults, `C28` reads the
+registration's bind off the exporter. Kept by the owner's ruling: the queue,
+disk-bound and per-destination limits, because queue configuration belongs in
+the check surface while persistence on a real machine does not.
+
+**Duplicate coverage.** The two rejection cases asserted identically by the
+mutation and credential leaves; `vmagent-rendered-jobs`'s `noScrape` case, which
+is `vmagent-realization`'s `noOtel` composition evaluated again; the
+endpoint-guard's duplicate and mis-attributed probes, with the
+signals-without-carrier branch pinned by name in `telemetry-otlp-rejections`.
+
+**A name registry.** `contract-leaf-registry` and its 27-name list. The contract
+map is now the single inventory. Accepted gap: removing an entry from it fails
+nothing by itself — that is caught by review and by this record.
+
+**Substrate, not removal.** `notify-rendered-policy` moved from a build-time
+python run to a feature-owned evaluation check reading the rendered
+`/etc/notify` bytes, which required rendering `events.json` through `text`
+rather than a `writeJSON` derivation: a derivation exposes no text, and the etc
+entry's `value` is the generator's input, so asserting on it would be the option
+asserting itself.
+
+**Kept because they caught real defects, and what each still pins.**
+`nix-gc-defaults` — the phantom `nh-clean` drop-in and a registration outliving
+its unit, including the single-flag case (one unit off while the others stay on)
+that is the only composition discriminating a registration wired to a sibling's
+flag; proved by mutation. `tailscale-autoconnect` — a phantom unit with no
+`ExecStart`, and the sops ordering. `build-account-trust` — the dispatch identity
+that must enter `trusted-users`, from the unsigned-input rejection in CI.
+`vmagent-secret-guard` — values vmagent's parser treats as structure.
+`telemetry-output-view-projection` — a syntactically valid but semantically wrong
+OTTL regex, invisible to evaluation and to `otelcol validate` alike. The notify
+join — a registration naming a unit that does not exist.
