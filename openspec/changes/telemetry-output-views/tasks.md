@@ -21,7 +21,7 @@
 ## 4. Integration and handoff
 
 - [x] 4.1 Run formatting, strict OpenSpec validation, focused evaluation/runtime checks, `nix flake check` and `nix flake check --no-build --all-systems`; verify all required gates pass and existing routing/delivery checks remain green. Both gates passed on the rebased tree; `checks.aarch64-linux` also evaluates the two new leaves.
-- [ ] 4.2 Record the native-seam decision in the project's context, sync the approved spec deltas and run `ktw-lint --strict`; verify no processing DSL or default production-policy change entered the diff. Context recording and `ktw-lint --strict` are done (three entries in `context/telemetry-composition.md`); the spec-delta sync remains.
+- [x] 4.2 Record the native-seam decision in the project's context, sync the approved spec deltas and run `ktw-lint --strict`; verify no processing DSL or default production-policy change entered the diff. Three entries in `context/telemetry-composition.md`, `ktw-lint --strict` clean, and `openspec validate --all --strict` passes with the new `telemetry-output-views` capability and the merged `telemetry-stream-routing` requirement.
 - [ ] 4.3 Deliver the checked example and exact verification results to the homelab owner, including the remaining live-ingestion checks; verify the owner acknowledges receipt and keeps gateway composition/producer binding consumer-owned.
 
 ## Workflow follow-up

@@ -4,7 +4,7 @@
 
 ### Requirement: Route policy controls destination fan-out
 
-Each named trace route SHALL have an explicit destination set. A route MAY select both general and specialized destinations; configuring one route SHALL NOT implicitly add its destinations to another route. Destinations MAY receive explicitly configured payload views of the full received stream that preserve its span structure. With native Collector pipeline overrides, rendered pipelines SHALL determine effective routing; the route declaration SHALL determine the generated exporter and credential set, and the supported view composition SHALL assign each selected destination to exactly one effective output path.
+Each named trace route SHALL have an explicit destination set. A route MAY select both general and specialized destinations; configuring one route SHALL NOT implicitly add its destinations to another route. Destinations MAY receive configured payload views of the full received stream. With native pipeline overrides, rendered pipelines SHALL determine effective routing, while the route declaration SHALL determine the generated exporter and credential set.
 
 #### Scenario: AI session also retained in general store
 
@@ -18,5 +18,5 @@ Each named trace route SHALL have an explicit destination set. A route MAY selec
 
 #### Scenario: Native output-view composition
 
-- **WHEN** a consumer overrides a generated route pipeline and adds sibling pipelines for different payload views
-- **THEN** effective rendered assignments preserve the selected destination set without duplicate output paths, and the route declaration alone is not treated as proof of delivery
+- **WHEN** a consumer overrides a generated route pipeline and adds sibling pipelines for different payload views of the same received stream
+- **THEN** every view keeps the received span structure and effective rendered assignments preserve the selected destination set without duplicate output paths, and the route declaration alone is not treated as proof of delivery
