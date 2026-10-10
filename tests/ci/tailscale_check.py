@@ -136,6 +136,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert config_file.read_text().splitlines() == [
             "post-build-hook = /action/hook",
             f"builders = {builders}",
+            "builders-use-substitutes = true",
             "max-jobs = 1",
         ]
         assert args_file.read_text().splitlines() == [
