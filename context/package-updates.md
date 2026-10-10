@@ -114,3 +114,26 @@ artifact upload all succeed first.
 **Related:** the step also requests two labels, and adding a label the repository
 does not have returns 404, which fails the same step. `dependencies` and
 `automated` were created for that reason.
+
+## Package staging uses disposable jj workspaces
+
+**Id:** 5597d9b3-ffed-412d-a124-943639676279
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `docs/contracts/package-updates.md`, package-update transaction design, 2026-10-11
+
+The update app bundles jj and stages each package in a disposable jj workspace
+based on the caller's current working-copy state; the app does not create or
+rewrite jj history.
+
+**Reason:** package updates run in a jj-managed fleet, and bundling jj makes the
+staging tool available to downstream app users without a global installation.
+The workspace carries uncommitted starting edits and earlier successful package
+updates into each candidate, while failed candidates can be discarded without
+reconstructing the caller's state.
+
+**Rejected alternative:** filesystem snapshots and per-file copy-back avoid a jj
+dependency but cannot make multi-file promotion crash-atomic; they also require
+reimplementing workspace isolation and safe recovery. Bundling jj makes that
+trade-off unnecessary for this fleet.

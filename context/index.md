@@ -60,7 +60,7 @@
 
 ## P
 
-- [package-updates.md](package-updates.md) — where the refresh report's versions and changelogs come from, who owns the lock file, and the environment a refresh pull request needs
+- [package-updates.md](package-updates.md) — update reporting and lock ownership, refresh pull-request prerequisites, and why package staging bundles jj
 
 ## Q
 

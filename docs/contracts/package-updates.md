@@ -69,8 +69,9 @@ to the package's declared write set.
 
 ## Failure and working-copy behavior
 
-The app requires `jj` on `PATH`. Each selected package runs serially in a
-disposable jj workspace based on the current working copy, including uncommitted
+The app bundles `jj` on its runtime `PATH`; consumers do not need a global jj
+installation. Each selected package runs serially in a disposable jj workspace
+based on the current working copy, including uncommitted
 changes and prior successful updates. A successful candidate is applied before
 the next updater starts,
 preserving the established cumulative behavior. A failed package's candidate is
