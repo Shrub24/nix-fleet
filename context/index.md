@@ -60,6 +60,8 @@
 
 ## P
 
+- [package-updates.md](package-updates.md) — where the refresh report's versions and changelogs come from, who owns the lock file, and the environment a refresh pull request needs
+
 ## Q
 
 ## R

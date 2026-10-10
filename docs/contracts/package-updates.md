@@ -157,6 +157,15 @@ updater can write files that a runner's checkout does not track.
 
 A run that finds nothing to update is a success and opens no pull request.
 
+Two facts about the pull request live outside this repository's tree. Creating it
+with `GITHUB_TOKEN` requires the repository setting _Allow GitHub Actions to
+create and approve pull requests_ — the workflow's `permissions:` block grants
+the scopes but cannot lift that setting, which is off by default on a personal
+repository. A `pull_request` run caused by `GITHUB_TOKEN` is then created in an
+approval-required state, so a user with write access approves it before `ci.yml`
+runs; a fine-grained PAT or a GitHub App token makes those runs start on their
+own.
+
 ## Deferred
 
 Consumer adoption of this module is separate work, and so is a refresh schedule
