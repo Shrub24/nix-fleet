@@ -320,6 +320,7 @@ jobs:
           fi
           export NIX_CONFIG="${NIX_CONFIG:-}
           builders = $builders
+          builders-use-substitutes = true
           max-jobs = 1"
           # Stream diagnostics: a runner shutdown may prevent artifact upload.
           python3 -u - <<'PY' &
