@@ -160,7 +160,7 @@ jobs:
 
       - name: Install Nix
         if: ${{ inputs.tailnet && inputs.ts_client_id == '' }}
-        uses: NixOS/nix-installer-action@main
+        uses: NixOS/nix-installer-action@v1
 
       - name: Resolve public Tailscale identity
         if: ${{ inputs.tailnet }}
@@ -224,7 +224,7 @@ jobs:
           tags: tag:ci
 
       - name: Install Nix
-        uses: NixOS/nix-installer-action@main
+        uses: NixOS/nix-installer-action@v1
 
       - name: Install fleet builder artifacts from the registry
         if: ${{ inputs.builder_attr != '' }}

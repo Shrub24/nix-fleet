@@ -1,0 +1,85 @@
+# Scheduled native-package refresh: run this repository's registered package
+# updaters, evaluate the result, and open or update one pull request with a
+# report of what moved.
+#
+# This workflow refreshes pins; it does not accept them. Acceptance is the
+# repository's declared checks, which the `ci` workflow runs on the pull request
+# this creates — a green refresh job is not a green candidate.
+#
+# flake.lock is deliberately not touched: the batch owns package pins, renovate
+# owns the lock.
+name: package-updates-refresh
+on:
+  schedule:
+    - cron: "43 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: package-updates-refresh
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Refresh registered package pins
+        # The report files stay outside the checkout: the pull request must
+        # contain the updaters' pin changes and nothing else, and the change
+        # check below reads the working tree as-is.
+        run: |
+          nix run --no-write-lock-file .#update-packages -- \
+            --json "$RUNNER_TEMP/report.json" \
+            --markdown "$RUNNER_TEMP/pr-body.md"
+
+      - name: Evaluate the refreshed tree
+        # path: is deliberate: an updater may write files that are untracked in
+        # this checkout, and the Git-tree form (.#) would omit them.
+        run: nix flake check --no-build --no-write-lock-file path:.
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Show the refresh report
+        if: always()
+        run: |
+          cat "$RUNNER_TEMP/report.json" 2>/dev/null || echo "no report written"
+
+      - name: Upload the refresh report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-updates-report
+          path: |
+            ${{ runner.temp }}/report.json
+            ${{ runner.temp }}/pr-body.md
+          if-no-files-found: ignore
+
+      - name: Create or update pull request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: automation/package-updates
+          commit-message: "chore(deps): refresh registered package pins"
+          title: "chore(deps): refresh registered package pins"
+          body-path: ${{ runner.temp }}/pr-body.md
+          labels: |
+            dependencies
+            automated

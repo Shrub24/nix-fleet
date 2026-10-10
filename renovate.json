@@ -10,7 +10,7 @@
     "enabled": true,
     "schedule": ["before 6am on monday"]
   },
-  "enabledManagers": ["nix"],
+  "enabledManagers": ["nix", "github-actions"],
   "nix": {
     "enabled": true
   },

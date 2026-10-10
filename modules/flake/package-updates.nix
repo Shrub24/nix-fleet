@@ -37,6 +37,10 @@ let
             (pkgs.callPackage ../../pkgs/package-updates { })
             pkgs.nix-update
             pkgs.nix
+            # The batch reads each package's version and changelog from the
+            # evaluated flake and refines "unchanged" by the working-copy delta,
+            # so both tools are resolved on PATH rather than assumed ambient.
+            pkgs.git
           ];
           text = ''
             export PACKAGE_UPDATES_REGISTRY=${registry}
