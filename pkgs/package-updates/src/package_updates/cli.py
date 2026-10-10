@@ -19,11 +19,23 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PACKAGE",
         help="registered package outputs to update (default: all registered)",
     )
+    parser.add_argument(
+        "--json",
+        dest="json_path",
+        metavar="PATH",
+        help="write the structured report to PATH",
+    )
+    parser.add_argument(
+        "--markdown",
+        dest="markdown_path",
+        metavar="PATH",
+        help="write the pull-request body to PATH",
+    )
     args = parser.parse_args(argv)
     try:
         registry = load_registry()
         names = select(registry, args.packages)
-        return update(names, registry.system)
+        return update(names, registry.system, args.json_path, args.markdown_path)
     except UpdateError as error:
         print(f"package-updates: {error}", file=sys.stderr)
         return 1

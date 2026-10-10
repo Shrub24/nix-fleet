@@ -26,6 +26,44 @@ nix run .#update-packages            # every registered package
 nix run .#update-packages -- alpha   # a registered subset
 ```
 
+## Reporting
+
+The batch reports what it changed, never what it fetched. stdout carries one
+line per package in selection order and a closing count:
+
+```console
+• Updated 'bifrost': 2.2.6 → 2.2.7
+• Unchanged 'notify': 1.0.0
+
+1 updated, 1 unchanged
+```
+
+A package that stops the batch prints `✗ Failed '<name>': update failed (exit
+<n>)` and the batch ends there. Two optional artifacts carry the same entries:
+`--json PATH` writes the structured report and `--markdown PATH` the
+pull-request body. Both are written even when a package fails, so a partial
+candidate stays inspectable; a refusal — an empty or unregistered selection, a
+missing `nix-update` — writes neither, because nothing ran.
+
+An entry carries `name`, `status` (`updated`/`unchanged`/`failed`),
+`version.before`, `version.after`, `change` and `changelog`; the document adds
+the evaluated `system`. `change` is the highest differing version component
+(`major`, `minor`, `patch`), `none` when the version held, and `unknown` when a
+version is missing or not dotted-numeric. Versions and changelog links come from
+one `nix eval` per package per phase — never from parsing `nix-update`'s output,
+which is not a stable interface — and a read that fails is reported as null
+versions rather than aborting the batch, so a pin that does not evaluate is
+still updatable. `unchanged` means the version held _and_ the working copy did
+not move (`git status --porcelain`), so a re-tag or hash-only refresh still
+registers; where `git` cannot answer, the version signal alone decides.
+
+The pull-request body is a table of the updated packages with their change
+class, before and after versions and changelog links, a line naming the packages
+already current, and the acceptance note; when nothing moved it says so in one
+line. A changelog link is `meta.changelog` verbatim, so a package wanting
+per-release notes interpolates its version there — `bifrost` links the transport
+tag it pins.
+
 ## Selection and refusal
 
 `perSystem.packageUpdates.packages` is the typed registry of owned output

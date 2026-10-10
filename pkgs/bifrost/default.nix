@@ -95,6 +95,9 @@ let
       ];
 
       meta = {
+        # Per-release notes for the transport tag this build pins, so the
+        # package-update report links the release a refresh moved to.
+        changelog = "https://github.com/maximhq/bifrost/releases/tag/transports%2Fv${version}";
         description = "HTTP gateway for AI model providers with the embedded dashboard UI";
         homepage = "https://github.com/maximhq/bifrost";
         license = lib.licenses.asl20;
