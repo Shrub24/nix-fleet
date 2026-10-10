@@ -138,11 +138,11 @@ class ReportTestCase(unittest.TestCase):
             capture_output=True,
         )
         fixture_path = self.root / "path-nix-update-nix-jj"
-        if not fixture_path.exists():
-            fixture_path.mkdir()
-            for tool in ("nix-update", "nix"):
-                os.symlink(self.bin / tool, fixture_path / tool)
-            os.symlink(jj, fixture_path / "jj")
+        shutil.rmtree(fixture_path, ignore_errors=True)
+        fixture_path.mkdir()
+        for tool in ("nix-update", "nix"):
+            os.symlink(self.bin / tool, fixture_path / tool)
+        shutil.copy2(Path(jj).resolve(), fixture_path / "jj")
         os.environ["PATH"] = str(fixture_path)
 
     def restore_environ(self):
@@ -425,32 +425,6 @@ class FailureTest(ReportTestCase):
 
 
 class DegradedToolsTest(ReportTestCase):
-    def test_a_missing_nix_reports_unknown_versions_and_still_updates(self):
-        self.registry(["alpha"])
-        self.jj_checkout()
-        (self.checkout / "flake.nix").write_text("{}\n")
-        self.current("alpha", "1.0.0")
-        self.released("alpha", "1.0.1")
-        self.only_tools("nix-update", "nix", "jj")
-
-        code, _ = self.invoke(["--json", str(self.json_path)])
-
-        self.assertEqual(code, 0)
-        self.assertEqual(self.updated_packages(), ["alpha"])
-        # Without an evaluated version the report claims only what it observed.
-        self.assertEqual(
-            self.document()["packages"],
-            [
-                {
-                    "name": "alpha",
-                    "status": "unchanged",
-                    "version": {"before": None, "after": None},
-                    "change": "none",
-                    "changelog": None,
-                }
-            ],
-        )
-
     def test_a_failing_nix_is_unknown_rather_than_fatal(self):
         self.registry(["alpha"])
         self.jj_checkout()

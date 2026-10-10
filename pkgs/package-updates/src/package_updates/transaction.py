@@ -120,9 +120,18 @@ def staged_package(root: Path, package: str, write_set: tuple[str, ...], execute
     _jj("status", cwd=root)
     with tempfile.TemporaryDirectory(prefix=f"package-update-{package}-") as temporary:
         workspace = Path(temporary) / package
-        _jj("workspace", "add", "--name", workspace_name, str(workspace), cwd=root)
+        source_workspace = _workspace_name(root)
+        _jj(
+            "workspace",
+            "add",
+            "--name",
+            workspace_name,
+            "--revision",
+            f"{source_workspace}@",
+            str(workspace),
+            cwd=root,
+        )
         try:
-            _jj("new", f"{workspace_name}@-", cwd=workspace)
             result = execute(workspace)
             changes = _diff_paths(workspace)
             escaped = sorted(path for path in changes if not allowed(path, allowed_paths))
