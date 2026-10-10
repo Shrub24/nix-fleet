@@ -122,8 +122,7 @@ def staged_package(root: Path, package: str, write_set: tuple[str, ...], execute
         workspace = Path(temporary) / package
         _jj("workspace", "add", "--name", workspace_name, str(workspace), cwd=root)
         try:
-            destination_workspace = _workspace_name(root)
-            _jj("new", f"{destination_workspace}@", cwd=workspace)
+            _jj("new", f"{workspace_name}@-", cwd=workspace)
             result = execute(workspace)
             changes = _diff_paths(workspace)
             escaped = sorted(path for path in changes if not allowed(path, allowed_paths))
