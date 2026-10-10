@@ -47,6 +47,14 @@ let
       processorDefs = settings.processors;
 
       viewNames = builtins.attrNames views;
+      signalOf =
+        view:
+        view.signal or (
+          let
+            match = builtins.match "^(traces|metrics|logs)/.*$" view.pipeline;
+          in
+          if match == null then "traces" else builtins.head match
+        );
 
       exportersOf = view: pipelines.${view.pipeline}.exporters or [ ];
 
@@ -58,8 +66,15 @@ let
         key:
         let
           matches = builtins.filter (instance: lib.hasSuffix "/${instance.id}" key) instances;
+          sorted = lib.sort (a: b: builtins.stringLength a.id > builtins.stringLength b.id) matches;
+          longest = if sorted == [ ] then null else builtins.head sorted;
+          ambiguous =
+            sorted != [ ]
+            && builtins.any (instance: builtins.stringLength instance.id == builtins.stringLength longest.id) (
+              builtins.tail sorted
+            );
         in
-        if builtins.length matches == 1 then builtins.head matches else null;
+        if longest == null || ambiguous then null else longest;
       destinationOfKey =
         key:
         let
@@ -71,17 +86,36 @@ let
         name:
         map (key: {
           view = name;
+          signal = signalOf views.${name};
           inherit key;
         }) (exportersOf views.${name})
       ) viewNames;
 
       assignmentsOf =
-        destination:
+        signal: instanceRoute: destination:
         map (entry: entry.view) (
-          builtins.filter (entry: destinationOfKey entry.key == destination) assigned
+          builtins.filter (
+            entry:
+            let
+              instance = instanceOfKey entry.key;
+            in
+            entry.signal == signal
+            && instance != null
+            && (instance.route or null) == instanceRoute
+            && instance.destination == destination
+          ) assigned
         );
 
-      instanceDestinations = lib.unique (map (instance: instance.destination) instances);
+      instanceDestinations = lib.unique (
+        map (instance: {
+          route = instance.route or null;
+          inherit (instance) destination;
+        }) instances
+      );
+
+      compositionSignals = lib.unique (
+        map (name: signalOf views.${name}) viewNames ++ builtins.attrNames (resolvedRoutes.${route} or { })
+      );
 
       viewFailures =
         name:
@@ -150,7 +184,7 @@ let
                   let
                     instance = instanceOfKey key;
                   in
-                  instance == null || instance.route != view.instanceRoute
+                  instance == null || (instance.route or null) != view.instanceRoute
                 ) actualExporters
               )
           ++
@@ -194,7 +228,7 @@ let
               instance = instanceOfKey key;
             in
             instance != null
-            && instance.route == view.instanceRoute
+            && (instance.route or null) == view.instanceRoute
             && builtins.elem instance.destination view.destinations
           ) (builtins.attrNames exporters)
         );
@@ -210,22 +244,39 @@ let
         lib.optional (pipeline != null && actual != expected)
           "view '${name}' pipeline '${view.pipeline}' exports through ${builtins.toJSON actual} instead of exactly the route-scoped members ${builtins.toJSON expected}";
 
-      duplicated = builtins.filter (
-        destination: builtins.length (assignmentsOf destination) > 1
-      ) instanceDestinations;
-
-      routeAssigned = lib.unique (
-        lib.concatMap (name: map destinationOfKey (exportersOf views.${name})) (
-          builtins.filter (name: views.${name}.instanceRoute == route) viewNames
-        )
-      );
-      generalAssigned = lib.unique (
-        lib.concatMap (name: map destinationOfKey (exportersOf views.${name})) (
-          builtins.filter (name: views.${name}.instanceRoute == null) viewNames
-        )
-      );
-      routeDeclared = resolvedRoutes.${route}.traces;
-      generalDeclared = resolvedPipelines.traces;
+      duplicated = lib.concatMap (
+        signal:
+        lib.concatMap (
+          instance:
+          let
+            assignedViews = assignmentsOf signal instance.route instance.destination;
+          in
+          lib.optional (builtins.length assignedViews > 1) {
+            inherit signal;
+            inherit (instance) destination;
+            views = assignedViews;
+          }
+        ) instanceDestinations
+      ) compositionSignals;
+      signalAssignments = map (signal: {
+        inherit signal;
+        routeAssigned = lib.unique (
+          lib.concatMap (name: map destinationOfKey (exportersOf views.${name})) (
+            builtins.filter (
+              name: signalOf views.${name} == signal && views.${name}.instanceRoute == route
+            ) viewNames
+          )
+        );
+        generalAssigned = lib.unique (
+          lib.concatMap (name: map destinationOfKey (exportersOf views.${name})) (
+            builtins.filter (
+              name: signalOf views.${name} == signal && views.${name}.instanceRoute == null
+            ) viewNames
+          )
+        );
+        routeDeclared = resolvedRoutes.${route}.${signal} or [ ];
+        generalDeclared = resolvedPipelines.${signal};
+      }) compositionSignals;
 
       referenced = lib.unique (
         lib.concatMap (name: pipelines.${name}.exporters or [ ]) (builtins.attrNames pipelines)
@@ -279,24 +330,47 @@ let
     lib.concatMap viewFailures viewNames
     ++ lib.concatMap membershipFailures viewNames
     ++ map (
-      destination:
-      "destination '${destination}' is assigned to ${toString (builtins.length (assignmentsOf destination))} effective output pipelines (${lib.concatStringsSep ", " (assignmentsOf destination)}); each declared destination needs exactly one output path"
+      entry:
+      "destination '${entry.destination}' for ${entry.signal} is assigned to ${toString (builtins.length entry.views)} effective output pipelines (${lib.concatStringsSep ", " entry.views}); each declared destination needs exactly one output path per signal"
     ) duplicated
-    ++ map (
-      destination:
-      "destination '${destination}' is materialized but no effective pipeline exports through it"
-    ) (builtins.filter (destination: assignmentsOf destination == [ ]) instanceDestinations)
-    ++ map (
-      destination:
-      "route '${route}' declares destination '${destination}' for traces but no view exports it"
-    ) (builtins.filter (destination: !(builtins.elem destination routeAssigned)) routeDeclared)
-    ++ map (
-      destination:
-      "the view composition exports destination '${destination}' on route '${route}', which the route declaration does not select"
-    ) (builtins.filter (destination: !(builtins.elem destination routeDeclared)) routeAssigned)
     ++
-      lib.optional (lib.sort (a: b: a < b) generalAssigned != lib.sort (a: b: a < b) generalDeclared)
-        "the general pipeline no longer matches its declaration: effective ${builtins.toJSON generalAssigned} vs declared ${builtins.toJSON generalDeclared}"
+      map
+        (
+          instance:
+          "destination '${instance.destination}' is materialized on route '${toString instance.route}' but no effective pipeline exports it"
+        )
+        (
+          builtins.filter (
+            instance:
+            !(builtins.any (
+              signal: assignmentsOf signal instance.route instance.destination != [ ]
+            ) compositionSignals)
+          ) instanceDestinations
+        )
+    ++ lib.concatMap (
+      entry:
+      map
+        (
+          destination:
+          "route '${route}' declares destination '${destination}' for ${entry.signal} but no view exports it"
+        )
+        (
+          builtins.filter (destination: !(builtins.elem destination entry.routeAssigned)) entry.routeDeclared
+        )
+      ++
+        map
+          (
+            destination:
+            "the view composition exports destination '${destination}' for ${entry.signal} on route '${route}', which the route declaration does not select"
+          )
+          (
+            builtins.filter (destination: !(builtins.elem destination entry.routeDeclared)) entry.routeAssigned
+          )
+      ++
+        lib.optional
+          (lib.sort (a: b: a < b) entry.generalAssigned != lib.sort (a: b: a < b) entry.generalDeclared)
+          "the general ${entry.signal} pipeline no longer matches its declaration: effective ${builtins.toJSON entry.generalAssigned} vs declared ${builtins.toJSON entry.generalDeclared}"
+    ) signalAssignments
     ++ map (
       key:
       "exporter '${key}' is configured but no effective pipeline uses it; a view must reference the materialized exporters rather than add its own"
@@ -363,6 +437,112 @@ in
         };
       };
       failures = compositionFailures inspection;
+      multiSignalFailures = compositionFailures (
+        inspection
+        // {
+          views = example.views // {
+            ai-metrics = {
+              signal = "metrics";
+              pipeline = "metrics/route-ai";
+              receiver = "otlp/route-ai";
+              instanceRoute = "ai";
+              destinations = [ "ai-metrics" ];
+              exporterOptions = { };
+              requiredProcessors = [ ];
+              forbiddenProcessors = [ ];
+            };
+            general-metrics = {
+              signal = "metrics";
+              pipeline = "metrics";
+              receiver = "otlp";
+              instanceRoute = null;
+              destinations = [ "general-metrics" ];
+              exporterOptions = { };
+              requiredProcessors = [ ];
+              forbiddenProcessors = [ ];
+            };
+            ai-logs = {
+              signal = "logs";
+              pipeline = "logs/route-ai";
+              receiver = "otlp/route-ai";
+              instanceRoute = "ai";
+              destinations = [ "ai-logs" ];
+              exporterOptions = { };
+              requiredProcessors = [ ];
+              forbiddenProcessors = [ ];
+            };
+          };
+          settings = inspection.settings // {
+            exporters = inspection.settings.exporters // {
+              "otlphttp/metrics" = builtins.head (builtins.attrValues inspection.settings.exporters);
+              "otlphttp/route-ai-metrics" = builtins.head (builtins.attrValues inspection.settings.exporters);
+              "otlphttp/route-ai-logs" = builtins.head (builtins.attrValues inspection.settings.exporters);
+            };
+            service = inspection.settings.service // {
+              pipelines = inspection.settings.service.pipelines // {
+                metrics = {
+                  receivers = [ "otlp" ];
+                  processors = [ "memory_limiter" ];
+                  exporters = [ "otlphttp/metrics" ];
+                };
+                "metrics/route-ai" = {
+                  receivers = [ "otlp/route-ai" ];
+                  processors = [ "memory_limiter" ];
+                  exporters = [ "otlphttp/route-ai-metrics" ];
+                };
+                "logs/route-ai" = {
+                  receivers = [ "otlp/route-ai" ];
+                  processors = [ "memory_limiter" ];
+                  exporters = [ "otlphttp/route-ai-logs" ];
+                };
+              };
+            };
+          };
+          instances = inspection.instances ++ [
+            {
+              id = "metrics";
+              destination = "general-metrics";
+            }
+            {
+              id = "route-ai-metrics";
+              route = "ai";
+              destination = "ai-metrics";
+            }
+            {
+              id = "route-ai-logs";
+              route = "ai";
+              destination = "ai-logs";
+            }
+          ];
+          destinations = inspection.destinations // {
+            general-metrics = {
+              protocol = "otlp-http";
+              signals = [ "metrics" ];
+            };
+            ai-metrics = {
+              protocol = "otlp-http";
+              signals = [ "metrics" ];
+            };
+            ai-logs = {
+              protocol = "otlp-http";
+              signals = [ "logs" ];
+            };
+          };
+          resolvedRoutes = inspection.resolvedRoutes // {
+            ai = (inspection.resolvedRoutes.ai or { }) // {
+              metrics = [ "ai-metrics" ];
+              logs = [ "ai-logs" ];
+            };
+          };
+          resolvedPipelines = inspection.resolvedPipelines // {
+            metrics = [ "general-metrics" ];
+            logs = [ ];
+          };
+        }
+      );
+      multiSignalFailuresRelevant = builtins.filter (
+        failure: lib.hasInfix "metrics" failure || lib.hasInfix "logs" failure
+      ) multiSignalFailures;
 
       # Runtime uses the same example, changing only listeners, endpoints and
       # test delivery plumbing.
@@ -422,9 +602,14 @@ in
         telemetry-output-view-composition =
           if failures != [ ] then
             throw ("telemetry-output-views: " + lib.concatStringsSep "; " failures)
+          else if multiSignalFailuresRelevant != [ ] then
+            throw (
+              "telemetry-output-views: multi-signal membership regression: "
+              + lib.concatStringsSep "; " multiSignalFailuresRelevant
+            )
           else
             pkgs.runCommand "telemetry-output-view-composition-check" { } ''
-              echo "effective output views match the route declaration" > $out
+              echo "effective output views match the per-signal route declarations" > $out
             '';
 
         telemetry-output-view-projection =
