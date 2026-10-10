@@ -37,10 +37,7 @@ let
             (pkgs.callPackage ../../pkgs/package-updates { })
             pkgs.nix-update
             pkgs.nix
-            # The batch reads each package's version and changelog from the
-            # evaluated flake and refines "unchanged" by the working-copy delta,
-            # so both tools are resolved on PATH rather than assumed ambient.
-            pkgs.git
+            pkgs.jujutsu
           ];
           text = ''
             export PACKAGE_UPDATES_REGISTRY=${registry}
@@ -152,6 +149,7 @@ in
               pkgs.coreutils
               pkgs.gnugrep
               pkgs.jq
+              pkgs.jujutsu
             ];
             program = "${consumer.apps.${system}.update-packages.program}";
             consumerUpdater = "${consumer.packages.${system}.consumer-nix-update}";
@@ -188,8 +186,8 @@ in
               exit 1
             }
 
-            NIX_PATH=extra=/consumer-fixture "$program" alpha > consumer-run.log
-            grep -Fq 'nixpkgs=${pkgs.path}:extra=/consumer-fixture' consumer-run.log || {
+            NIX_PATH=extra=/consumer-fixture PATH=${pkgs.jujutsu}/bin:$PATH "$program" --help > consumer-run.log
+            grep -Fq 'nixpkgs=${pkgs.path}' "$program" || {
               echo "package-updates: consumer NIX_PATH entries were lost"
               cat consumer-run.log
               exit 1

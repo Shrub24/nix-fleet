@@ -1,19 +1,25 @@
 """Offline contract tests for the shared package-update batch runner.
 
-A fixture ``nix-update`` records each invocation and simulates a successful
-edit, a refused update and a package update script, so selection ordering,
-preflight refusal, fail-fast behavior and environment flow-through are
-provable without any upstream query.
+A fixture ``nix-update`` records each invocation and simulates success or
+refusal, so selection ordering, rollback, continuation and environment flow
+are provable without any upstream query.
 """
 
 import json
 import os
 from pathlib import Path
+import subprocess
 import shutil
 import tempfile
 import unittest
 
 from package_updates import cli
+from package_updates.transaction import (
+    TransactionError,
+    allowed,
+    staged_package,
+    valid_write_set,
+)
 
 STUB = """#!{bash}
 set -euo pipefail
@@ -33,6 +39,7 @@ class BatchTestCase(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
+        self.original_path = os.environ.get("PATH", "")
 
         self.calls = self.root / "calls"
         self.edits = self.root / "edits"
@@ -57,14 +64,36 @@ class BatchTestCase(unittest.TestCase):
         os.environ.clear()
         os.environ.update(self.original_environ)
 
+    def jj_checkout(self):
+        jj = shutil.which("jj", path=self.original_environ["PATH"])
+        if jj is None:
+            self.skipTest("transaction tests require jj")
+        checkout = self.root / "checkout"
+        checkout.mkdir()
+        (checkout / "pkgs/alpha").mkdir(parents=True)
+        (checkout / "pkgs/alpha/default.nix").write_text("{}\n")
+        subprocess.run(
+            [jj, "git", "init", str(checkout)], check=True, capture_output=True
+        )
+        subprocess.run(
+            [jj, "new", "-m", "test baseline"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+        )
+        return checkout
+
     def register(self, registered, available=None, system="x86_64-linux"):
         registry = self.root / "registry.json"
+        root = self.jj_checkout() if registered else self.root
         registry.write_text(
             json.dumps(
                 {
                     "system": system,
                     "registered": list(registered),
                     "available": list(registered if available is None else available),
+                    "root": str(root),
+                    "packagePaths": {name: f"pkgs/{name}" for name in registered},
                 }
             )
         )
@@ -93,6 +122,85 @@ class BatchTestCase(unittest.TestCase):
         self.register(["alpha", "beta"])
         self.assertEqual(cli.main(["beta"]), 0)
         self.assertEqual(self.edited(), ["beta"])
+
+    def test_write_set_defaults_and_rejects_unsafe_paths(self):
+        roots = valid_write_set(("pkgs/alpha",))
+        self.assertTrue(allowed("pkgs/alpha/default.nix", roots))
+        self.assertFalse(allowed("pkgs/beta/default.nix", roots))
+        with self.assertRaisesRegex(TransactionError, "invalid"):
+            valid_write_set(("../outside",))
+
+    def test_staging_keeps_initial_edits_and_applies_successes_cumulatively(self):
+        checkout = self.jj_checkout()
+        package_file = checkout / "pkgs/alpha/default.nix"
+        package_file.write_text("uncommitted starting edit\n")
+        user_file = checkout / "notes.txt"
+        user_file.write_text("keep this edit\n")
+
+        class Result:
+            returncode = 0
+
+        def first(candidate):
+            self.assertEqual(
+                (candidate / "pkgs/alpha/default.nix").read_text(),
+                "uncommitted starting edit\n",
+            )
+            (candidate / "pkgs/alpha/default.nix").write_text("first success\n")
+            return Result()
+
+        staged_package(checkout, "alpha", ("pkgs/alpha",), first)
+        self.assertEqual(package_file.read_text(), "first success\n")
+        self.assertEqual(user_file.read_text(), "keep this edit\n")
+
+        def second(candidate):
+            self.assertEqual(
+                (candidate / "pkgs/alpha/default.nix").read_text(),
+                "first success\n",
+            )
+            (candidate / "pkgs/alpha/default.nix").write_text("second success\n")
+            return Result()
+
+        staged_package(checkout, "alpha", ("pkgs/alpha",), second)
+        self.assertEqual(package_file.read_text(), "second success\n")
+        self.assertEqual(user_file.read_text(), "keep this edit\n")
+
+    def test_jj_workspace_stages_and_rejects_out_of_scope_updates(self):
+        checkout = self.jj_checkout()
+        package = checkout / "pkgs/alpha"
+
+        class Result:
+            returncode = 0
+
+        def update(candidate):
+            (candidate / "pkgs/alpha/default.nix").write_text("new\n")
+            return Result()
+
+        result, paths = staged_package(checkout, "alpha", ("pkgs/alpha",), update)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(paths, ("pkgs/alpha/default.nix",))
+        self.assertEqual((package / "default.nix").read_text(), "new\n")
+
+        def outside(candidate):
+            (candidate / "docs/unowned.txt").parent.mkdir(parents=True)
+            (candidate / "docs/unowned.txt").write_text("bad\n")
+            return Result()
+
+        with self.assertRaisesRegex(TransactionError, "outside declared"):
+            staged_package(checkout, "alpha", ("pkgs/alpha",), outside)
+        self.assertFalse((checkout / "docs/unowned.txt").exists())
+
+        def failed_after_writes(candidate):
+            (candidate / "pkgs/alpha/default.nix").write_text("partial\n")
+            (candidate / "pkgs/alpha/extra.txt").write_text("partial\n")
+            return type("Failure", (), {"returncode": 9})()
+
+        failed, failed_paths = staged_package(
+            checkout, "alpha", ("pkgs/alpha",), failed_after_writes
+        )
+        self.assertEqual(failed.returncode, 9)
+        self.assertEqual(len(failed_paths), 2)
+        self.assertEqual((package / "default.nix").read_text(), "new\n")
+        self.assertFalse((package / "extra.txt").exists())
 
     def test_update_script_dispatch_uses_the_standard_interface(self):
         # Package policy reaches nix-update through passthru.updateScript;
@@ -127,12 +235,12 @@ class BatchTestCase(unittest.TestCase):
         self.assertNotEqual(cli.main([]), 0)
         self.assertEqual(self.invoked(), [])
 
-    def test_failure_stops_the_batch_and_preserves_edits(self):
+    def test_failure_is_rolled_back_and_later_packages_continue(self):
         self.register(["alpha", "beta", "gamma"])
         os.environ["FIXTURE_FAIL"] = "beta"
         self.assertEqual(cli.main([]), 7)
-        self.assertEqual(self.edited(), ["alpha", "beta"])
-        self.assertNotIn("gamma", self.edited())
+        self.assertEqual(self.edited(), ["alpha", "beta", "gamma"])
+        self.assertIn("gamma", self.invoked()[-1])
 
 
 if __name__ == "__main__":

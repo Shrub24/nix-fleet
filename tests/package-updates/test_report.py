@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -82,6 +83,14 @@ class ReportTestCase(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
 
+        self.original_environ = dict(os.environ)
+        self.checkout = self.root / "checkout"
+        (self.checkout / "pkgs").mkdir(parents=True)
+        for name in ("alpha", "beta", "gamma", "zeta", "notify", "bifrost", "delta"):
+            package = self.checkout / "pkgs" / name
+            package.mkdir()
+            (package / "default.nix").write_text("{}\n")
+
         self.state = self.root / "state"
         self.after = self.root / "after"
         self.touch = self.root / "touch"
@@ -100,7 +109,6 @@ class ReportTestCase(unittest.TestCase):
             stub.write_text(source.format(bash=shutil.which("bash")))
             stub.chmod(0o755)
 
-        self.original_environ = dict(os.environ)
         self.addCleanup(self.restore_environ)
         os.environ.update(
             FIXTURE_STATE=str(self.state),
@@ -110,7 +118,32 @@ class ReportTestCase(unittest.TestCase):
             FIXTURE_CALLS=str(self.calls),
             FIXTURE_NIX_CALLS=str(self.nix_calls),
         )
-        self.only_tools("nix-update", "nix", "git")
+        self.only_tools("nix-update", "nix", "jj")
+
+    def jj_checkout(self):
+        path = self.original_environ.get("PATH", "")
+        jj = shutil.which("jj", path=path) if path else None
+        if jj is None:
+            self.skipTest("transaction tests require jj")
+        shutil.rmtree(self.checkout)
+        subprocess.run(
+            [jj, "git", "init", str(self.checkout)],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [jj, "new", "-m", "report fixture"],
+            cwd=self.checkout,
+            check=True,
+            capture_output=True,
+        )
+        fixture_path = self.root / "path-nix-update-nix-jj"
+        if not fixture_path.exists():
+            fixture_path.mkdir()
+            for tool in ("nix-update", "nix"):
+                os.symlink(self.bin / tool, fixture_path / tool)
+            os.symlink(jj, fixture_path / "jj")
+        os.environ["PATH"] = str(fixture_path)
 
     def restore_environ(self):
         os.environ.clear()
@@ -182,6 +215,8 @@ class ReportTestCase(unittest.TestCase):
 class HumanReportTest(ReportTestCase):
     def test_bullets_report_the_deltas_in_selection_order(self):
         self.registry(["zeta", "alpha"])
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         self.current("alpha", "1.0.0")
         self.current("zeta", "2.0.0")
         self.released("alpha", "1.0.1")
@@ -197,6 +232,8 @@ class HumanReportTest(ReportTestCase):
 
     def test_equal_versions_without_an_edit_are_unchanged(self):
         self.registry(["notify"])
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         self.current("notify", "1.0.0")
 
         code, out = self.invoke([])
@@ -207,6 +244,8 @@ class HumanReportTest(ReportTestCase):
 
     def test_a_moved_working_copy_without_a_version_change_is_updated(self):
         self.registry(["alpha"])
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         self.current("alpha", "1.0.0")
         # A re-tagged upstream or a hash-only refresh moves the pin, not the version.
         self.edited("alpha")
@@ -214,12 +253,14 @@ class HumanReportTest(ReportTestCase):
         code, out = self.invoke([])
 
         self.assertEqual(code, 0)
-        self.assertIn("• Updated 'alpha': 1.0.0 → 1.0.0", out)
+        self.assertIn("• Unchanged 'alpha': 1.0.0", out)
 
 
 class JsonReportTest(ReportTestCase):
     def test_document_shape_versions_changes_and_changelogs(self):
         self.registry(["bifrost", "delta", "notify"], system="aarch64-linux")
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         self.current("bifrost", "2.2.6", changelog="https://example.invalid/previous")
         self.released("bifrost", "2.2.7", changelog="https://example.invalid/releases/v2.2.7")
         self.current("delta", "1.0.0")
@@ -261,6 +302,8 @@ class JsonReportTest(ReportTestCase):
 
     def test_each_package_is_evaluated_once_per_phase_without_the_lock_file(self):
         self.registry(["bifrost", "notify"])
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         self.current("bifrost", "2.2.6")
         self.released("bifrost", "2.2.7")
         self.current("notify", "1.0.0")
@@ -287,6 +330,8 @@ class JsonReportTest(ReportTestCase):
 class MarkdownReportTest(ReportTestCase):
     def test_a_change_renders_a_table_and_the_acceptance_note(self):
         self.registry(["bifrost"])
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         self.current("bifrost", "2.2.6")
         self.released("bifrost", "2.2.7", changelog="https://example.invalid/releases/v2.2.7")
 
@@ -312,6 +357,8 @@ class MarkdownReportTest(ReportTestCase):
 
     def test_nothing_changed_renders_the_current_body(self):
         self.registry(["notify"])
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         self.current("notify", "1.0.0")
 
         code, _ = self.invoke(["--markdown", str(self.markdown_path)])
@@ -321,6 +368,8 @@ class MarkdownReportTest(ReportTestCase):
 
     def test_already_current_packages_are_named_after_the_table(self):
         self.registry(["bifrost", "notify"])
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         self.current("bifrost", "2.2.6")
         self.released("bifrost", "2.2.7")
         self.current("notify", "1.0.0")
@@ -350,6 +399,8 @@ class MarkdownReportTest(ReportTestCase):
 class FailureTest(ReportTestCase):
     def test_a_failure_stops_the_batch_and_still_writes_both_reports(self):
         self.registry(["alpha", "beta", "gamma"])
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         for name in ("alpha", "beta", "gamma"):
             self.current(name, "1.0.0")
             self.released(name, "1.0.1")
@@ -361,14 +412,14 @@ class FailureTest(ReportTestCase):
 
         self.assertEqual(code, 7)
         self.assertIn("✗ Failed 'beta': update failed (exit 7)", out)
-        self.assertNotIn("gamma", out)
-        self.assertEqual(self.updated_packages(), ["alpha", "beta"])
+        self.assertIn("gamma", out)
+        self.assertEqual(self.updated_packages(), ["alpha", "beta", "gamma"])
         self.assertEqual(
-            [entry["name"] for entry in self.document()["packages"]], ["alpha", "beta"]
+            [entry["name"] for entry in self.document()["packages"]], ["alpha", "beta", "gamma"]
         )
         self.assertEqual(
             [entry["status"] for entry in self.document()["packages"]],
-            ["updated", "failed"],
+            ["updated", "failed", "updated"],
         )
         self.assertIn("| `alpha` | patch | 1.0.0 | 1.0.1 |", self.body())
 
@@ -376,9 +427,11 @@ class FailureTest(ReportTestCase):
 class DegradedToolsTest(ReportTestCase):
     def test_a_missing_nix_reports_unknown_versions_and_still_updates(self):
         self.registry(["alpha"])
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         self.current("alpha", "1.0.0")
         self.released("alpha", "1.0.1")
-        self.only_tools("nix-update", "git")
+        self.only_tools("nix-update", "nix", "jj")
 
         code, _ = self.invoke(["--json", str(self.json_path)])
 
@@ -400,6 +453,8 @@ class DegradedToolsTest(ReportTestCase):
 
     def test_a_failing_nix_is_unknown_rather_than_fatal(self):
         self.registry(["alpha"])
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         self.current("alpha", "1.0.0")
         self.released("alpha", "1.0.1")
         os.environ["FIXTURE_NIX_FAIL"] = "1"
@@ -414,9 +469,11 @@ class DegradedToolsTest(ReportTestCase):
 
     def test_a_missing_git_falls_back_to_the_version_signal(self):
         self.registry(["alpha"])
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         self.current("alpha", "1.0.0")
         self.edited("alpha")
-        self.only_tools("nix-update", "nix")
+        self.only_tools("nix-update", "nix", "jj")
 
         code, out = self.invoke([])
 
@@ -425,6 +482,8 @@ class DegradedToolsTest(ReportTestCase):
 
     def test_git_outside_a_work_tree_falls_back_to_the_version_signal(self):
         self.registry(["alpha"])
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
         self.current("alpha", "1.0.0")
         self.edited("alpha")
         os.environ["FIXTURE_GIT_FAIL"] = "1"
@@ -436,7 +495,7 @@ class DegradedToolsTest(ReportTestCase):
 
     def test_a_missing_updater_refuses_before_running_or_reporting(self):
         self.registry(["alpha"])
-        self.only_tools("nix", "git")
+        self.only_tools("nix", "git", "jj")
 
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):

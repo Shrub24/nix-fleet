@@ -1,6 +1,6 @@
-"""Validate a registered package selection and drive the shared updater.
+"""Validate package selection and run each update as a local file transaction.
 
-The runner owns selection, deterministic ordering and fail-fast reporting.
+The runner owns selection, deterministic ordering and per-package reporting.
 Package-specific update policy stays in each package expression: nix-update's
 ``--use-update-script`` runs a package's ``passthru.updateScript`` when it
 declares one and its ordinary release discovery otherwise, so the batch never
@@ -20,6 +20,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .transaction import TransactionError, repository_root, staged_package
 from .report import (
     FAILED,
     UNCHANGED,
@@ -47,6 +48,9 @@ class Registry:
     system: str
     registered: tuple[str, ...]
     available: tuple[str, ...]
+    write_sets: dict[str, tuple[str, ...]]
+    root: str
+    package_paths: dict[str, str]
 
 
 def load_registry(environ=os.environ) -> Registry:
@@ -66,6 +70,9 @@ def load_registry(environ=os.environ) -> Registry:
         system=data["system"],
         registered=tuple(data["registered"]),
         available=tuple(data["available"]),
+        write_sets={name: tuple(paths) for name, paths in data.get("writeSets", {}).items()},
+        root=data.get("root", "."),
+        package_paths=data.get("packagePaths", {}),
     )
 
 
@@ -130,26 +137,6 @@ def evaluate(name: str, system: str) -> tuple[str | None, str | None]:
     return evaluated.get("version"), evaluated.get("changelog")
 
 
-def changed_paths() -> frozenset[str] | None:
-    """The working copy's changed paths, or None where git cannot answer.
-
-    Absent git and a directory outside a work tree both mean unknown: the
-    batch then falls back to the version signal alone rather than failing.
-    """
-    executable = shutil.which("git")
-    if executable is None:
-        return None
-    result = subprocess.run(
-        [executable, "status", "--porcelain", "--untracked-files=all"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None
-    # Porcelain v1 is "XY<space>PATH"; the path is what a refresh can move.
-    return frozenset(line[3:] for line in result.stdout.splitlines() if len(line) > 3)
-
-
 def save(batch: Report, json_path: str | None, markdown_path: str | None) -> None:
     """Write the requested report artifacts, or refuse by name."""
     for path, text in (
@@ -164,61 +151,99 @@ def save(batch: Report, json_path: str | None, markdown_path: str | None) -> Non
             raise UpdateError(f"cannot write report {path}: {error}") from error
 
 
+def _changed_paths(root: Path, write_set: tuple[str, ...]) -> bool:
+    from .transaction import _diff_paths
+
+    return any(
+        path == prefix or path.startswith(prefix.rstrip("/") + "/")
+        for path in _diff_paths(root)
+        for prefix in write_set
+    )
+
+
 def update(
     names: list[str],
     system: str,
     json_path: str | None = None,
     markdown_path: str | None = None,
+    write_sets: dict[str, tuple[str, ...]] | None = None,
+    package_paths: dict[str, str] | None = None,
+    root_path: str | None = None,
 ) -> int:
-    """Run the shared updater over ``names``, stopping at the first failure.
+    """Run selected updaters in disposable jj workspaces.
 
-    The child inherits this process's environment, so a package update
-    script's recorded-target variables flow through unchanged. The runner
-    never commits, resets or publishes; earlier edits stay inspectable, and
-    the requested reports are written even when a package fails.
+    The child inherits this process's environment, so package-specific target
+    variables flow through unchanged. Successful package diffs are applied in
+    sequence; failed candidates are discarded and later packages still run.
     """
     executable = shutil.which("nix-update")
     if executable is None:
         raise UpdateError("nix-update not found on PATH")
     entries: list[Entry] = []
     exit_code = 0
+    root = Path(root_path).resolve() if root_path else repository_root()
+    write_sets = write_sets or {}
+    package_paths = package_paths or {}
     for name in names:
         print(f"package-updates: updating {name}", flush=True)
         before, changelog_before = evaluate(name, system)
-        paths_before = changed_paths()
-        result = subprocess.run(
-            [executable, "--flake", "--use-update-script", "--system", system, name]
+        write_set = tuple(write_sets.get(name, ())) or (
+            package_paths.get(name, f"pkgs/{name}"),
         )
-        after, changelog_after = evaluate(name, system)
-        paths_after = changed_paths()
-        # A version can stay put while the pin still moves, so either signal
-        # decides that a refresh happened.
-        moved = before != after or (
-            paths_before is not None
-            and paths_after is not None
-            and paths_before != paths_after
-        )
-        if result.returncode != 0:
-            status = FAILED
-        elif moved:
-            status = UPDATED
-        else:
-            status = UNCHANGED
-        template = changelog_after if changelog_after is not None else changelog_before
-        entry = Entry(
-            name=name,
-            status=status,
-            before=before,
-            after=after,
-            change=classify(before, after),
-            changelog=template,
-        )
+        try:
+            result, paths = staged_package(
+                root,
+                name,
+                write_set,
+                lambda candidate: subprocess.run(
+                    [executable, "--flake", "--use-update-script", "--system", system, name],
+                    cwd=candidate,
+                    capture_output=True,
+                    text=True,
+                    env=os.environ.copy(),
+                ),
+            )
+            after, changelog_after = evaluate(name, system)
+            moved = before != after or bool(paths) or _changed_paths(root, write_set)
+            status = FAILED if result.returncode != 0 else UPDATED if moved else UNCHANGED
+            if result.returncode != 0:
+                reason = (result.stderr or result.stdout).strip()
+                print(failure(name, result.returncode) + (f": {reason}" if reason else ""), flush=True)
+                exit_code = exit_code or result.returncode or 1
+            else:
+                print(
+                    bullet(
+                        Entry(
+                            name,
+                            status,
+                            before,
+                            after,
+                            classify(before, after),
+                            changelog_after or changelog_before,
+                        )
+                    ),
+                    flush=True,
+                )
+            entry = Entry(
+                name=name,
+                status=status,
+                before=before,
+                after=after,
+                change=classify(before, after),
+                changelog=changelog_after if changelog_after is not None else changelog_before,
+            )
+        except (TransactionError, OSError) as error:
+            entry = Entry(
+                name=name,
+                status=FAILED,
+                before=before,
+                after=before,
+                change=classify(before, before),
+                changelog=changelog_before,
+            )
+            print(failure(name, 1) + f": {error}", flush=True)
+            exit_code = exit_code or 1
         entries.append(entry)
-        if result.returncode != 0:
-            print(failure(name, result.returncode), flush=True)
-            exit_code = result.returncode
-            break
-        print(bullet(entry), flush=True)
     batch = Report(system=system, entries=tuple(entries))
     print(flush=True)
     print(batch.summary(), flush=True)
