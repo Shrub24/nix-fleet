@@ -135,8 +135,13 @@ replacement. PR merge by itself does not satisfy the pin condition.
 - **Podman guest smoke:** `checks.podman-exporter-vm` is the focused disposable
   NixOS VM check. It uses the pinned OCI module's `imageFile` loader with a
   locally built image archive and exercises the rootful Podman socket, exporter
-  service and container metrics inside the guest. The x86_64 check passed;
-  this proves the packaged service/socket integration, not device or container
+  service and container metrics inside the guest. It is registered on
+  `x86_64-linux` only: what it proves does not vary with the architecture, and no
+  aarch64 builder in the fleet advertises `kvm` — the aarch64 builders offer
+  `big-parallel`, the x86_64 ones `kvm` and `nixos-test` — so a per-system copy
+  could never be built or cached and would fail the fleet build on every
+  dispatch. The check passed; this proves the packaged service/socket
+  integration, not device or container
   visibility on every consumer host. The real
   development-host rootful socket is `root:podman` mode 0660, the current
   unprivileged user is not in `podman`, and privileged commands are prohibited.

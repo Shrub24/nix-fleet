@@ -12,6 +12,12 @@
 }:
 let
   aspects = config.flake.modules.nixos;
+
+  # The VM check below proves an architecture-independent claim, so it is
+  # registered once on the canonical system; see the comment at its registration.
+  canonicalSystem = "x86_64-linux";
+  canonicalPkgs = inputs.nixpkgs.legacyPackages.${canonicalSystem};
+
   hostFor =
     system: extra:
     (lib.nixosSystem {
@@ -89,44 +95,52 @@ in
       ];
 
       packages.prometheus-podman-exporter = package;
-      # The guest is deliberately rootful: only inside this disposable VM does
-      # the test get root. The sandbox host's Podman daemon/socket is never
-      # shared. Build the fixture image into the guest store before starting it,
-      # so the test does not need network access or a registry pull.
-      checks.podman-exporter-vm = pkgs.testers.runNixOSTest {
-        name = "podman-exporter-rootful-socket";
-        nodes.machine = { ... }: {
-          imports = [ aspects.podman-exporter ];
-          virtualisation.podman.enable = true;
-          virtualisation.memorySize = 2048;
-          virtualisation.diskSize = 4096;
-          virtualisation.oci-containers.backend = "podman";
-          system.stateVersion = "25.11";
-          virtualisation.oci-containers.containers.exporter-fixture = {
-            image = "exporter-fixture:latest";
-            imageFile = pkgs.dockerTools.buildImage {
-              name = "exporter-fixture";
-              tag = "latest";
-              copyToRoot = pkgs.buildEnv {
-                name = "exporter-fixture-root";
-                paths = [ pkgs.busybox ];
-                pathsToLink = [ "/bin" ];
-              };
-              config.Cmd = [
-                "sleep"
-                "600"
-              ];
-            };
+    };
+
+  # The guest is deliberately rootful: only inside this disposable VM does the
+  # test get root. The sandbox host's Podman daemon/socket is never shared. Build
+  # the fixture image into the guest store before starting it, so the test does
+  # not need network access or a registry pull.
+  #
+  # Registered on the canonical system only. What the check proves — the packaged
+  # service reaches the rootful socket and a container's metrics appear — is the
+  # same on either architecture, and no aarch64 builder in the fleet advertises
+  # `kvm` (the aarch64 builders offer `big-parallel`, the x86_64 ones `kvm` and
+  # `nixos-test`), so a per-system copy could never be built or cached and would
+  # fail the fleet build on every dispatch.
+  flake.checks.${canonicalSystem}.podman-exporter-vm = canonicalPkgs.testers.runNixOSTest {
+    name = "podman-exporter-rootful-socket";
+    nodes.machine = { ... }: {
+      imports = [ aspects.podman-exporter ];
+      virtualisation.podman.enable = true;
+      virtualisation.memorySize = 2048;
+      virtualisation.diskSize = 4096;
+      virtualisation.oci-containers.backend = "podman";
+      system.stateVersion = "25.11";
+      virtualisation.oci-containers.containers.exporter-fixture = {
+        image = "exporter-fixture:latest";
+        imageFile = canonicalPkgs.dockerTools.buildImage {
+          name = "exporter-fixture";
+          tag = "latest";
+          copyToRoot = canonicalPkgs.buildEnv {
+            name = "exporter-fixture-root";
+            paths = [ canonicalPkgs.busybox ];
+            pathsToLink = [ "/bin" ];
           };
+          config.Cmd = [
+            "sleep"
+            "600"
+          ];
         };
-        testScript = ''
-          machine.start()
-          machine.wait_for_unit("podman.socket")
-          machine.wait_for_unit("prometheus-podman-exporter.service")
-          machine.wait_for_unit("podman-exporter-fixture.service")
-          machine.wait_until_succeeds("curl -fsS http://127.0.0.1:9156/metrics | grep '^podman_container_info'")
-          machine.succeed("curl -fsS http://127.0.0.1:9156/metrics | grep 'exporter-fixture'")
-        '';
       };
     };
+    testScript = ''
+      machine.start()
+      machine.wait_for_unit("podman.socket")
+      machine.wait_for_unit("prometheus-podman-exporter.service")
+      machine.wait_for_unit("podman-exporter-fixture.service")
+      machine.wait_until_succeeds("curl -fsS http://127.0.0.1:9156/metrics | grep '^podman_container_info'")
+      machine.succeed("curl -fsS http://127.0.0.1:9156/metrics | grep 'exporter-fixture'")
+    '';
+  };
 }

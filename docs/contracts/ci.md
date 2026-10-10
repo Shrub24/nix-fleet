@@ -11,7 +11,11 @@ includes the x86_64 fixture toplevel, canonical x86_64 policy checks, and
 per-system checks such as Bifrost runtime checks and the vmagent credential
 guard. Platform-independent policy leaves are registered once under
 `checks.x86_64-linux`; checks whose result can depend on the evaluated system
-remain per-system. The fixture toplevel is evaluated on both architectures and
+remain per-system. A check is also placed by build capability: one whose build
+needs features a system's builders do not advertise is registered where they
+exist — the disposable Podman VM check is x86_64-only because no aarch64 builder
+advertises `kvm`, so an aarch64 copy could never be built or cached. The fixture
+toplevel is evaluated on both architectures and
 built natively on x86_64. Adding an x86_64 or per-system check adds a CI gate
 without editing the workflow. ARM evaluation is covered; ARM builds require an
 ARM builder. The separately dispatch-gated fleet build workflow is not needed
