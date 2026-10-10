@@ -80,6 +80,8 @@ jobs:
           commit-message: "chore(deps): refresh registered package pins"
           title: "chore(deps): refresh registered package pins"
           body-path: ${{ runner.temp }}/pr-body.md
+          # Both labels must already exist in the repository: adding a label the
+          # repository does not have returns 404 and fails this step.
           labels: |
             dependencies
             automated

@@ -110,3 +110,7 @@ own.
 **Reason:** neither fact is visible anywhere in the tree, and both fail at the
 last step of an otherwise successful run — the refresh, the evaluation and the
 artifact upload all succeed first.
+
+**Related:** the step also requests two labels, and adding a label the repository
+does not have returns 404, which fails the same step. `dependencies` and
+`automated` were created for that reason.
