@@ -5,6 +5,8 @@ refusal, so selection ordering, rollback, continuation and environment flow
 are provable without any upstream query.
 """
 
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -129,6 +131,17 @@ class BatchTestCase(unittest.TestCase):
         self.assertFalse(allowed("pkgs/beta/default.nix", roots))
         with self.assertRaisesRegex(TransactionError, "invalid"):
             valid_write_set(("../outside",))
+
+    def test_preexisting_package_edit_is_not_reported_as_an_update(self):
+        self.register(["alpha"])
+        package_file = self.root / "checkout/pkgs/alpha/default.nix"
+        package_file.write_text("caller edit\n")
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main([]), 0)
+
+        self.assertIn("• Unchanged 'alpha':", output.getvalue())
 
     def test_staging_keeps_initial_edits_and_applies_successes_cumulatively(self):
         checkout = self.jj_checkout()

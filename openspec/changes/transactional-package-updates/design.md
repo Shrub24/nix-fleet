@@ -22,13 +22,13 @@ See [proposal.md](proposal.md) for motivation and the package-updates spec delta
 
 ## Decisions
 
-### Use per-package staged filesystem snapshots, not VCS mutation
+### Use disposable jj workspaces for per-package candidates
 
-Stage one package attempt from the current repository state into an isolated temporary tree. Run the normal shared updater there; collect the resulting file changes and validate their paths against that package's declared write set. If the updater exits nonzero or validation fails, remove the staged tree and record failure. If it succeeds, integrate its allowed changes into the caller's working copy before starting the next package.
+Stage one package attempt in a disposable jj workspace based on the caller's current working-copy change. Run the normal shared updater there; collect the candidate diff and validate every changed path against that package's declared write set. If the updater exits nonzero or validation fails, forget the workspace and record failure. If it succeeds, copy its allowed changes into the caller's working copy before starting the next package.
 
-The implementation uses a disposable jj workspace based on the caller's current working copy, so uncommitted edits are present in the candidate baseline. Successful declared paths are copied back into the original workspace; failed candidates are forgotten. It does not create commits or rewrite jj history. Promotion is file-level and is not crash-atomic across multiple files. The runner requires jj and is not a filesystem-independent transaction engine. It does not sandbox or roll back external side effects.
+The app bundles jj in its runtime dependencies, so consumers do not need a system-wide installation. The workspace includes uncommitted caller edits and does not create user commits, bookmarks, or branches, or rewrite the caller's existing commits. jj does record temporary workspace working-copy changes and workspace add/forget operations in the repository operation log. Promotion is file-level and is not crash-atomic across multiple files. The runner does not sandbox or roll back external side effects of trusted update scripts.
 
-**Alternative:** run scripts in the caller's tree and attempt to undo changes on failure. Rejected because restoring from a baseline risks deleting unrelated user edits and cannot distinguish a script's partial writes from pre-existing changes. **Alternative:** create temporary jj commits/workspaces and abandon or squash them. Rejected as the initial implementation because it would couple a package app to jj workspace mutation and make its safety depend on concurrent working-copy state; retain as a fallback only if filesystem staging cannot satisfy the preservation requirements.
+**Alternative:** run scripts in the caller's tree and attempt to undo changes on failure. Rejected because restoring from a baseline risks deleting unrelated user edits and cannot distinguish a script's partial writes from pre-existing changes. **Alternative:** filesystem snapshots and per-file copy-back. Rejected because multi-file promotion remains vulnerable to interruption and would require reimplementing preservation and safe recovery without adding value for this jj-managed fleet. **Alternative:** create or rewrite jj commits. Rejected because the app must preserve the caller's history; disposable workspaces provide isolation without mutating it.
 
 ### Keep the batch sequential and cumulative
 

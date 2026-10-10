@@ -151,16 +151,6 @@ def save(batch: Report, json_path: str | None, markdown_path: str | None) -> Non
             raise UpdateError(f"cannot write report {path}: {error}") from error
 
 
-def _changed_paths(root: Path, write_set: tuple[str, ...]) -> bool:
-    from .transaction import _diff_paths
-
-    return any(
-        path == prefix or path.startswith(prefix.rstrip("/") + "/")
-        for path in _diff_paths(root)
-        for prefix in write_set
-    )
-
-
 def update(
     names: list[str],
     system: str,
@@ -204,7 +194,7 @@ def update(
                 ),
             )
             after, changelog_after = evaluate(name, system)
-            moved = before != after or bool(paths) or _changed_paths(root, write_set)
+            moved = before != after or bool(paths)
             status = FAILED if result.returncode != 0 else UPDATED if moved else UNCHANGED
             if result.returncode != 0:
                 reason = (result.stderr or result.stdout).strip()

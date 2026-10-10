@@ -8,7 +8,7 @@
 
 ## 2. Isolated per-package update transactions
 
-- [x] 2.1 Implement disposable jj-workspace staging from the caller's current working copy without changing jj history; verify modified, added, deleted and renamed paths are observed, and initial edits remain in the baseline.
+- [x] 2.1 Implement disposable jj-workspace staging from the caller's current working copy without rewriting caller commits or bookmarks; regression-test that an initial caller edit is present in the candidate and that successful updates apply cumulatively. Temporary workspace changes are recorded in jj's operation log.
 - [x] 2.2 Validate updater outputs against declared paths; verify an undeclared write is rejected without modifying the original workspace.
 - [x] 2.3 Apply a successful package result before staging the next package; verify later updaters observe prior successful edits and overlapping package ownership cannot silently replace them.
 - [x] 2.4 Discard a failed package's staged repository changes and continue to later packages; verify a failure after multiple writes leaves no candidate changes while earlier successful changes survive.
@@ -16,6 +16,6 @@
 
 ## 3. Integration and acceptance
 
-- [ ] 3.1 Run formatting, focused package-update runner/consumer checks, `nix flake check`, and `nix flake check --no-build --all-systems`; record results and verify no check or output is dropped.
+- [x] 3.1 Run formatting, focused package-update runner/consumer checks, `nix flake check`, and `nix flake check --no-build --all-systems`; record results and verify no check or output is dropped.
 - [ ] 3.2 Run the Bifrost updater in an isolated checkout for a recorded target and repeat for idempotence; verify success retains only declared changes and an induced mid-update failure leaves no partial repository changes.
-- [ ] 3.3 Review the final diff and strict OpenSpec validation; verify no automatic jj commit/reset/publish behavior and no claim of rollback for external side effects.
+- [x] 3.3 Review the final diff and strict OpenSpec validation; verify no automatic jj commit/reset/publish behavior and no claim of rollback for external side effects.

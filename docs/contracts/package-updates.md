@@ -76,9 +76,12 @@ changes and prior successful updates. A successful candidate is applied before
 the next updater starts,
 preserving the established cumulative behavior. A failed package's candidate is
 discarded and reported; later packages still run. The batch writes reports for
-all selected packages and exits nonzero if any failed. It never commits, merges,
-deploys, publishes, or rewrites jj history. Writes outside the declared set fail
-that package. Promotion is file-level, not crash-atomic across several files.
+all selected packages and exits nonzero if any failed. It never creates a user
+commit, bookmark or branch, publishes, or rewrites the caller's existing commits.
+jj does record temporary workspace working-copy changes and workspace
+add/forget operations in the repository operation log. Writes outside the
+declared set fail that package. Promotion is file-level, not crash-atomic across
+several files.
 The runner does not sandbox or roll back external side effects of trusted updater
 scripts.
 

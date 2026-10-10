@@ -124,8 +124,9 @@ does not have returns 404, which fails the same step. `dependencies` and
 **Source:** `docs/contracts/package-updates.md`, package-update transaction design, 2026-10-11
 
 The update app bundles jj and stages each package in a disposable jj workspace
-based on the caller's current working-copy state; the app does not create or
-rewrite jj history.
+based on the caller's current working-copy state. The app does not create user
+commits, bookmarks, or branches, or rewrite caller commits; jj does record the
+temporary workspace changes and add/forget operations in its operation log.
 
 **Reason:** package updates run in a jj-managed fleet, and bundling jj makes the
 staging tool available to downstream app users without a global installation.
