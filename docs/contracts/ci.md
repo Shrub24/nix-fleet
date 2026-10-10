@@ -45,6 +45,13 @@ system, a leaf forcing more than about six systems approaches one worker's share
 and a leaf forcing fifteen exceeds the whole budget. The remedy is to split a
 heavy leaf by contract — never to drop its probes.
 
+A scheduled `package-updates-refresh` workflow runs the repository's registered
+package updaters, evaluates the refreshed tree, and opens one pull request
+carrying the update report. It is a refresh gate, not an acceptance gate:
+acceptance is the checks above, which run on that pull request. It touches
+package pins only — `flake.lock` stays with renovate. See
+[the package-update contract](package-updates.md).
+
 ## Model
 
 ```

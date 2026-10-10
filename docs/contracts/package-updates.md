@@ -100,8 +100,29 @@ pin moves only when every gate passes. See the
 [recorded Bifrost update](../validation/bifrost-package-update.md) for the first
 candidate, gate results and limitations.
 
+## Scheduled refresh
+
+`.github/workflows/package-updates-refresh.yml` runs the batch weekly and on
+demand, evaluates the refreshed tree, and opens or updates one pull request on
+`automation/package-updates`. The pull request body is the batch's own report,
+so a reviewer reads which packages moved, from which version to which, and where
+the changelog is; the run also prints the structured report in the job log and
+uploads it as an artifact.
+
+Three boundaries are deliberate. The report files are written outside the
+checkout, so the pull request contains the updaters' pin changes and nothing
+else. `--no-write-lock-file` is passed, because the batch owns package pins and
+renovate owns `flake.lock`. And the workflow opens a pull request rather than
+merging one: acceptance is the checks `ci.yml` runs on that pull request, which
+is why the refreshed tree is only evaluated here — with `path:.`, because an
+updater can write files that a runner's checkout does not track.
+
+A run that finds nothing to update is a success and opens no pull request.
+
 ## Deferred
 
-Consumer migration, refresh schedules and PR creation, combined flake.lock
-ownership, automerge and branch rules are separate adoption work. Renovate
-remains responsible for OCI images and Actions references in the meantime.
+Consumer adoption of this module is separate work, and so is a refresh schedule
+in a consumer: the workflow above is nix-fleet's own, and no reusable form of it
+is published yet. Combined `flake.lock` ownership, automerge and branch rules
+remain separate as well. Renovate stays responsible for OCI images and Actions
+references.
