@@ -3,7 +3,8 @@
 #
 # Fixed by the base: projectRootFile, the Nix trio (nixfmt + statix + deadnix,
 # priorities pinned — all three claim `*.nix`; unpinned, `nix fmt` does not
-# converge), baseline excludes, and prettier for markdown/YAML/JSON.
+# converge), baseline excludes, prettier for markdown/YAML/JSON, and actionlint
+# validation for GitHub Actions workflows.
 # Consumer extension: treefmt settings merge — consumers add languages
 # (programs.*) and extra excludes via the same `perSystem.treefmt` options;
 # list options concatenate. A repo whose languages are exactly the base set
@@ -18,7 +19,7 @@ let
     {
       imports = [ inputs.treefmt-nix.flakeModule ];
 
-      perSystem = _: {
+      perSystem = { pkgs, ... }: {
         treefmt = {
           projectRootFile = "flake.nix";
 
@@ -48,6 +49,10 @@ let
             deadnix.priority = 1;
             statix.priority = 2;
             nixfmt.priority = 3;
+            actionlint = {
+              command = "${pkgs.actionlint}/bin/actionlint";
+              includes = [ ".github/workflows/*.yml" ];
+            };
           };
         };
       };
