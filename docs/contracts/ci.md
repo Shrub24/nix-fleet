@@ -5,21 +5,23 @@ hosts use. No builder coordinates live in workflow files or repo variables.
 
 ## Validation gates
 
-On every push and pull request, `ci.yml` checks formatting, evaluates all declared
-systems, then builds **all native x86_64 checks** with `nix flake check`. This
-includes the x86_64 fixture toplevel, canonical x86_64 policy checks, and
-per-system checks such as Bifrost runtime checks and the vmagent credential
-guard. Platform-independent policy leaves are registered once under
-`checks.x86_64-linux`; checks whose result can depend on the evaluated system
-remain per-system. A check is also placed by build capability: one whose build
-needs features a system's builders do not advertise is registered where they
-exist — the disposable Podman VM check is x86_64-only because no aarch64 builder
-advertises `kvm`, so an aarch64 copy could never be built or cached. The fixture
-toplevel is evaluated on both architectures and
-built natively on x86_64. Adding an x86_64 or per-system check adds a CI gate
-without editing the workflow. ARM evaluation is covered; ARM builds require an
-ARM builder. The separately dispatch-gated fleet build workflow is not needed
-for these gates.
+On every push and pull request, `ci.yml` checks formatting and runs
+`nix flake check --no-build --no-write-lock-file --all-systems`. This evaluates
+the declared checks for both supported systems without building their outputs;
+the formatter check is built separately. Platform-independent policy leaves
+are registered once under `checks.x86_64-linux`; checks whose result can depend
+on the evaluated system remain per-system. Build-capability placement still
+applies: a check requiring `kvm` is registered only where builders provide it,
+so the disposable Podman VM check is x86_64-only. The fixture toplevel is
+evaluated for both architectures. Adding a check adds evaluation coverage
+without editing the workflow.
+
+Building checks against the fleet's configured builders and cache is a separate
+path: the manually dispatched fleet-build job uses `nix-fast-build` and the
+selected profile. It is not part of routine push/PR validation. This keeps the
+routine gate focused on fast evaluation rather than compiling every check on
+the GitHub runner, which would neither exercise the fleet builder path nor its
+cache behavior.
 
 The fixture host asserts only what it can read from its own configuration. Contract
 checks are independent feature-owned leaves rather than nested evaluations forced
@@ -48,7 +50,8 @@ heavy leaf by contract — never to drop its probes.
 A scheduled `package-updates-refresh` workflow runs the repository's registered
 package updaters, evaluates the refreshed tree, and opens one pull request
 carrying the update report. It is a refresh gate, not an acceptance gate:
-acceptance is the checks above, which run on that pull request. It touches
+acceptance is the formatting and all-system evaluation gate above, which runs
+on that pull request. It touches
 package pins only — `flake.lock` stays with renovate. See
 [the package-update contract](package-updates.md).
 

@@ -29,13 +29,29 @@ Throwaway NixOS evaluations for feature contracts are independent `checks.<syste
 
 Platform-independent policy checks are registered once under `checks.x86_64-linux`. Checks whose result can depend on the evaluated system remain per-system; the two fixture toplevel configurations and their builds remain per-system on both supported architectures. The rule applies per leaf: mixed-substrate leaves remain per-system unless split into separate checks. Placement also follows build capability, not evaluation alone: a check whose build needs features a system's builders do not advertise is registered where those features exist. The disposable Podman VM check is `x86_64-linux`-only for that reason — no aarch64 builder in the fleet advertises `kvm`, so an aarch64 copy could never be built or cached, and it failed the fleet build on every dispatch until it was scoped.
 
-**Reason:** pure policy evaluation has no architecture-dependent behavior, so evaluating it on both systems duplicates work without increasing coverage. x86_64-linux is the standard canonical system because the required PR validation workflow (`ci.yml`) builds native x86_64 checks. The dispatch fleet workflow's default aarch64 coordinator does not make aarch64 the better canonical home: it requests both `x86_64-linux` and `aarch64-linux` by default, while the PR gate is the routine native check-build gate. The ARM fixture still evaluates and builds as a separate integration target.
+**Reason:** pure policy evaluation has no architecture-dependent behavior, so evaluating it on both systems duplicates work without increasing coverage. x86_64-linux remains the canonical system by maintainer choice; this placement is independent of whether routine CI builds the check outputs. The ARM fixture still evaluates as a separate integration target, and build-capability constraints continue to place checks only where their outputs can be built.
 
-**Rejected alternative:** canonicalize on aarch64 because the dispatch coordinator defaults to ARM. That workflow targets both architectures and uses builders independently of its coordinator, so the default coordinator does not confer additional policy coverage; x86 aligns with the regular PR build gate instead.
+**Rejected alternative:** canonicalize on aarch64 because the dispatch coordinator defaults to ARM. That workflow targets both architectures and uses builders independently of its coordinator, so the default coordinator does not confer additional policy coverage.
 
 **Rejected alternative:** keep all leaves per-system. This evaluates platform-independent policy twice without testing a distinct behavior.
 
 **Consequence:** a mixed leaf can temporarily repeat its pure cases on both systems; only split it when the duplication merits extra leaf names and maintenance. If platform dependence is uncertain, retain per-system coverage.
+
+## Routine PR CI evaluates; fleet CI builds
+
+**Id:** 50eb5125-a863-46f9-b9cb-e75a30538782
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** maintainer decision and `.github/workflows/ci.yml`, 2026-10-11
+
+Routine push and pull-request CI checks formatting and evaluates declared checks on all supported systems with `nix flake check --no-build`; it does not build every check output. Actual check builds use the manually dispatched fleet-build path, which exercises the selected builders and cache.
+
+**Reason:** building the entire check surface natively on the GitHub runner can spend over an hour compiling dependencies such as Vector while exercising neither the fleet's builder configuration nor its cache. Evaluation is the inexpensive routine gate; the fleet build path owns distribution and build acceptance.
+
+**Rejected alternative:** build all native check outputs on every push and pull request. This is expensive and tests the runner's fallback build path rather than the fleet builder/cache path.
+
+**Consequence:** routine CI proves formatting and evaluation, not that every derivation builds. Use the fleet-build dispatch when build and cache acceptance is required.
 
 ## Named fail-closed errors are public contract surface
 
