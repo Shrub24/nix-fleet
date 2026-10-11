@@ -38,7 +38,17 @@ jobs:
       - name: Build all native checks (x86_64)
         # Includes the fixture and real-binary runtime checks. The preceding
         # all-systems evaluation covers ARM; builds here remain native.
-        run: nix flake check --no-write-lock-file
+        run: |
+          python3 -u .github/scripts/ci-resources.py &
+          monitor_pid=$!
+          stop_resources() {
+            if kill -0 "$monitor_pid"; then
+              kill "$monitor_pid"
+            fi
+            wait "$monitor_pid" || true
+          }
+          trap stop_resources EXIT
+          nix flake check --no-write-lock-file --print-build-logs
 
   fleet-build:
     # Dogfood: nix-fleet schedules against its own canonical ci set. The
