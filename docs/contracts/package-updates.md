@@ -47,6 +47,20 @@ chosen inputs move. Inputs that change only through `follows` are reported after
 the apply, not offered as choices. The command never runs in CI and does not
 replace renovate, which keeps `flake.lock` current on its own schedule.
 
+### Cheap release check: `--check`
+
+```console
+nix run .#update-packages -- --check            # newer releases, no prefetch, no edits
+```
+
+A package opts into a cheap check by declaring `passthru.checkUpdate`: a
+derivation whose main program prints the newest stable release version on stdout
+and exits 0. The package owns where to look (forge, repository, tag scheme), so
+the runner never infers a release location from source attributes. The runner
+builds the derivation, runs it, and compares its output with `version`. A package
+without `checkUpdate`, a failing lookup, or a non-stable version is reported as
+unknown with the reason, never guessed. Checking never edits files.
+
 ## Selection and refusal
 
 `perSystem.packageUpdates.packages` is the typed registry of owned output

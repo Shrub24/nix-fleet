@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from .check import check, render
 from .runner import UpdateError, load_registry, select, update
 
 
@@ -31,10 +32,18 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         help="write the pull-request body to PATH",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="only report whether newer release tags exist; no prefetch, no edits",
+    )
     args = parser.parse_args(argv)
     try:
         registry = load_registry()
         names = select(registry, args.packages)
+        if args.check:
+            print(render(check(names, registry.system)))
+            return 0
         return update(names, registry.system, args.json_path, args.markdown_path)
     except UpdateError as error:
         print(f"package-updates: {error}", file=sys.stderr)

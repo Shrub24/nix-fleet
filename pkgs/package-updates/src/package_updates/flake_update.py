@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,8 @@ from pathlib import Path
 
 LOCK = "flake.lock"
 _MISSING = "—"
+# How many recent commits the preview lists per input; keeps the pane readable.
+PREVIEW_COMMITS = 15
 
 
 class FlakeUpdateError(Exception):
@@ -32,6 +35,10 @@ class InputChange:
     before: str
     after: str
     date: str
+    source: str
+    old_rev: str
+    new_rev: str
+    github: tuple[str, str] | None
 
 
 def _locked(lock: dict, node: str | None) -> dict:
@@ -60,6 +67,19 @@ def _date(locked: dict) -> str:
     return time.strftime("%Y-%m-%d", time.gmtime(stamp)) if stamp else _MISSING
 
 
+def _source(locked: dict) -> str:
+    kind = locked.get("type", "?")
+    if kind == "github":
+        return f"github:{locked.get('owner')}/{locked.get('repo')}"
+    return kind
+
+
+def _github(locked: dict) -> tuple[str, str] | None:
+    if locked.get("type") == "github" and locked.get("owner") and locked.get("repo"):
+        return locked["owner"], locked["repo"]
+    return None
+
+
 def changes(old: dict, new: dict) -> list[InputChange]:
     """Return the top-level inputs whose locked source differs, in name order."""
     before_nodes = top_level_nodes(old)
@@ -76,9 +96,58 @@ def changes(old: dict, new: dict) -> list[InputChange]:
                 before=_revision(before),
                 after=_revision(after),
                 date=_date(after),
+                source=_source(after or before),
+                old_rev=before.get("rev", ""),
+                new_rev=after.get("rev", ""),
+                github=_github(after or before),
             )
         )
     return found
+
+
+def commits_between(change: InputChange, runner=subprocess.run) -> list[str] | None:
+    """Return the one-line commit subjects between the two revisions, or None.
+
+    Only GitHub inputs with both revisions known can be compared; anything
+    else, or a missing or unauthenticated ``gh``, is shown as unavailable
+    rather than failing the picker.
+    """
+    if change.github is None or not change.old_rev or not change.new_rev:
+        return None
+    owner, repo = change.github
+    if shutil.which("gh") is None:
+        return None
+    result = runner(
+        [
+            "gh", "api", f"repos/{owner}/{repo}/compare/{change.old_rev}...{change.new_rev}",
+            "--jq", ".commits[] | (.sha[0:7] + \" \" + (.commit.message | split(\"\n\")[0]))",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return [line for line in result.stdout.splitlines() if line.strip()][-PREVIEW_COMMITS:]
+
+
+def preview(change: InputChange, commits: list[str] | None) -> str:
+    """Render the richer detail shown beside an input in the picker."""
+    lines = [
+        f"{change.name}",
+        "",
+        f"  source   {change.source}",
+        f"  from     {change.before}",
+        f"  to       {change.after}  ({change.date})",
+        "",
+    ]
+    if commits is None:
+        lines.append("  commits  unavailable (needs gh and a GitHub input)")
+    elif not commits:
+        lines.append("  commits  none between these revisions")
+    else:
+        lines.append(f"  commits  latest {len(commits)} (oldest first)")
+        lines.extend(f"    {line}" for line in commits)
+    return "\n".join(lines) + "\n"
 
 
 def parse_selection(answer: str, count: int) -> list[int]:
@@ -97,17 +166,55 @@ def parse_selection(answer: str, count: int) -> list[int]:
     return sorted(picks)
 
 
-def _choose(found: list[InputChange], requested: list[str]) -> list[str]:
+def _pick_with_fzf(found: list[InputChange], previews: Path) -> list[str] | None:
+    """Multi-select with fzf; None when fzf is unavailable.
+
+    Each preview is rendered ahead of time into ``previews``, so moving the
+    cursor only reads a file and never reaches the network.
+    """
+    fzf = shutil.which("fzf")
+    if fzf is None:
+        return None
+    rows = []
+    for index, change in enumerate(found, 1):
+        rows.append(f"{change.name}\t{change.before} -> {change.after}\t{index}")
+    result = subprocess.run(
+        [
+            fzf,
+            "--multi",
+            "--delimiter=\t",
+            "--with-nth=1,2",
+            "--header=TAB to select, ENTER to accept, ESC to cancel",
+            "--prompt=accept > ",
+            f"--preview=cat {previews}/{{3}}.txt",
+            "--preview-window=right,60%,wrap",
+        ],
+        input="\n".join(rows) + "\n",
+        capture_output=True,
+        text=True,
+    )
+    # fzf: 0 accepted, 1 no match, 130 cancelled with ESC or Ctrl-C.
+    if result.returncode in (1, 130):
+        return []
+    if result.returncode != 0:
+        raise FlakeUpdateError(f"fzf exited with {result.returncode}")
+    return [line.split("\t", 1)[0] for line in result.stdout.splitlines()]
+
+
+def _choose(found: list[InputChange], requested: list[str], previews: Path) -> list[str]:
     names = {change.name for change in found}
     if requested:
         unknown = sorted(set(requested) - names)
         if unknown:
             raise FlakeUpdateError(f"not a candidate change: {', '.join(unknown)}")
         return sorted(set(requested))
-    if not sys.stdin.isatty():
-        raise FlakeUpdateError("non-interactive run needs INPUT names, or --dry-run")
-    answer = input("accept (numbers, comma-separated; 'all'; blank for none): ")
-    return [found[index - 1].name for index in parse_selection(answer, len(found))]
+    if sys.stdin.isatty():
+        picked = _pick_with_fzf(found, previews)
+        if picked is not None:
+            return sorted(picked)
+        answer = input("accept (numbers, comma-separated; 'all'; blank for none): ")
+        return [found[index - 1].name for index in parse_selection(answer, len(found))]
+    raise FlakeUpdateError("non-interactive run needs INPUT names, or --dry-run")
 
 
 def _nix(args: list[str], cwd: Path) -> None:
@@ -143,7 +250,12 @@ def run(requested: list[str], dry_run: bool, repo: Path) -> int:
     if dry_run:
         return 0
 
-    chosen = _choose(found, requested)
+    with tempfile.TemporaryDirectory(prefix="update-flake-preview-") as scratch:
+        previews = Path(scratch)
+        for index, change in enumerate(found, 1):
+            text = preview(change, commits_between(change))
+            (previews / f"{index}.txt").write_text(text, encoding="utf-8")
+        chosen = _choose(found, requested, previews)
     if not chosen:
         print("update-flake: nothing accepted; flake.lock unchanged")
         return 0

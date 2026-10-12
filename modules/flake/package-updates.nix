@@ -38,6 +38,7 @@ let
             pkgs.nix-update
             pkgs.nix
             pkgs.jujutsu
+            pkgs.git
           ];
           text = ''
             export PACKAGE_UPDATES_REGISTRY=${registry}
@@ -53,6 +54,9 @@ let
           runtimeInputs = [
             (pkgs.callPackage ../../pkgs/package-updates { })
             pkgs.nix
+            pkgs.fzf
+            pkgs.gh
+            pkgs.git
           ];
           text = ''
             exec update-flake "$@"

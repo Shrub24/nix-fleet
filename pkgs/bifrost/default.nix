@@ -20,6 +20,10 @@
   python3,
   nix-update,
   nixVersions,
+  git,
+  gnugrep,
+  gnused,
+  coreutils,
 }:
 
 let
@@ -153,6 +157,25 @@ in
 bifrost.overrideAttrs (old: {
   passthru = (old.passthru or { }) // {
     inherit mkPlugin ui;
+    # Cheap newest-release lookup for `update-packages --check`: prints the
+    # highest stable transports/v<X.Y.Z> tag on stdout, owned here beside the
+    # updater rather than inferred by the runner.
+    checkUpdate = writeShellApplication {
+      name = "bifrost-check-update";
+      runtimeInputs = [
+        git
+        gnugrep
+        gnused
+        coreutils
+      ];
+      text = ''
+        git ls-remote --tags --refs https://github.com/maximhq/bifrost.git \
+          | sed -n 's#.*refs/tags/transports/v##p' \
+          | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+          | sort -V \
+          | tail -n 1
+      '';
+    };
     updateScript = lib.getExe (writeShellApplication {
       name = "bifrost-update";
       runtimeInputs = [

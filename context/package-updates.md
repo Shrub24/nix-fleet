@@ -156,3 +156,22 @@ trade-off unnecessary for this fleet.
 **Rejected alternative:** `--no-write-lock-file` for the preview. The installed `nix flake update` rejects that flag; `--output-lock-file` is the supported preview path.
 
 **Consequence:** the command is local and manual. It does not replace renovate, which keeps `flake.lock` current on its own schedule.
+
+## Cheap release checks come from the package, not the runner
+
+**Id:** 7d2e9b41-5c8a-4f1e-b6d3-2a9f0c4e8b15
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `pkgs/package-updates/src/package_updates/check.py`, `pkgs/bifrost/default.nix`, `docs/contracts/package-updates.md`, 2026-10-12
+
+`update-packages --check` runs each package's own `passthru.checkUpdate` and compares its printed version with `version`. The package owns where releases live.
+
+**Reason:** a `fetchFromGitHub` source is a derivation and exposes no owner or repo, and monorepo tags such as `transports/v<version>` cannot be inferred from the version. Keeping the lookup beside the updater means the check and the updater cannot drift apart, and the runner stays ignorant of forges.
+
+**Rejected alternative:** runner-side inference from `src` attributes. It fails silently for the `fetchFromGitHub` case, and it duplicates the release metadata the updater already knows.
+
+**Rejected alternative:** a declared `releaseRepository` attribute on `passthru`. It duplicates data the lookup script must already contain, and nothing enforces agreement between the two.
+
+**Consequence:** a package without `checkUpdate` reports unknown rather than a guess. Each package adopting the check must maintain its lookup, and a lookup failure is reported as a reason, never as current.
+
