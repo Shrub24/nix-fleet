@@ -184,6 +184,13 @@ in
         message = "telemetry: exporter id(s) ${lib.concatStringsSep ", " conflictingIds} are claimed by more than one destination; a shared id would merge their delivery state, so the ids must be distinct.";
       }
     ];
+    # Pi's OTLP metrics are delta and the prometheusremotewrite exporter only
+    # translates cumulative streams. max_stale is set explicitly: a delta stream
+    # silent for longer than this is restarted, which suits short-lived Pi child
+    # processes whose counters restart per run.
+    services.otel-collector.processors.deltatocumulative = lib.mkDefault {
+      max_stale = "5m";
+    };
     services.otel-collector.processors.memory_limiter = lib.mkDefault {
       check_interval = "1s";
       limit_percentage = 75;

@@ -750,7 +750,11 @@ the only place that speaks in collector terms:
 - `processors` — extra processors, ordered memory_limiter → resource → batch →
   others. A custom processor is an escape hatch: an **asynchronous** one placed
   before export weakens the "accepted means queued" guarantee, so prefer the
-  queue-integrated defaults;
+  queue-integrated defaults. `deltatocumulative` (default `max_stale = "5m"`)
+  is a metrics-only default: it sits after identity enrichment in the local OTLP
+  metrics pipeline only, because the Prometheus remote-write exporter drops
+  delta points and Pi's OTLP emitter is delta by default. A delta stream silent
+  for longer than `max_stale` restarts from zero;
 - `metricsPort` — the loopback delivery-health port (default 9464);
 - `exporterExtra.<destination>` — raw exporter override escape hatch, recursively
   merged over the generated exporter (including its queue settings).

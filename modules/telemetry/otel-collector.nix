@@ -54,17 +54,23 @@ let
       routeReceiver = route: "otlp/route-${route}";
       identity = import ../../lib/telemetry-identity.nix { inherit lib; };
       generatedIdentity = identity.localResourceAttributes telemetry != { };
+      # deltatocumulative only accepts metrics and is placed per pipeline below,
+      # so it never enters the shared list used by traces and scrape pipelines.
+      metricsOnlyProcessors = [ "deltatocumulative" ];
       processors =
         lib.optionals (cfg.processors ? memory_limiter) [ "memory_limiter" ]
         ++ lib.optionals (cfg.resourceAttributes != { } || cfg.processors ? resource) [ "resource" ]
         ++ lib.optionals (cfg.processors ? batch) [ "batch" ]
         ++ builtins.filter (
           name:
-          !(builtins.elem name [
-            "memory_limiter"
-            "batch"
-            "resource"
-          ])
+          !(builtins.elem name (
+            [
+              "memory_limiter"
+              "batch"
+              "resource"
+            ]
+            ++ metricsOnlyProcessors
+          ))
         ) (builtins.attrNames cfg.processors);
       ingressProcessors =
         if cfg.resourceAttributes != { } then
@@ -103,12 +109,22 @@ let
           exporters = exporterIds telemetry.resolvedPipelines.metrics;
         };
       };
+      # Delta-to-cumulative conversion must follow identity enrichment so the
+      # stream identity it tracks is stable. Only local OTLP metrics carry it:
+      # the prometheusremotewrite exporter drops delta points, and Pi's OTLP
+      # emitter is delta by default.
+      localOtlpPipelineProcessors =
+        signal:
+        localOtlpProcessors
+        ++ lib.optionals (signal == "metrics" && cfg.processors ? deltatocumulative) [
+          "deltatocumulative"
+        ];
       otlpPipelines = builtins.listToAttrs (
         map (signal: {
           name = signal;
           value = {
             receivers = [ "otlp" ];
-            processors = localOtlpProcessors;
+            processors = localOtlpPipelineProcessors signal;
             exporters = exporterIds telemetry.resolvedPipelines.${signal};
           };
         }) admitted

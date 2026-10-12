@@ -83,6 +83,19 @@
         }
       ) { };
       inactiveCollector = inactive.services.opentelemetry-collector;
+      metricsBase = base // {
+        otlp.signals = [
+          "traces"
+          "metrics"
+        ];
+        destinations.local = base.destinations.local // {
+          signals = [
+            "traces"
+            "metrics"
+          ];
+        };
+      };
+      metricsCollector = (hostFor metricsBase { }).services.opentelemetry-collector;
     in
     {
       checks = {
@@ -101,6 +114,29 @@
                 "resource"
                 "resource/telemetry-identity"
               ];
+          }
+        ];
+        otel-collector-delta-placement = leaf "otel-collector-delta-placement" [
+          {
+            message = "local OTLP metrics no longer end with deltatocumulative after identity enrichment";
+            ok =
+              metricsCollector.settings.service.pipelines.metrics.processors == [
+                "memory_limiter"
+                "resource/telemetry-identity"
+                "deltatocumulative"
+              ];
+          }
+          {
+            message = "deltatocumulative reached the traces pipeline, which the processor does not accept";
+            ok =
+              metricsCollector.settings.service.pipelines.traces.processors == [
+                "memory_limiter"
+                "resource/telemetry-identity"
+              ];
+          }
+          {
+            message = "the deltatocumulative stream lifetime is no longer the explicit 5m max_stale";
+            ok = metricsCollector.settings.processors.deltatocumulative.max_stale == "5m";
           }
         ];
         otel-collector-unbound-secrets = leaf "otel-collector-unbound-secrets" [

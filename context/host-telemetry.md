@@ -42,3 +42,23 @@ The package and module adaptation are pinned to nixpkgs PR #507097 at `b859cd0bd
 **Rejected alternative:** use the native libpod build interchangeably with the PR's remote build. They have different engine-access mechanisms; the socket-client adaptation must be verified with the package it actually runs.
 
 **Revisit when:** the fleet's nixpkgs pin contains the merged Podman exporter package and module.
+
+## Pi metrics go through deltatocumulative, local OTLP metrics only
+
+**Id:** 3b8e1d52-9f0a-4c7e-a6b4-5d2c9e8f1a37
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `modules/telemetry/otel-collector.nix`, `lib/telemetry-otel-collector-common.nix`, `modules/telemetry/otel-collector-checks.nix`, 2026-10-12
+
+Pi's OTLP metrics are delta by default, and the `prometheusremotewrite` exporter translates only cumulative sums and histograms, so every Pi series was dropped at translation. The local OTLP metrics pipeline runs `deltatocumulative` after identity enrichment (`memory_limiter → resource/telemetry-identity → deltatocumulative`), and traces, ingress, route and scrape pipelines do not carry it.
+
+**Reason:** the processor is source-agnostic and a no-op for cumulative streams, so the fix belongs in the collector, not in Pi or the host environment. Placement after identity keeps the stream identity stable. Traces reject the processor, so it must stay metrics-only.
+
+**Window:** `max_stale = "5m"` is explicit. A delta stream silent past that window restarts from zero, which matches short-lived Pi child processes whose counters restart per run.
+
+**Rejected alternative:** `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative` on hosts or in pi-otel. It changes the producer for every consumer and would break the per-run counter model.
+
+**Rejected alternative:** an OTTL or Lua transform. Temporality is the only defect, so a transform adds a second mechanism for no gain.
+
+**Open:** ingress and named-route metrics pipelines can receive delta points from remote producers and would drop them the same way. They are not changed here; the fix would be the same placement there, decided with the gateway owner.
