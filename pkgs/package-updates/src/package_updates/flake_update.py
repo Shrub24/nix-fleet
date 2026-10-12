@@ -149,7 +149,7 @@ def commits_between(change: InputChange, runner=subprocess.run) -> list[str] | N
             "api",
             f"repos/{owner}/{repo}/compare/{change.old_rev}...{change.new_rev}",
             "--jq",
-            '.commits[] | (.sha[0:7] + " " + (.commit.message | split("\\n")[0]))',
+            '.commits[] | (.sha[0:7] + " " + (.commit.message | split("\\n")[0] | .[0:72]))',
         ],
         capture_output=True,
         text=True,
@@ -167,8 +167,11 @@ def preview(change: InputChange, commits: list[str] | None) -> str:
         f"  source   {change.source}",
         f"  from     {change.before}",
         f"  to       {change.after}  ({change.date})",
-        "",
     ]
+    if change.github and change.old_rev and change.new_rev:
+        owner, repo = change.github
+        lines.append(f"  compare  https://github.com/{owner}/{repo}/compare/{change.old_rev}...{change.new_rev}")
+    lines.append("")
     if commits is None:
         lines.append("  commits  unavailable (needs gh and a GitHub input)")
     elif not commits:

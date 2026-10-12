@@ -9,6 +9,7 @@ newer release. Only what the user accepts is applied, through the same
 from __future__ import annotations
 
 import argparse
+import re
 import shlex
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import unquote
 
 from . import flake_update
 from .check import NEWER, Finding, check
@@ -23,6 +25,12 @@ from .runner import UpdateError, evaluate, load_registry, select, update
 
 FLAKE = "flake"
 PACKAGE = "package"
+
+# Release notes are shown the way a dependency bot shows them: a short excerpt,
+# with the full release one link away.
+EXCERPT_LINES = 12
+EXCERPT_CHARS = 700
+_RELEASE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases/tag/(.+)$")
 
 
 @dataclass(frozen=True)
@@ -38,16 +46,56 @@ def flake_candidate(change: flake_update.InputChange) -> Candidate:
     return Candidate(FLAKE, change.name, f"{change.before} -> {change.after}", flake_update.preview(change, commits))
 
 
+def release_url(changelog: str | None, current: str | None, latest: str) -> str | None:
+    """Point a package's changelog at the new release.
+
+    A changelog embeds the version (``${version}``), so the current version in
+    the evaluated URL is swapped for the newest one.
+    """
+    if not changelog:
+        return None
+    return changelog.replace(current, latest) if current else changelog
+
+
+def excerpt(url: str | None, runner=subprocess.run) -> str | None:
+    """Return a shortened release body from a GitHub release URL, or None.
+
+    Only GitHub release URLs are read, through an authenticated ``gh``. Anything
+    else, or a failing lookup, shows the link alone.
+    """
+    match = _RELEASE.match(url or "")
+    if match is None or shutil.which("gh") is None:
+        return None
+    owner, repo, tag = match.group(1), match.group(2), unquote(match.group(3))
+    result = runner(
+        ["gh", "release", "view", tag, "--repo", f"{owner}/{repo}", "--json", "body", "--jq", ".body"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    lines = [line.rstrip() for line in result.stdout.splitlines() if line.strip()]
+    if not lines:
+        return None
+    text = "\n".join(lines[:EXCERPT_LINES])[:EXCERPT_CHARS].rstrip()
+    truncated = len(lines) > EXCERPT_LINES or len("\n".join(lines)) > EXCERPT_CHARS
+    return text + ("\n..." if truncated else "")
+
+
 def package_candidate(finding: Finding, system: str) -> Candidate:
     _, changelog = evaluate(finding.name, system)
+    url = release_url(changelog, finding.current, finding.latest)
     lines = [
         finding.name,
         "",
-        "  source   passthru.checkUpdate",
         f"  from     {finding.current}",
         f"  to       {finding.latest}",
-        f"  changelog {changelog}" if changelog else "  changelog unavailable",
     ]
+    if url:
+        lines.append(f"  release  {url}")
+    notes = excerpt(url)
+    if notes:
+        lines += ["", "  notes", *(f"    {line}" for line in notes.splitlines())]
     return Candidate(PACKAGE, finding.name, f"{finding.current} -> {finding.latest}", "\n".join(lines) + "\n")
 
 
@@ -79,6 +127,8 @@ def pick(candidates: list[Candidate], previews: Path) -> list[Candidate]:
             "--with-nth=1,2,3",
             "--header=TAB marks, ENTER applies, ESC cancels",
             "--prompt=update > ",
+            "--height=~40%",
+            "--min-height=12",
             f"--preview=cat {shlex.quote(str(previews))}/{{4}}.txt",
             "--preview-window=right,60%,wrap",
         ],
