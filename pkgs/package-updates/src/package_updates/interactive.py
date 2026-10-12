@@ -127,7 +127,7 @@ def pick(candidates: list[Candidate], previews: Path) -> list[Candidate]:
             "--with-nth=1,2,3",
             "--header=TAB marks, ENTER applies, ESC cancels",
             "--prompt=update > ",
-            "--height=~40%",
+            "--height=~100%",
             "--min-height=12",
             f"--preview=cat {shlex.quote(str(previews))}/{{4}}.txt",
             "--preview-window=right,60%,wrap",
