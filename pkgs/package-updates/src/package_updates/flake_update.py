@@ -1,17 +1,14 @@
-"""Flake input updates.
+"""Flake input candidates and application for the interactive ``update``.
 
-``update-flake`` is the plain command: it updates the named top-level inputs,
-or all of them when none are named, and reports what moved. The interactive
-``update`` command reads the same candidates through :func:`candidate` before
-anything is applied, so the preview never touches ``flake.lock``.
+``candidate`` resolves every input into a scratch lock beside ``flake.lock``,
+so the picker can preview changes without touching it. ``apply`` updates only
+the accepted inputs by name with ``nix flake update``.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import subprocess
-import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -180,28 +177,3 @@ def preview(change: InputChange, commits: list[str] | None) -> str:
         lines.append(f"  commits  latest {len(commits)} (oldest first)")
         lines.extend(f"    {line}" for line in commits)
     return "\n".join(lines) + "\n"
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="update-flake",
-        description="Update flake inputs (all of them when none are named) and report what moved.",
-    )
-    parser.add_argument("inputs", nargs="*", metavar="INPUT", help="top-level inputs to update")
-    args = parser.parse_args(argv)
-    try:
-        moved = apply(sorted(set(args.inputs)), Path.cwd())
-    except FlakeUpdateError as error:
-        print(f"update-flake: {error}", file=sys.stderr)
-        return 1
-    if not moved:
-        print("update-flake: nothing moved; flake.lock unchanged")
-        return 0
-    print("update-flake: updated")
-    for change in moved:
-        print(f"  {change.name:<24} {change.before} -> {change.after}  ({change.date})")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

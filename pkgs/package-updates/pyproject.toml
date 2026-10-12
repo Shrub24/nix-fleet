@@ -10,7 +10,6 @@ requires-python = ">=3.11"
 
 [project.scripts]
 update-packages = "package_updates.cli:main"
-update-flake = "package_updates.flake_update:main"
 update = "package_updates.interactive:main"
 
 [tool.setuptools]

@@ -56,12 +56,6 @@ let
           pkgs.git
         ] (registryEnv + ''exec update-packages "$@"'');
 
-        # Plain flake-input update: all inputs, or the named ones.
-        updateFlake = mkApp "update-flake" [
-          runnerPackage
-          pkgs.nix
-        ] ''exec update-flake "$@"'';
-
         # The one interactive command: a picker over flake inputs and package
         # updates, applying only what is accepted.
         interactiveUpdate = mkApp "update" [
@@ -89,10 +83,6 @@ let
           update-packages = {
             type = "app";
             program = lib.getExe updatePackages;
-          };
-          update-flake = {
-            type = "app";
-            program = lib.getExe updateFlake;
           };
           update = {
             type = "app";

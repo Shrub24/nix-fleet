@@ -147,7 +147,7 @@ trade-off unnecessary for this fleet.
 **Evidence:** confirmed
 **Source:** `pkgs/package-updates/src/package_updates/interactive.py`, `pkgs/package-updates/src/package_updates/flake_update.py`, `modules/flake/package-updates.nix`, 2026-10-12
 
-Plain `update-flake` and `update-packages` stay scriptable and never prompt. The only interactive command is `update`, a single fzf list of flake inputs and package updates, which applies only what is accepted.
+Plain `update-packages` stays scriptable and never prompts. There is no `update-flake` wrapper: `nix flake update [INPUT…]` already updates named inputs and prints their revisions, so a wrapper added only a second name for it. The only interactive command is `update`, a single fzf list of flake inputs and package updates, which applies only what is accepted.
 
 **Reason:** a picker on each command multiplies the surfaces to learn and test. One interactive command over the two candidate sources keeps the picker in one place, and the plain commands remain the CI-safe, scriptable path.
 

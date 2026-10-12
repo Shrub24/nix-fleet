@@ -24,11 +24,10 @@ regression checks that pin its behavior are contributors of nix-fleet itself,
 not part of the published module, so a consumer never inherits a fixture pinned
 to the producer's evaluated packages.
 
-Three commands run from the checkout:
+Two commands run from the checkout:
 
 ```console
 nix run .#update               # interactive: pick flake inputs and package updates
-nix run .#update-flake         # plain: every top-level input, or the named ones
 nix run .#update-packages      # plain: every registered package, or the named ones
 ```
 
@@ -38,12 +37,12 @@ accepted. Flake candidates come from `nix flake update --output-lock-file`, whic
 writes a candidate lock beside `flake.lock`, so nothing changes until a choice is
 made. Package candidates are the registered packages whose `checkUpdate` reports
 a newer release. Without fzf or a terminal, `update` refuses and names the plain
-commands. Neither plain command prompts, and none of them runs in CI.
+commands. The plain command does not prompt, and no command runs in CI.
 
-`update-flake` applies named inputs with `nix flake update <input>`, so only the
-chosen inputs move. Inputs that change only through `follows` are reported after
-the apply rather than offered as choices. Renovate still keeps `flake.lock`
-current on its own schedule.
+Flake inputs need no wrapper command: `nix flake update [INPUT…]` already updates
+the named inputs and prints each old and new revision. The picker applies its
+accepted inputs that way too. Renovate still keeps `flake.lock` current on its own
+schedule.
 
 ### Cheap release check: `--check`
 
