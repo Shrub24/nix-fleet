@@ -70,3 +70,23 @@ no producer.
 consumer-local; docs-mcp may call bifrost's cross-host embeddings endpoint.
 No credentials, Tailscale enablement probes, or NixOS/system-manager
 realization are part of this contract.
+
+## Host-local services
+
+`fleet.services` is the cross-host topology: which host a shared service runs
+on and the port it listens on. A service that runs on every host it is needed
+on (bifrost, postgres) does not need a registry entry for local use. Its
+aspect publishes `services.<name>.localEndpoint` from its own listener, built by
+`inputs.nix-fleet.lib.localEndpoint.mk { port; scheme ? "http"; basePath ? "/"; }`:
+
+```nix
+services.bifrost.localEndpoint = { host = "127.0.0.1"; port = 8080; scheme = "http"; basePath = "/"; url = "http://127.0.0.1:8080"; };
+```
+
+The option is defined only where the aspect is imported, so a co-located consumer
+reads it directly and a host without the service has no such option to read. The
+record always dials loopback; the publisher asserts that its listener binds
+`127.0.0.1` or `0.0.0.0`. Selecting between a local record and a remote
+`resolveEndpoint` route is the consumer's explicit choice, not a fleet fallback.
+The shape is generic: postgres's per-host cluster port can publish the same
+record from its own instance declaration.

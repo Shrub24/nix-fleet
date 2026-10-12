@@ -9,6 +9,7 @@
     }:
     let
       cfg = config.services.bifrost;
+      localEndpoint = import ../../lib/local-endpoint.nix lib;
       json = pkgs.formats.json { };
       plugins = lib.sort (a: b: a.order < b.order) (
         lib.mapAttrsToList (
@@ -55,6 +56,11 @@
         port = lib.mkOption {
           type = lib.types.port;
           default = 8080;
+        };
+        localEndpoint = lib.mkOption {
+          inherit (localEndpoint) type;
+          readOnly = true;
+          description = "Loopback endpoint a co-located consumer dials, published from this host's own listener. Defined only where this aspect is imported.";
         };
         dataDir = lib.mkOption {
           type = lib.types.str;
@@ -166,6 +172,13 @@
             message = "bifrost: source_of_truth must be config.json; startup configuration is Nix-owned.";
           }
           {
+            assertion = builtins.elem cfg.host [
+              "127.0.0.1"
+              "0.0.0.0"
+            ];
+            message = "bifrost: host '${cfg.host}' must be 127.0.0.1 or 0.0.0.0 so the published localEndpoint (port ${toString cfg.port}) is reachable on loopback.";
+          }
+          {
             assertion =
               lib.hasPrefix "/" cfg.dataDir
               && !(builtins.elem ".." (lib.splitString "/" cfg.dataDir))
@@ -177,6 +190,7 @@
         services.bifrost = {
           inherit renderedConfig;
           renderedConfigFile = configFile;
+          localEndpoint = localEndpoint.mk { inherit (cfg) port; };
         };
         services.notify.events.bifrost.failure = { };
         users.groups.bifrost = { };

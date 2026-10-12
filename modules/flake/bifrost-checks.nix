@@ -1,6 +1,7 @@
 { config, lib, ... }:
 let
   aspect = config.flake.modules.nixos.bifrost;
+  localEndpoint = import ../../lib/local-endpoint.nix lib;
 in
 {
   perSystem =
@@ -84,16 +85,30 @@ in
         && builtins.elem "d ${cfg.dataDir} 0700 bifrost bifrost - -" evaluated.config.systemd.tmpfiles.rules
         && evaluated.config.services.notify.events.bifrost.failure != null
         && cfg.host == "127.0.0.1"
+        && cfg.localEndpoint.url == "http://127.0.0.1:${toString cfg.port}"
+        && cfg.localEndpoint.port == cfg.port
         && cfg.renderedConfig.config_store.enabled
         && cfg.renderedConfig.source_of_truth == "config.json"
         &&
           (lib.findFirst (plugin: plugin.name == "voyage-normalizer") null cfg.renderedConfig.plugins).path
           == "${config.packages.bifrost-voyage-plugin}/lib/bifrost/voyage.so";
       mutation =
-        builtins.elem "bifrost: source_of_truth must be config.json; startup configuration is Nix-owned."
+        builtins.elem
+          "bifrost: host '10.0.0.5' must be 127.0.0.1 or 0.0.0.0 so the published localEndpoint (port 8080) is reachable on loopback."
           (failures {
-            services.bifrost.settings.source_of_truth = "split";
+            services.bifrost.host = "10.0.0.5";
           })
+        && !(builtins.tryEval (
+          builtins.deepSeq (localEndpoint.mk {
+            port = 8080;
+            basePath = "mcp";
+          }) true
+        )).success
+        &&
+          builtins.elem "bifrost: source_of_truth must be config.json; startup configuration is Nix-owned."
+            (failures {
+              services.bifrost.settings.source_of_truth = "split";
+            })
         &&
           builtins.elem
             "bifrost: settings.plugins is reserved; register plugins through services.bifrost.plugins."

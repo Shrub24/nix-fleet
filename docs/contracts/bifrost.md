@@ -20,6 +20,13 @@ providers, credentials, exposure, backups and telemetry policy.
 }
 ```
 
+`services.bifrost.localEndpoint` is the loopback endpoint this host's listener
+serves, `{ host = "127.0.0.1"; port; scheme; basePath; url; }`, built from `port`
+by `lib.localEndpoint.mk`. Co-located consumers read `.url` from it. It is defined
+only where the aspect is imported, so a consumer that also runs on hosts without
+bifrost checks for it with `lib.hasAttrByPath`. `host` must be `127.0.0.1` or `0.0.0.0`,
+an assertion refuses any other listener address.
+
 Remove any `plugins` member from the imported JSON: `plugins.*` is its sole owner.
 Move built-in registrations there too (omit `path` for a built-in). Each entry has
 `enabled` (default `true`), `placement` (default `post_builtin`), `order` (default
