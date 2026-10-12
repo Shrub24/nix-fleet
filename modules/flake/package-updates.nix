@@ -47,6 +47,17 @@ let
             exec update-packages "$@"
           '';
         };
+
+        flakeUpdate = pkgs.writeShellApplication {
+          name = "update-flake";
+          runtimeInputs = [
+            (pkgs.callPackage ../../pkgs/package-updates { })
+            pkgs.nix
+          ];
+          text = ''
+            exec update-flake "$@"
+          '';
+        };
       in
       {
         options.packageUpdates.packages = lib.mkOption {
@@ -59,9 +70,15 @@ let
           '';
         };
 
-        config.apps.update-packages = {
-          type = "app";
-          program = lib.getExe app;
+        config.apps = {
+          update-packages = {
+            type = "app";
+            program = lib.getExe app;
+          };
+          update-flake = {
+            type = "app";
+            program = lib.getExe flakeUpdate;
+          };
         };
       };
   };

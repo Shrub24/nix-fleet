@@ -31,6 +31,22 @@ nix run .#update-packages            # every registered package
 nix run .#update-packages -- alpha   # a registered subset
 ```
 
+### Flake inputs: `update-flake`
+
+```console
+nix run .#update-flake                 # preview, then pick inputs to accept
+nix run .#update-flake -- --dry-run    # list candidate changes only
+nix run .#update-flake -- nixpkgs      # accept named inputs without prompting
+```
+
+The preview comes from `nix flake update --output-lock-file`, which writes a
+candidate lock beside the checkout's `flake.lock`, so the real lock is untouched
+until a choice is made. Each candidate lists its old and new revision and date.
+Accepted inputs are applied by name with `nix flake update <input>`, so only the
+chosen inputs move. Inputs that change only through `follows` are reported after
+the apply, not offered as choices. The command never runs in CI and does not
+replace renovate, which keeps `flake.lock` current on its own schedule.
+
 ## Selection and refusal
 
 `perSystem.packageUpdates.packages` is the typed registry of owned output

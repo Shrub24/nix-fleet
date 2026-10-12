@@ -138,3 +138,21 @@ reconstructing the caller's state.
 dependency but cannot make multi-file promotion crash-atomic; they also require
 reimplementing workspace isolation and safe recovery. Bundling jj makes that
 trade-off unnecessary for this fleet.
+
+## Flake inputs get a candidate-lock preview, not a workspace
+
+**Id:** 0c4f0a7e-6b1d-4f5e-9d2a-3e7b8c1f2a90
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `pkgs/package-updates/src/package_updates/flake_update.py`, `docs/contracts/package-updates.md`, 2026-10-12
+
+`update-flake` previews with `nix flake update --output-lock-file <tmp>` and applies only the accepted inputs by name with `nix flake update <input>`. The real `flake.lock` is untouched until a choice is made.
+
+**Reason:** `flake.lock` is a single file, so a copy is the whole isolation boundary; a jj workspace would add a moving part without adding safety. Naming the inputs at apply time keeps unselected inputs unmoved, and transitive or `follows` movement is reported after the apply.
+
+**Rejected alternative:** copy the full candidate lock over the real one. That silently accepts every input, including ones the user did not choose.
+
+**Rejected alternative:** `--no-write-lock-file` for the preview. The installed `nix flake update` rejects that flag; `--output-lock-file` is the supported preview path.
+
+**Consequence:** the command is local and manual. It does not replace renovate, which keeps `flake.lock` current on its own schedule.
