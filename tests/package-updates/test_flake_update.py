@@ -1,12 +1,14 @@
-"""Offline tests for the flake-input picker: change detection and selection.
+"""Offline tests for flake-input change detection and the interactive mapping.
 
 Synthetic lock dictionaries stand in for flake.lock, so no test resolves an
-upstream input.
+upstream input. The picker is exercised only through its pure row and
+selection mapping; fzf itself is not driven here.
 """
 
 import unittest
 
-from package_updates.flake_update import FlakeUpdateError, changes, parse_selection
+from package_updates.flake_update import changes
+from package_updates.interactive import FLAKE, PACKAGE, Candidate, picked, rows
 
 
 def lock(**inputs):
@@ -48,17 +50,24 @@ class ChangeDetectionTest(unittest.TestCase):
         self.assertEqual([change.name for change in changes(old, new)], ["nixpkgs"])
 
 
-class SelectionTest(unittest.TestCase):
-    def test_numbers_all_and_blank_map_to_indexes(self):
-        self.assertEqual(parse_selection("3, 1", 4), [1, 3])
-        self.assertEqual(parse_selection("all", 2), [1, 2])
-        self.assertEqual(parse_selection("", 2), [])
-        self.assertEqual(parse_selection("none", 2), [])
+class PickerMappingTest(unittest.TestCase):
+    def candidates(self):
+        return [
+            Candidate(FLAKE, "nixpkgs", "a -> b", "flake preview\n"),
+            Candidate(PACKAGE, "bifrost", "2.2.6 -> 2.2.7", "package preview\n"),
+        ]
 
-    def test_out_of_range_or_non_numeric_entries_are_refused_by_name(self):
-        for answer in ("0", "5", "nixpkgs"):
-            with self.subTest(answer=answer), self.assertRaisesRegex(FlakeUpdateError, "not a listed number"):
-                parse_selection(answer, 4)
+    def test_each_row_carries_its_kind_name_summary_and_preview_index(self):
+        self.assertEqual(
+            rows(self.candidates()),
+            "flake\tnixpkgs\ta -> b\t1\npackage\tbifrost\t2.2.6 -> 2.2.7\t2\n",
+        )
+
+    def test_picker_output_maps_back_to_the_chosen_candidates_in_any_order(self):
+        chosen = picked(["package\tbifrost\t2.2.6 -> 2.2.7\t2", "flake\tnixpkgs\ta -> b\t1"], self.candidates())
+
+        self.assertEqual([candidate.name for candidate in chosen], ["bifrost", "nixpkgs"])
+        self.assertEqual({candidate.kind for candidate in chosen}, {FLAKE, PACKAGE})
 
 
 if __name__ == "__main__":

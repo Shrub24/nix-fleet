@@ -24,28 +24,26 @@ regression checks that pin its behavior are contributors of nix-fleet itself,
 not part of the published module, so a consumer never inherits a fixture pinned
 to the producer's evaluated packages.
 
-Run the batch from the checkout:
+Three commands run from the checkout:
 
 ```console
-nix run .#update-packages            # every registered package
-nix run .#update-packages -- alpha   # a registered subset
+nix run .#update               # interactive: pick flake inputs and package updates
+nix run .#update-flake         # plain: every top-level input, or the named ones
+nix run .#update-packages      # plain: every registered package, or the named ones
 ```
 
-### Flake inputs: `update-flake`
+`update` is the only interactive command. It shows one fzf list of flake inputs
+and package updates, with a preview of each candidate, and applies only what is
+accepted. Flake candidates come from `nix flake update --output-lock-file`, which
+writes a candidate lock beside `flake.lock`, so nothing changes until a choice is
+made. Package candidates are the registered packages whose `checkUpdate` reports
+a newer release. Without fzf or a terminal, `update` refuses and names the plain
+commands. Neither plain command prompts, and none of them runs in CI.
 
-```console
-nix run .#update-flake                 # preview, then pick inputs to accept
-nix run .#update-flake -- --dry-run    # list candidate changes only
-nix run .#update-flake -- nixpkgs      # accept named inputs without prompting
-```
-
-The preview comes from `nix flake update --output-lock-file`, which writes a
-candidate lock beside the checkout's `flake.lock`, so the real lock is untouched
-until a choice is made. Each candidate lists its old and new revision and date.
-Accepted inputs are applied by name with `nix flake update <input>`, so only the
+`update-flake` applies named inputs with `nix flake update <input>`, so only the
 chosen inputs move. Inputs that change only through `follows` are reported after
-the apply, not offered as choices. The command never runs in CI and does not
-replace renovate, which keeps `flake.lock` current on its own schedule.
+the apply rather than offered as choices. Renovate still keeps `flake.lock`
+current on its own schedule.
 
 ### Cheap release check: `--check`
 

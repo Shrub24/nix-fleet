@@ -31,37 +31,48 @@ let
           }
         );
 
-        app = pkgs.writeShellApplication {
-          name = "update-packages";
-          runtimeInputs = [
-            (pkgs.callPackage ../../pkgs/package-updates { })
-            pkgs.nix-update
-            pkgs.nix
-            pkgs.jujutsu
-            pkgs.git
-          ];
-          text = ''
-            export PACKAGE_UPDATES_REGISTRY=${registry}
-            # nix-update's flake --use-update-script path imports <nixpkgs>;
-            # pin it to the evaluated nixpkgs rather than the ambient channel.
-            export NIX_PATH="nixpkgs=${pkgs.path}''${NIX_PATH:+:$NIX_PATH}"
-            exec update-packages "$@"
-          '';
-        };
+        runnerPackage = pkgs.callPackage ../../pkgs/package-updates { };
 
-        flakeUpdate = pkgs.writeShellApplication {
-          name = "update-flake";
-          runtimeInputs = [
-            (pkgs.callPackage ../../pkgs/package-updates { })
-            pkgs.nix
-            pkgs.fzf
-            pkgs.gh
-            pkgs.git
-          ];
-          text = ''
-            exec update-flake "$@"
-          '';
-        };
+        # Registry-bound commands export the registry and pin nixpkgs for
+        # nix-update's flake --use-update-script path, rather than the ambient
+        # channel.
+        registryEnv = ''
+          export PACKAGE_UPDATES_REGISTRY=${registry}
+          export NIX_PATH="nixpkgs=${pkgs.path}''${NIX_PATH:+:$NIX_PATH}"
+        '';
+
+        mkApp =
+          name: runtimeInputs: text:
+          pkgs.writeShellApplication {
+            inherit name runtimeInputs text;
+          };
+
+        # Batch update of registered packages; the plain, scriptable command.
+        updatePackages = mkApp "update-packages" [
+          runnerPackage
+          pkgs.nix
+          pkgs.nix-update
+          pkgs.jujutsu
+          pkgs.git
+        ] (registryEnv + ''exec update-packages "$@"'');
+
+        # Plain flake-input update: all inputs, or the named ones.
+        updateFlake = mkApp "update-flake" [
+          runnerPackage
+          pkgs.nix
+        ] ''exec update-flake "$@"'';
+
+        # The one interactive command: a picker over flake inputs and package
+        # updates, applying only what is accepted.
+        interactiveUpdate = mkApp "update" [
+          runnerPackage
+          pkgs.nix
+          pkgs.nix-update
+          pkgs.jujutsu
+          pkgs.git
+          pkgs.fzf
+          pkgs.gh
+        ] (registryEnv + ''exec update "$@"'');
       in
       {
         options.packageUpdates.packages = lib.mkOption {
@@ -77,11 +88,15 @@ let
         config.apps = {
           update-packages = {
             type = "app";
-            program = lib.getExe app;
+            program = lib.getExe updatePackages;
           };
           update-flake = {
             type = "app";
-            program = lib.getExe flakeUpdate;
+            program = lib.getExe updateFlake;
+          };
+          update = {
+            type = "app";
+            program = lib.getExe interactiveUpdate;
           };
         };
       };

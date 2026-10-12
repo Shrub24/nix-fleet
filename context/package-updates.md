@@ -139,23 +139,25 @@ dependency but cannot make multi-file promotion crash-atomic; they also require
 reimplementing workspace isolation and safe recovery. Bundling jj makes that
 trade-off unnecessary for this fleet.
 
-## Flake inputs get a candidate-lock preview, not a workspace
+## One interactive `update` over plain commands
 
 **Id:** 0c4f0a7e-6b1d-4f5e-9d2a-3e7b8c1f2a90
 **Type:** decision
 **Status:** active
 **Evidence:** confirmed
-**Source:** `pkgs/package-updates/src/package_updates/flake_update.py`, `docs/contracts/package-updates.md`, 2026-10-12
+**Source:** `pkgs/package-updates/src/package_updates/interactive.py`, `pkgs/package-updates/src/package_updates/flake_update.py`, `modules/flake/package-updates.nix`, 2026-10-12
 
-`update-flake` previews with `nix flake update --output-lock-file <tmp>` and applies only the accepted inputs by name with `nix flake update <input>`. The real `flake.lock` is untouched until a choice is made.
+Plain `update-flake` and `update-packages` stay scriptable and never prompt. The only interactive command is `update`, a single fzf list of flake inputs and package updates, which applies only what is accepted.
 
-**Reason:** `flake.lock` is a single file, so a copy is the whole isolation boundary; a jj workspace would add a moving part without adding safety. Naming the inputs at apply time keeps unselected inputs unmoved, and transitive or `follows` movement is reported after the apply.
+**Reason:** a picker on each command multiplies the surfaces to learn and test. One interactive command over the two candidate sources keeps the picker in one place, and the plain commands remain the CI-safe, scriptable path.
 
-**Rejected alternative:** copy the full candidate lock over the real one. That silently accepts every input, including ones the user did not choose.
+**Rejected alternative:** a picker in `update-flake` alone. It leaves package updates without the same review step.
 
-**Rejected alternative:** `--no-write-lock-file` for the preview. The installed `nix flake update` rejects that flag; `--output-lock-file` is the supported preview path.
+**Rejected alternative:** a Python TUI. fzf is already in nixpkgs, multi-select with a shell preview is enough, and the packaged runner stays stdlib-only.
 
-**Consequence:** the command is local and manual. It does not replace renovate, which keeps `flake.lock` current on its own schedule.
+**Mechanism:** flake candidates come from `nix flake update --output-lock-file` into a scratch lock, so `flake.lock` is untouched until a choice is made; accepted inputs are applied by name. Package candidates come from `passthru.checkUpdate`.
+
+**Rejected alternative:** a jj workspace for the flake preview. `flake.lock` is one file, so a copy is the whole isolation boundary.
 
 ## Cheap release checks come from the package, not the runner
 
@@ -174,4 +176,3 @@ trade-off unnecessary for this fleet.
 **Rejected alternative:** a declared `releaseRepository` attribute on `passthru`. It duplicates data the lookup script must already contain, and nothing enforces agreement between the two.
 
 **Consequence:** a package without `checkUpdate` reports unknown rather than a guess. Each package adopting the check must maintain its lookup, and a lookup failure is reported as a reason, never as current.
-
