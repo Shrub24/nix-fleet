@@ -28,13 +28,13 @@
 
 let
   # transports/version at the pinned revision.
-  version = "2.2.6";
+  version = "2.3.0";
 
   src = fetchFromGitHub {
     owner = "maximhq";
     repo = "bifrost";
-    rev = "8b4fce4f1709d66f9208d02f50552da522535f9e"; # tag transports/v2.2.6
-    hash = "sha256-vgdsNg48Cd4qoOwFyQ9ahnC6darTyAGV4/LkQSiBXzk=";
+    rev = "9237ec06672406e437b3cb33fc793ffd0403b3ae"; # tag transports/v2.3.0
+    hash = "sha256-NHiFS2kmfrqdZK4+eBBeWue2KrvqIVkwM0fIXEkpPis=";
   };
 
   # The two subtrees the binary is made of, split out of the fetched monorepo
@@ -65,7 +65,7 @@ let
     src = transportsSrc;
 
     # Locked module cache for the pinned go.mod/go.sum.
-    vendorHash = "sha256-y9q3wdnWEfKekZWVrmbL+bvomWLNAmydx2ld08C2D5Y=";
+    vendorHash = "sha256-YEVv55qGQSfWXyZE5daQ0tVAW/PKzEvCrlOhoCYY5b8=";
 
     # go-sqlite3 compiles the SQLite amalgamation it carries, so CGO is
     # required and no SQLite build input is needed.
