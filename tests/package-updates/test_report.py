@@ -40,6 +40,21 @@ fi
 NIX = """#!{bash}
 set -euo pipefail
 printf '%s\\n' "$*" >> "$FIXTURE_NIX_CALLS"
+if [ "${{1:-}}" = flake ] && [ "${{2:-}}" = update ]; then
+  # Moves each named input by rewriting its fixture revision in flake.lock.
+  if [ -n "${{FIXTURE_LOCK_FAIL:-}}" ]; then
+    echo "fixture: flake update refused" >&2
+    exit 3
+  fi
+  shift 2
+  for name in "$@"; do
+    pattern="old-$name\\\""
+    replacement="new-$name\\\""
+    content=$(<flake.lock)
+    printf '%s\\n' "${{content//$pattern/$replacement}}" > flake.lock
+  done
+  exit 0
+fi
 if [ "${{1:-}}" != eval ] || [ -n "${{FIXTURE_NIX_FAIL:-}}" ]; then
   echo "fixture: nix $*" >&2
   exit 1
@@ -143,7 +158,20 @@ class ReportTestCase(unittest.TestCase):
         for tool in ("nix-update", "nix"):
             os.symlink(self.bin / tool, fixture_path / tool)
         shutil.copy2(Path(jj).resolve(), fixture_path / "jj")
+        # jj shells out to git, so the fixture PATH cannot omit it; pin the real
+        # binary by absolute path instead, leaving the fake git off the PATH.
+        git = shutil.which("git", path=path)
+        if git is None:
+            self.skipTest("transaction tests require git for jj")
+        jj_config = self.root / "jj-config.toml"
+        jj_config.write_text(f'[git]\nexecutable-path = "{git}"\n')
+        os.environ["JJ_CONFIG"] = str(jj_config)
         os.environ["PATH"] = str(fixture_path)
+        # The runner finds its repository from the working directory, so the
+        # test must stand inside its own checkout, never the surrounding repo.
+        previous = Path.cwd()
+        os.chdir(self.checkout)
+        self.addCleanup(os.chdir, previous)
 
     def restore_environ(self):
         os.environ.clear()
@@ -271,7 +299,10 @@ class JsonReportTest(ReportTestCase):
 
         self.assertEqual(code, 0)
         document = self.document()
-        self.assertEqual(set(document), {"system", "packages"})
+        self.assertEqual(
+            set(document), {"outcome", "system", "inputs", "inputFailure", "packages"}
+        )
+        self.assertEqual(document["outcome"], "complete")
         self.assertEqual(document["system"], "aarch64-linux")
         self.assertEqual(
             document["packages"],
@@ -316,12 +347,14 @@ class JsonReportTest(ReportTestCase):
             self.assertIn("eval", call)
             self.assertIn("--no-write-lock-file", call)
             self.assertIn("--json", call)
+        # Every "before" read precedes the lock refresh, then each package's
+        # "after" read follows its updater, so the order is per phase.
         self.assertEqual(
             [call.rsplit(" ", 1)[-1] for call in calls],
             [
                 ".#packages.x86_64-linux.bifrost",
-                ".#packages.x86_64-linux.bifrost",
                 ".#packages.x86_64-linux.notify",
+                ".#packages.x86_64-linux.bifrost",
                 ".#packages.x86_64-linux.notify",
             ],
         )
@@ -397,7 +430,7 @@ class MarkdownReportTest(ReportTestCase):
 
 
 class FailureTest(ReportTestCase):
-    def test_a_failure_stops_the_batch_and_still_writes_both_reports(self):
+    def test_a_failure_is_reported_and_the_batch_continues(self):
         self.registry(["alpha", "beta", "gamma"])
         self.jj_checkout()
         (self.checkout / "flake.nix").write_text("{}\n")
@@ -410,7 +443,9 @@ class FailureTest(ReportTestCase):
             ["--json", str(self.json_path), "--markdown", str(self.markdown_path)]
         )
 
-        self.assertEqual(code, 7)
+        # 1: proposable, with the failure carried in both reports.
+        self.assertEqual(code, 1)
+        self.assertEqual(self.document()["outcome"], "partial")
         self.assertIn("✗ Failed 'beta': update failed (exit 7)", out)
         self.assertIn("gamma", out)
         self.assertEqual(self.updated_packages(), ["alpha", "beta", "gamma"])
@@ -475,9 +510,78 @@ class DegradedToolsTest(ReportTestCase):
         with contextlib.redirect_stderr(stderr):
             code, _ = self.invoke(["--json", str(self.json_path)])
 
-        self.assertEqual(code, 1)
+        # 2: nothing ran, so nothing is proposable.
+        self.assertEqual(code, 2)
         self.assertIn("nix-update not found", stderr.getvalue())
         self.assertFalse(self.json_path.exists())
+
+
+class ProducerRunTest(ReportTestCase):
+    """A run that refreshes flake inputs before its packages."""
+
+    LOCK = {
+        "root": "root",
+        "version": 7,
+        "nodes": {
+            "root": {"inputs": {"niks3": "niks3"}},
+            "niks3": {
+                "locked": {
+                    "type": "github",
+                    "owner": "fixture",
+                    "repo": "niks3",
+                    "rev": "old-niks3",
+                    "lastModified": 0,
+                }
+            },
+        },
+    }
+
+    def producer_checkout(self, packages):
+        self.registry(packages)
+        self.jj_checkout()
+        (self.checkout / "flake.nix").write_text("{}\n")
+        (self.checkout / "flake.lock").write_text(json.dumps(self.LOCK))
+
+    def test_an_input_and_a_package_move_in_one_run(self):
+        self.producer_checkout(["notify"])
+        self.current("notify", "1.0.0")
+        self.released("notify", "1.0.1")
+
+        code, out = self.invoke(["--refresh-inputs", "--json", str(self.json_path)])
+
+        self.assertEqual(code, 0)
+        self.assertIn("• Updated input 'niks3': old-niks3 → new-niks3", out)
+        document = self.document()
+        self.assertEqual(
+            document["inputs"][0]["version"], {"before": "old-niks3", "after": "new-niks3"}
+        )
+        self.assertIsNone(document["inputFailure"])
+        self.assertEqual(document["packages"][0]["status"], "updated")
+
+    def test_a_lock_only_run_reports_the_input_and_no_current_pins(self):
+        self.producer_checkout(["notify"])
+        self.current("notify", "1.0.0")
+
+        code, _ = self.invoke(["--refresh-inputs", "--markdown", str(self.markdown_path)])
+
+        self.assertEqual(code, 0)
+        body = self.body()
+        self.assertIn("| `niks3` | old-niks3 | new-niks3 |", body)
+        self.assertNotIn("every pin is current", body)
+
+    def test_a_refresh_failure_still_updates_packages_and_exits_nonzero(self):
+        self.producer_checkout(["notify"])
+        self.current("notify", "1.0.0")
+        self.released("notify", "1.0.1")
+        os.environ["FIXTURE_LOCK_FAIL"] = "1"
+
+        code, _ = self.invoke(["--refresh-inputs", "--json", str(self.json_path)])
+
+        self.assertEqual(code, 1)
+        document = self.document()
+        self.assertIn("nix flake update niks3 failed", document["inputFailure"])
+        self.assertEqual(document["inputs"], [])
+        self.assertEqual(document["packages"][0]["status"], "updated")
 
 
 class ClassificationTest(unittest.TestCase):

@@ -8,7 +8,9 @@ hosts use. No builder coordinates live in workflow files or repo variables.
 On every push and pull request, `ci.yml` checks formatting and runs
 `nix flake check --no-build --no-write-lock-file --all-systems`. This evaluates
 the declared checks for both supported systems without building their outputs;
-the formatter check is built separately. Platform-independent policy leaves
+the formatter check is built separately. Closure coverage for the fleet's own packages
+is the `checks.packages` aggregate: its entries are `config.packages` verbatim, so a
+build of the checks realises every published package. Platform-independent policy leaves
 are registered once under `checks.x86_64-linux`; checks whose result can depend
 on the evaluated system remain per-system. Build-capability placement still
 applies: a check requiring `kvm` is registered only where builders provide it,
@@ -37,23 +39,58 @@ fail CI by itself, so removal rationale belongs in `context/`.
 
 Each leaf must stay small enough to evaluate inside the dispatch workflow's
 budget. That budget is `workers × max-memory-size` for all workers combined —
-2 × 2048 MiB as configured. A worker above its share is restarted after its job,
+2 × 3072 MiB as configured. A worker above its share is restarted after its job,
 and if the total is exceeded anyway the largest worker is killed and its job
 retried alone, so a leaf that cannot be evaluated alone inside the budget fails
 the build at evaluation, before any builder is contacted. The evaluator is stock
 `nix-eval-jobs`, which disables GC, so a leaf's peak grows roughly linearly with
 the nested system evaluations it forces: measured at about 250–300 MiB per
-system, a leaf forcing more than about six systems approaches one worker's share
-and a leaf forcing fifteen exceeds the whole budget. The remedy is to split a
-heavy leaf by contract — never to drop its probes.
+system, a leaf forcing more than about eleven systems approaches one worker's
+share and one forcing about twenty exceeds the whole budget. The remedy is to
+split a heavy leaf by contract — never to drop its probes. The ceiling that
+keeps a leaf to one claim is a review rule, not this memory figure.
 
-A scheduled `package-updates-refresh` workflow runs the repository's registered
-package updaters, evaluates the refreshed tree, and opens one pull request
-carrying the update report. It is a refresh gate, not an acceptance gate:
-acceptance is the formatting and all-system evaluation gate above, which runs
-on that pull request. It touches
-package pins only — `flake.lock` stays with renovate. See
-[the package-update contract](package-updates.md).
+Human pull requests also check that the generated `flake.nix` and `flake.lock`
+are what regeneration produces (`.github/scripts/prepare-candidate.sh --check`).
+Automation branches are exempt: their regeneration is the candidate's child commit.
+
+A scheduled `package-updates-refresh` workflow is the native producer: it moves
+the moving flake inputs, runs the registered package updaters, and opens one pull
+request with the report. Its updaters run in a job without the App key, and a
+second job applies the recorded proposal as data and publishes it, so a package's
+update script never shares an environment with the credential that opens the pull
+request. That pull request is a source, not an acceptance. Its
+exact candidate is prepared, evaluated, built and cache-verified by
+[the update-candidate pipeline](update-candidates.md), and `main` moves only by
+promotion of a validated candidate. An operator acceptance names the revision it
+accepted: applying the acceptance label posts a marker on the head that label
+event concerns, and promotion requires the marker on the revision it promotes. See
+also [the package-update contract](package-updates.md).
+
+Cache verification is its own reusable workflow, `verify-cache.yml`: a caller that
+wants to say whether the build or the cache was the problem needs them as two job
+results. `build-push-cache.yml` therefore reports no cache verdict, and its `build`
+output is set only on success — an absent output means the stage did not complete
+and must never be read as one.
+
+**What the cache is promised to serve is the target selection itself** — for
+nix-fleet, `.#checks` for each declared system, the same selection the build
+traverses. Verification realises that selection in an empty chroot store with
+builders disabled and fails if any part of it would be built. It is therefore a
+statement about substitutability of the declared targets, not about every
+derivation the build happened to touch: an output outside the selection is not
+promised, and if part of the selection should not be cacheable the answer is to
+remove it from the selection rather than to weaken the check. (The signal is
+sound: a fully cached attribute produces no "will be built" line, and a miss
+produces one; only the `.drv` files of a target are not carried by a binary
+cache, and nix resolves those locally.)
+
+The pipeline's own credentials are not this workflow's. The automation App key
+that posts the required status and pushes `main` is an environment secret of
+`automation` (restricted to `main`), used by jobs that run no repository code,
+and the pipeline entry point is defined on the default branch so a pull request
+cannot change what holds it. Candidate builds need none of that: they hold the
+builder key and cache write, which cannot post a status or push `main`.
 
 ## Model
 
@@ -86,9 +123,9 @@ Any coordinator allowed to build locally must also have the runner hook installe
 
 ### Coordinator resource budgets
 
-The build step uses two evaluation workers at 2048 MiB each. nix-eval-jobs
+The build step uses two evaluation workers at 3072 MiB each. nix-eval-jobs
 enforces `workers * max-memory-size` as a budget for all workers combined — so
-4096 MiB here, against the tool's default of four workers at 4096 MiB each (16
+6144 MiB here, against the tool's default of four workers at 4096 MiB each (16
 GiB) — and it reports an attribute as an evaluation failure when its worker is
 killed for exceeding that. The per-worker figure is also the restart threshold:
 a worker above its share is restarted after its job, and only a worker that
@@ -96,15 +133,22 @@ exceeds the combined budget is killed and retried alone.
 
 The stock evaluator disables GC, so a check's evaluation peak grows with the
 nested system evaluations it forces — measured at about 250–300 MiB per system.
-At two workers x 2048 MiB a leaf forcing fifteen or more systems is killed even
-when retried alone, while a leaf forcing six or fewer stays around 1.5–1.8 GiB
-and fits with both workers busy. That is the ceiling every contract leaf is held
-to. Raising the per-worker figure to 4096 MiB was measured to carry the whole
-check set before the leaves were split, and remains the escape hatch if a leaf
-ever genuinely needs more systems than the ceiling allows. The low budget is a
-deliberate choice rather than a resource limit — the runner has 16 GiB — because it
-keeps the ceiling tight enough that a leaf has to state one claim instead of
-exercising a surface.
+Measured with the evaluator alone — both systems, two workers, run to
+completion — on the full check set: 2048 MiB per worker kills two workers and
+takes 130 s; 3072 MiB kills none and takes 83 s; 4096 MiB kills one and takes
+69 s. The per-worker figure is also the restart threshold, so raising it is not
+monotonic: a larger share lets one worker's heap grow past the combined budget
+before it is recycled, and at 4096 MiB the `aarch64-linux` variant of
+`telemetry-capability-matrix` reached 4437 MiB and was killed. 3072 MiB per
+worker is the configured value: the fastest measured, and the only one of the
+three that completed without a kill.
+
+The heaviest leaf is `telemetry-capability-matrix` on `aarch64-linux`, about 2.3
+GiB when recycled and 4.4 GiB when allowed to grow: it is the leaf that forces
+this budget, and the one to split before tightening it again. The escape hatch is
+not a larger share — that was measured worse — but splitting that leaf, or the
+tool's own default of four workers at 4096 MiB each (16 GiB) if a leaf genuinely
+cannot be split.
 
 Local Nix scheduling uses `max-jobs = 1`, with no `cores` override. The workflow
 explicitly permits four concurrent nix-fast-build requests, so its worker pool
@@ -473,7 +517,18 @@ publication. An environment named `ci` adds no isolation merely by existing.
 Use an environment when you want required reviewers, deployment branch/tag
 restrictions or a distinct credential boundary before privileged jobs run.
 
-The current reusable workflow declares no environment. GitHub does not support
+The build workflow declares no environment: it is called by whoever wants a
+build, and its credentials are the builder key and cache write.
+
+The _pipeline_ is the opposite case, and the reason is different from the one
+this section otherwise discusses. There, the environment is not about reviewers
+or OIDC subjects: `automation` exists so that the App key cannot be selected from
+a pull-request job at all, because a pull request defines the workflow files it
+runs while a repository secret is readable by any step of any workflow in the
+repository. Its deployment-branch rule admits only `main`, and it needs no
+required reviewers.
+
+The older advice below still applies to the build path: GitHub does not support
 `environment` on the caller's reusable-workflow job, and environment secrets
 cannot be forwarded from that caller. To adopt an environment, the actual
 jobs inside `build-push-cache.yml` must select it (normally through a new

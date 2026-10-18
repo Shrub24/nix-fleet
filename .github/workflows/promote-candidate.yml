@@ -1,0 +1,74 @@
+# Promotes a validated update candidate to main by a fast-forward push.
+#
+# A `status` event runs the default branch's definition of this workflow, so no
+# pull request can change what promotes, and it receives the candidate commit as
+# data. Promotion is refused unless the candidate's `update-candidate` status was
+# posted by the automation App, the candidate ref resolves to that commit, the
+# commit descends from the source revision and from the current main, the source
+# pull request is still open and at the source revision, and the policy allows it.
+#
+# Acceptance under a `label` policy is bound to a revision rather than a moment:
+# accept.yml, triggered by the label and defined on the default branch, posts an
+# `update-accepted` marker on the revision the label was applied to, and this
+# workflow requires that marker on the source revision. The status reads below use
+# the App token, so the App's statuses permission covers them (write implies read);
+# the workflow token here needs only `contents: read`.
+#
+# WHY THERE IS NO `pull_request: labeled` TRIGGER: a pull-request-triggered file
+# is taken from the pull request, so that trigger would put the credential that
+# can push main within reach of the revision it is meant to distrust. Consumer
+# acceptance works instead by re-validation: applying the label re-runs ci
+# (ci.yml lists `labeled`), which re-runs this pipeline's validation of the
+# candidate and reposts its status — a status event this workflow consumes.
+#
+# Design: docs/contracts/update-candidates.md.
+name: promote-candidate
+
+on:
+  status:
+  # Callable so a consumer keeps a three-line trigger file instead of a copy of
+  # this logic. The `github` context is always the caller's, so a consumer's
+  # `on: status` trigger still supplies the context, state and SHA this reads.
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Serialises promotions; never cancels one that is already pushing.
+concurrency:
+  group: promote-candidate
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: ${{ github.event.context == 'update-candidate' && github.event.state == 'success' }}
+    runs-on: ubuntu-latest
+    # The environment holds the App key and admits only `main`: the credential
+    # that can push main is unreachable from a pull-request job.
+    environment: automation
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the default branch
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Mint the automation token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+
+      - name: Fast-forward main to the candidate
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          CANDIDATE: ${{ github.event.sha }}
+          APP_LOGIN: ${{ vars.AUTOMATION_APP_SLUG }}[bot]
+          # auto promotes once the candidate is validated; label also requires
+          # the accept-update label on the current source revision. A consumer
+          # sets the repository variable PROMOTION_POLICY=label.
+          POLICY: ${{ vars.PROMOTION_POLICY || 'auto' }}
+        run: .github/scripts/promote-candidate.sh

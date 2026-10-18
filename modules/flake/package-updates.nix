@@ -28,6 +28,10 @@ let
             inherit system;
             registered = config.packageUpdates.packages;
             available = builtins.attrNames config.packages;
+            writeSets = lib.mapAttrs (_: set: {
+              inherit (set) paths reason;
+            }) config.packageUpdates.writeSets;
+            deferredInputs = config.packageUpdates.deferredInputs;
           }
         );
 
@@ -79,6 +83,39 @@ let
           '';
         };
 
+        options.packageUpdates.writeSets = lib.mkOption {
+          type = lib.types.attrsOf (
+            lib.types.submodule {
+              options = {
+                paths = lib.mkOption {
+                  type = lib.types.nonEmptyListOf lib.types.str;
+                  description = "Repository-relative paths the updater may change, in addition to its package directory.";
+                };
+                reason = lib.mkOption {
+                  type = lib.types.str;
+                  description = "Why the shared paths belong to this updater. Refused by name when empty.";
+                };
+              };
+            }
+          );
+          default = { };
+          description = ''
+            Shared write-set exceptions per registered package, keyed by the
+            package name. The default write set is the package's own
+            definition directory; a shared path needs an explicit reason.
+          '';
+        };
+
+        options.packageUpdates.deferredInputs = lib.mkOption {
+          type = lib.types.attrsOf lib.types.str;
+          default = { };
+          description = ''
+            Flake inputs the lock refresh leaves at their locked revision,
+            keyed by input name, each with a non-empty reason. An explicit
+            `--input` request still moves a deferred input.
+          '';
+        };
+
         config.apps = {
           update-packages = {
             type = "app";
@@ -119,6 +156,14 @@ let
             "alpha"
             "beta"
           ];
+          packageUpdates.writeSets.alpha = {
+            paths = [
+              "pkgs/alpha"
+              "lib/shared-fixture.nix"
+            ];
+            reason = "fixture: alpha shares one catalog file";
+          };
+          packageUpdates.deferredInputs.nixpkgs = "fixture: upstream pin held";
           packages = {
             alpha = pkgs.runCommand "alpha" { } "touch $out";
             beta = pkgs.runCommand "beta" { } "touch $out";
@@ -150,10 +195,14 @@ in
       checks.package-updates-runner =
         pkgs.runCommand "package-updates-runner-check"
           {
+            # jj and git let the transaction tests run here rather than skip:
+            # staging needs both, and the harness pins the real git for jj.
             nativeBuildInputs = [
               pkgs.bash
               pkgs.coreutils
+              pkgs.git
               pkgs.gnugrep
+              pkgs.jujutsu
               pkgs.python3
             ];
           }
@@ -162,6 +211,23 @@ in
             env -u PYTHONPATH ${lib.getExe runner} --help >/dev/null
             export PYTHONPATH=${runnerSrc}/src
             ${pkgs.python3.interpreter} -m unittest discover -s ${../../tests/package-updates} -v
+            touch "$out"
+          '';
+
+      # The producer's decision step and credential boundary: a missing report or
+      # nothing-to-propose fails the step, and the job that runs updaters holds
+      # no credential.
+      checks.package-updates-producer =
+        pkgs.runCommand "package-updates-producer-check"
+          {
+            nativeBuildInputs = [
+              pkgs.bash
+              pkgs.jq
+              (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
+            ];
+          }
+          ''
+            python ${../../tests/ci/producer_check.py} ${../../.github/workflows/package-updates-refresh.yml}
             touch "$out"
           '';
 
@@ -209,6 +275,18 @@ in
             jq -e '.available | (index("alpha") != null) and (index("beta") != null)' "$registry" >/dev/null
             jq -e '.registered | index("bifrost") == null' "$registry" >/dev/null || {
               echo "package-updates: fleet dogfood registration leaked into the consumer"
+              exit 1
+            }
+            # The shared write set and the deferral must reach the registry the
+            # runner reads; each was once declared in the contract but dropped here.
+            jq -e '.writeSets.alpha.paths | index("lib/shared-fixture.nix") != null' "$registry" >/dev/null || {
+              echo "package-updates: declared write set did not reach the registry"
+              jq . "$registry"
+              exit 1
+            }
+            jq -e '.deferredInputs | has("nixpkgs")' "$registry" >/dev/null || {
+              echo "package-updates: declared input deferral did not reach the registry"
+              jq . "$registry"
               exit 1
             }
 

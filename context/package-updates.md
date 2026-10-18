@@ -32,12 +32,12 @@ generality with no user.
 
 **Id:** dcb855ef-a94d-4acf-8dbd-43a7f146b085
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** ff7db418-75dc-41b9-b8b0-a4b019125ba7
 **Evidence:** confirmed
 **Source:** `docs/contracts/package-updates.md`, `.github/workflows/package-updates-refresh.yml`, 2026-10-10
 
-Every evaluation the batch performs passes `--no-write-lock-file`, and the
-scheduled workflow never commits a `flake.lock` change.
+Historical: the batch's own evaluations passed `--no-write-lock-file`, and the scheduled workflow never committed a `flake.lock` change. Superseded by the producer decision below.
 
 **Reason:** `flake.lock` is the fleet's shared-input authority — consumers alias
 the inputs they want held in step — so it has one owner (renovate) and one review
@@ -111,6 +111,8 @@ own.
 last step of an otherwise successful run — the refresh, the evaluation and the
 artifact upload all succeed first.
 
+**Related:** the producer now creates its pull request with the automation App token (see `update-candidates.md`), so this setting no longer gates the refresh. It still applies if the App is removed.
+
 **Related:** the step also requests two labels, and adding a label the repository
 does not have returns 404, which fails the same step. `dependencies` and
 `automated` were created for that reason.
@@ -176,3 +178,58 @@ Plain `update-packages` stays scriptable and never prompts. There is no `update-
 **Rejected alternative:** a declared `releaseRepository` attribute on `passthru`. It duplicates data the lookup script must already contain, and nothing enforces agreement between the two.
 
 **Consequence:** a package without `checkUpdate` reports unknown rather than a guess. Each package adopting the check must maintain its lookup, and a lookup failure is reported as a reason, never as current.
+
+## The producer owns the flake lock and the package pins
+
+**Id:** ff7db418-75dc-41b9-b8b0-a4b019125ba7
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `openspec/changes/update-candidate-pipeline/design.md` (decisions 6 and 7), `docs/contracts/package-updates.md` (producer run), 2026-10-11
+
+The scheduled producer run refreshes the moving flake inputs first and then the
+registered packages, in one batch and one pull request. Every package updater is
+therefore staged on the lock it will land with, and the cache warms against the
+tree that lands.
+
+**Reason:** a compiled package's output depends on nixpkgs. A lock refresh
+produced by another pull request would warm the cache against a lock that never
+lands, and the package pins would be checked against the wrong toolchain. The
+producer also needs to defer a broken input, which Renovate's lock maintenance
+cannot express per input. Renovate keeps the declarations it can match by
+version (tagged inputs, Actions, OCI).
+
+**Rejected alternative:** Renovate lock PR plus a stacked package commit. It
+needs `gitIgnoredAuthors` or a branch the pipeline must not touch. A separate
+package PR warms the wrong lock.
+
+**Revisit when:** a consumer needs per-input Renovate policy that the producer's
+deferral list cannot express, or Renovate gains a per-input exclusion.
+
+Each package's before version is read before the lock moves, so a version that
+changed only because nixpkgs moved is reported against the pin it started from. Reading it after the refresh would report the new pin as the old.
+
+## The batch's exit status says whether its result is proposable
+
+**Id:** 4c6e8f16-c44b-4441-b9f9-8a9fc3f8b331
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `pkgs/package-updates/src/package_updates/runner.py` (`EXIT_CODES`, `adopted`/`aborted`), `tests/package-updates/`, 2026-10-11
+
+Exit 0 is a clean run, 1 is a run that completed with per-item failures and whose
+tree is still proposable, and 2 is a run with nothing to propose. The report's
+`outcome` carries the same value.
+
+**Reason:** the workflow publishes only on 0 and 1, so a single failing package no
+longer suppresses the refresh. Previously any failure exited nonzero, so the
+workflow never reached its pull-request step and the only trace was a log line:
+the operator saw "nothing to update" while a pin stayed stale. A failed updater's
+own exit code is preserved in the report and on stdout, so this loses no detail.
+
+**Rejected alternative:** keep "nonzero means do not propose" and have the
+workflow publish on failure anyway. It cannot tell a partially applied tree from a
+rolled-back one, so it would publish a half-updated checkout.
+
+**Revisit when:** a caller appears that needs the failing updater's raw code as the
+process exit status.

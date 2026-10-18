@@ -1,0 +1,211 @@
+# The candidate pipeline's entry point and the only file that decides what is
+# under validation. Defined on the default branch so no pull request can change
+# what runs with the automation credential; the revision comes from the API, not
+# from the event payload. Routes automation sources, human revisions (validated
+# here, never promoted) and pushes to main. Contract:
+# docs/contracts/update-candidates.md.
+#
+# Callable, so a consumer keeps one thin trigger file per event rather than a copy
+# of this routing. Its local `./` calls below resolve from the caller's commit,
+# which is this repository at the pinned ref, so a consumer needs no copy of
+# validate.yml or candidate.yml either. A caller grants the union of the
+# permissions these jobs declare and passes `secrets: inherit`.
+name: pipeline
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_pr:
+        description: "Pull request number to validate"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      source_pr:
+        description: "pull request to validate; needed only when the caller's event is a dispatch"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline-${{ github.event.workflow_run.head_sha || inputs.source_pr }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      kind: ${{ steps.resolve.outputs.kind }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      pr: ${{ steps.resolve.outputs.pr }}
+      conclusion: ${{ steps.resolve.outputs.conclusion }}
+      include: ${{ steps.resolve.outputs.include }}
+    steps:
+      - name: Resolve the revision and its pull request
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          EVENT_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          DISPATCH_PR: ${{ inputs.source_pr }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          APP_SLUG: ${{ vars.AUTOMATION_APP_SLUG }}
+          EXTRA_AUTHORS: ${{ vars.AUTOMATION_UPDATE_AUTHORS }}
+        run: |
+          set -euo pipefail
+          emit() { printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"; }
+
+          # Who may be an automation source: a prefix routes, this authorises.
+          # Both entry paths use this one list.
+          allowed=$(printf '%s\n' "${APP_SLUG}[bot]" "renovate[bot]" \
+            "$(printf '%s' "${EXTRA_AUTHORS:-}" | tr ' ' '\n')" |
+            jq -R -s 'split("\n") | map(select(length > 0))')
+
+          if [ "$EVENT_NAME" != workflow_run ]; then
+            pull=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$DISPATCH_PR")
+            sha=$(jq -r .head.sha <<< "$pull")
+            conclusion=success
+          else
+            sha=$EVENT_SHA
+            conclusion=$EVENT_CONCLUSION
+            # A revision from a fork cannot be a source: its code is not ours.
+            if [ "$EVENT_REPO" != "$GITHUB_REPOSITORY" ]; then
+              echo "::notice::pipeline: $EVENT_REPO is not this repository; nothing to do"
+              emit kind none; exit 0
+            fi
+            if [ "$EVENT_BRANCH" = "$DEFAULT_BRANCH" ]; then
+              include=$(gh pr list --state open --limit 100 \
+                --json number,headRefName,headRefOid,author |
+                jq -c --argjson allowed "$allowed" \
+                  '[.[] | select((.headRefName | test("^(automation|renovate)/"))
+                                 and (.author.login as $a | $allowed | index($a) != null))
+                        | {source_sha: .headRefOid, source_pr: .number}]')
+              emit kind main-push
+              emit conclusion "$conclusion"
+              emit include "$include"
+              exit 0
+            fi
+            pull=$(gh api \
+              "repos/$GITHUB_REPOSITORY/pulls?state=open&head=${GITHUB_REPOSITORY_OWNER}:${EVENT_BRANCH}&per_page=100" \
+              --jq "[.[] | select(.head.sha == \"$sha\")][0] // empty")
+          fi
+
+          if [ -z "$pull" ]; then
+            echo "::notice::pipeline: no open pull request at $sha; nothing to do"
+            emit kind none; exit 0
+          fi
+          pr=$(jq -r .number <<< "$pull")
+          branch=$(jq -r .head.ref <<< "$pull")
+          author=$(jq -r .user.login <<< "$pull")
+
+          # A branch prefix routes a proposal; it is not an identity. Only a known
+          # update producer's revision is treated as one, because a validated
+          # candidate may be promoted without a human. Anything else is a human
+          # change, which needs review.
+          case "$branch" in
+            automation/*|renovate/*)
+              if jq -en --argjson allowed "$allowed" --arg a "$author" \
+                   '$allowed | index($a) != null' >/dev/null; then
+                kind=automation
+              else
+                echo "::warning::pipeline: $author opened $branch, which is not a known update producer; treating it as a human change"
+                kind=human
+              fi
+              ;;
+            *) kind=human ;;
+          esac
+
+          emit kind "$kind"; emit sha "$sha"; emit pr "$pr"; emit conclusion "$conclusion"
+
+  validate:
+    # The authoritative validation of a human revision, run from this definition
+    # rather than relayed from the pull request's own `ci` run.
+    needs: resolve
+    if: ${{ needs.resolve.outputs.kind == 'human' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/validate.yml
+    with:
+      revision: ${{ needs.resolve.outputs.sha }}
+      generated_files: check
+
+  candidate:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.kind == 'automation' }}
+    # The union of what candidate.yml's jobs request: a called workflow cannot
+    # elevate beyond its caller, and GitHub rejects a call that grants less.
+    permissions:
+      contents: write
+      statuses: write
+      pull-requests: write
+      id-token: write
+    uses: ./.github/workflows/candidate.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+      source_pr: ${{ needs.resolve.outputs.pr }}
+      mode: automation
+      # The candidate's own stages are the trusted ones for this path: they run
+      # from this file's definition, and formatting is gated by the build.
+      precheck: success
+      # Per-repository build selection, so a consumer configures its closure
+      # without editing a workflow.
+      targets: ${{ vars.CANDIDATE_TARGETS || '.#checks' }}
+      systems: ${{ vars.CANDIDATE_SYSTEMS || 'x86_64-linux aarch64-linux' }}
+      runner_system: ${{ vars.CANDIDATE_RUNNER_SYSTEM || 'aarch64-linux' }}
+      builder_attr: ${{ vars.CANDIDATE_BUILDER_ATTR || 'ci' }}
+    secrets: inherit
+
+  human:
+    needs: [resolve, validate]
+    if: ${{ needs.resolve.outputs.kind == 'human' }}
+    permissions:
+      statuses: write
+      pull-requests: write
+    uses: ./.github/workflows/candidate.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+      source_pr: ${{ needs.resolve.outputs.pr }}
+      mode: human
+      precheck: ${{ needs.validate.result }}
+    secrets: inherit
+
+  refresh-open:
+    # Re-validation after a push to main: a candidate that does not descend from
+    # the current main can never be promoted, so an open proposal would silently
+    # rot. Under a `label` policy the re-validation happens at acceptance instead,
+    # where it is also what the operator's label re-triggers.
+    needs: resolve
+    if: >-
+      ${{ needs.resolve.outputs.kind == 'main-push'
+        && vars.PROMOTION_POLICY != 'label'
+        && needs.resolve.outputs.conclusion == 'success'
+        && needs.resolve.outputs.include != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.include || '[]') }}
+    permissions:
+      contents: write
+      statuses: write
+      pull-requests: write
+      id-token: write
+    uses: ./.github/workflows/candidate.yml
+    with:
+      source_sha: ${{ matrix.source_sha }}
+      source_pr: ${{ matrix.source_pr }}
+      mode: automation
+      precheck: success
+      targets: ${{ vars.CANDIDATE_TARGETS || '.#checks' }}
+      systems: ${{ vars.CANDIDATE_SYSTEMS || 'x86_64-linux aarch64-linux' }}
+      runner_system: ${{ vars.CANDIDATE_RUNNER_SYSTEM || 'aarch64-linux' }}
+      builder_attr: ${{ vars.CANDIDATE_BUILDER_ATTR || 'ci' }}
+    secrets: inherit

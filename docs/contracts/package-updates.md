@@ -41,8 +41,8 @@ commands. The plain command does not prompt, and no command runs in CI.
 
 Flake inputs need no wrapper command: `nix flake update [INPUT…]` already updates
 the named inputs and prints each old and new revision. The picker applies its
-accepted inputs that way too. Renovate still keeps `flake.lock` current on its own
-schedule.
+accepted inputs that way too. The scheduled producer run refreshes the lock too (see
+[Producer run](#producer-run-lock-refresh-then-packages)).
 
 ### Cheap release check: `--check`
 
@@ -103,14 +103,35 @@ changes and prior successful updates. A successful candidate is applied before
 the next updater starts,
 preserving the established cumulative behavior. A failed package's candidate is
 discarded and reported; later packages still run. The batch writes reports for
-all selected packages and exits nonzero if any failed. It never creates a user
+all selected packages and exits with its outcome (below). It never creates a user
 commit, bookmark or branch, publishes, or rewrites the caller's existing commits.
 jj does record temporary workspace working-copy changes and workspace
 add/forget operations in the repository operation log. Writes outside the
 declared set fail that package. Promotion is file-level, not crash-atomic across
-several files.
+several files, which is what the `aborted` outcome exists for: a failure while
+applying a successful candidate can leave the tree part-updated, so the batch
+stops there rather than stacking another package on top of it.
 The runner does not sandbox or roll back external side effects of trusted updater
 scripts.
+
+### Process contract
+
+The exit status is the batch's outcome, and the same value is the `outcome` field
+of the JSON report:
+
+| Exit | `outcome`  | Meaning                                                                                                                    |
+| ---- | ---------- | -------------------------------------------------------------------------------------------------------------------------- |
+| 0    | `complete` | every selected package ran; no failures                                                                                    |
+| 1    | `partial`  | the tree is proposable and carries per-item failures (a failed updater, an out-of-write-set write, a failed input refresh) |
+| 2    | `aborted`  | nothing is proposable: the tooling or registry was unusable before any work, or adoption stopped part-way                  |
+
+A caller that publishes a proposal keys off `outcome`: `complete` and `partial`
+propose (the report names what failed), `aborted` does not. The scheduled
+workflow reads it from the report file rather than from the exit status, because
+the report exists only if the run reached its own end — a crash would otherwise
+be indistinguishable from a completed run carrying failures. A failed updater's
+own exit code stays in the report and on stdout rather than becoming the
+batch's.
 
 The default write set for package `NAME` is `pkgs/NAME/`. A package can declare
 an exception under `perSystem.packageUpdates.writeSets.NAME`, with explicit
@@ -118,12 +139,61 @@ repository-relative `paths` and a non-empty `reason`. Shared generated catalogs
 or genuinely coupled definitions can justify a broader set; duplicated package
 versions should normally be derived from the package definition instead.
 
+## Producer run: lock refresh, then packages
+
+`update-packages` is the producer's batch. `--refresh-inputs` first moves every
+flake input that is not deferred, and `--input NAME` (repeatable) moves exactly
+the named inputs and overrides deferral. Both run `nix flake update` on the
+names, and an unknown name is refused by name before anything runs. Then the
+registered package updaters run against the refreshed lock.
+
+Each package's before version is read before the refresh. A version that moved
+only because the lock moved is therefore reported against the pin it started
+from.
+
+A run that names packages and no input never touches `flake.lock`.
+
+```nix
+perSystem.packageUpdates.deferredInputs.nixpkgs = "held until the toolchain bump is reviewed";
+```
+
+A deferral needs a non-empty reason, and a deferral that names no flake input
+is refused by name. A refresh that fails is reported as `Flake input refresh did
+not complete`; the packages still run against the old lock, and the run exits
+nonzero.
+
+The JSON report gains `inputs` (each moved input with its old and new revision,
+last-modified date, source, and a comparison link) and `inputFailure`. The pull
+request body lists moved inputs in their own table above the packages. The
+scheduled workflow's pull request is a source for the update-candidate pipeline
+([update-candidates.md](update-candidates.md)); it is not acceptance.
+
+### The producer's two jobs
+
+The scheduled workflow (`.github/workflows/package-updates-refresh.yml`) splits
+the run, because `nix-update` executes the update scripts of the packages it
+updates and must not hold a credential that can propose or push:
+
+- **`update`** runs the batch, evaluates the refreshed tree, and records the
+  proposal as a git patch plus the report files. It holds no App key and selects
+  no environment. A patch is recorded only when the batch reported 0 or 1 _and_
+  the evaluation passed, so `publish` is empty unless something valid exists.
+- **`publish`** holds the App key (through the `automation` environment), applies
+  that patch to a clean checkout of the base the refresh ran on, and opens or
+  updates the pull request with the report as its body. It runs no repository
+  code: the patch and the reports cross as artifact data.
+
+The publisher refuses to apply a patch against a moved base, because a wholesale
+lock rewrite taken from an older revision would revert whatever landed in
+between; the next scheduled run redoes the refresh instead. `git apply` is
+all-or-nothing, so a partial proposal is never published.
+
 ## Refresh is not acceptance
 
-The app edits package pins and reports status only. It does not write
-`flake.lock`, update OCI references, run repository checks, or merge. A
-candidate is accepted only after the requested updates complete **and** the
-repository's declared acceptance checks pass; a hash-prefetch build is not an
+The app edits package pins, and in a producer run the moving inputs of
+`flake.lock`. It does not update OCI references, run repository checks, or
+merge. A candidate is accepted only after the requested updates complete **and**
+the repository's declared acceptance checks pass; a hash-prefetch build is not an
 acceptance build. Refreshing again against the same recorded release targets
 must produce no further changes.
 
@@ -152,6 +222,6 @@ candidate, gate results and limitations.
 
 ## Deferred
 
-Consumer migration, refresh schedules and PR creation, combined flake.lock
-ownership, automerge and branch rules are separate adoption work. Renovate
-remains responsible for OCI images and Actions references in the meantime.
+Consumer migration and consumer promotion policy are separate adoption work.
+Renovate keeps tagged flake inputs (no tagged input exists yet), OCI references and
+Actions references. Renovate does not own `flake.lock`.

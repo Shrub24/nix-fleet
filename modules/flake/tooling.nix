@@ -51,6 +51,11 @@ let
             nixfmt.priority = 3;
             actionlint = {
               command = "${pkgs.actionlint}/bin/actionlint";
+              # actionlint lacks the `queue` key; drop with rhysd/actionlint#654.
+              options = [
+                "-ignore"
+                "unexpected key \"queue\" for \"concurrency\" section"
+              ];
               includes = [ ".github/workflows/*.yml" ];
             };
           };

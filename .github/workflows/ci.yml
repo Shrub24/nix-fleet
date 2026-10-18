@@ -1,10 +1,22 @@
-# nix-fleet's own CI: formatting and all-systems evaluation, plus the fleet
-# build pipeline via the reusable
+# nix-fleet's own CI: the contributor-facing mirror of the repository's
+# validation (`validate.yml`), plus the fleet build pipeline via the reusable
 # workflow (this repo is its own first consumer — the ci builder set is the
 # canonical inventory).
+#
+# This workflow holds no credential and runs on every pull request, including
+# one that modifies it. The candidate pipeline (pipeline.yml) is triggered by
+# this workflow's completion and runs the default branch's definition, so the
+# credential that reports validation and the one that promotes never come from a
+# file a pull request can edit.
+#
+# `labeled` is in the trigger because applying a label is how a consumer accepts
+# an update: the resulting re-run re-validates the candidate and reposts its
+# status, which is what a label policy promotes on. The same event is what
+# accept.yml records against the accepted revision.
 name: ci
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches:
       - main
@@ -19,21 +31,17 @@ permissions:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-
-      - name: Check formatting (pinned tooling base)
-        run: nix build --no-link .#checks.x86_64-linux.treefmt
-
-      - name: Evaluate all systems
-        run: nix flake check --no-build --no-write-lock-file --all-systems
+    # The same definition the trusted pipeline uses for the required status; this
+    # call is the contributor-facing mirror, and it runs the pull request's copy
+    # of both this file and the validation workflow.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/validate.yml
+    with:
+      revision: ${{ github.sha }}
+      # Automation branches carry their regeneration in the candidate's child
+      # commit (candidate.yml), so the consistency check is for human changes.
+      generated_files: ${{ (startsWith(github.head_ref, 'automation/') || startsWith(github.head_ref, 'renovate/')) && 'skip' || 'check' }}
 
   fleet-build:
     # Dogfood: nix-fleet schedules against its own canonical ci set. The
@@ -52,3 +60,19 @@ jobs:
       builder_attr: ci
     secrets:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
+
+  fleet-cache:
+    # The dogfood build's verification, as its own job so its failure reads as a
+    # cache problem rather than a build problem.
+    if: github.event_name == 'workflow_dispatch'
+    needs: fleet-build
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/verify-cache.yml
+    with:
+      revision: ${{ github.sha }}
+      systems: ${{ needs.fleet-build.outputs.systems }}
+      runner_system: ${{ needs.fleet-build.outputs.runner_system }}
+      ts_client_id: ${{ needs.fleet-build.outputs.ts-client-id }}
+      ts_audience: ${{ needs.fleet-build.outputs.ts-audience }}

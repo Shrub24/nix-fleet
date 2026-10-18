@@ -1,0 +1,50 @@
+# Removes candidate refs whose commit is older than the retention window. A
+# candidate ref keeps its commit reachable for promotion; once the window has
+# passed, nothing can still promote it.
+name: candidate-sweep
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+  # Callable, so a consumer supplies only its own schedule.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    # The environment holds the App key and admits only `main`.
+    environment: automation
+    permissions:
+      contents: write
+    steps:
+      - name: Mint the automation token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+
+      - name: Delete expired candidate refs
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RETENTION_DAYS: "30"
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d "-${RETENTION_DAYS} days" +%s)
+          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/candidates" \
+            --jq '.[] | "\(.ref) \(.object.sha)"' |
+          while read -r ref sha; do
+            committed=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$sha" --jq '.committer.date')
+            if [ "$(date -u -d "$committed" +%s)" -lt "$cutoff" ]; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/$ref"
+              echo "deleted $ref"
+            fi
+          done

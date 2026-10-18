@@ -6,11 +6,16 @@ from pathlib import Path, PurePosixPath
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
 class TransactionError(Exception):
     """A package result could not be safely staged or adopted."""
+
+
+class AdoptionError(TransactionError):
+    """Adoption started and did not finish: the tree may be part-adopted."""
 
 
 def _jj(*args: str, cwd: Path | None = None, check: bool = True) -> str:
@@ -121,17 +126,19 @@ def staged_package(root: Path, package: str, write_set: tuple[str, ...], execute
     with tempfile.TemporaryDirectory(prefix=f"package-update-{package}-") as temporary:
         workspace = Path(temporary) / package
         source_workspace = _workspace_name(root)
-        _jj(
-            "workspace",
-            "add",
-            "--name",
-            workspace_name,
-            "--revision",
-            f"{source_workspace}@",
-            str(workspace),
-            cwd=root,
-        )
+        added = False
         try:
+            _jj(
+                "workspace",
+                "add",
+                "--name",
+                workspace_name,
+                "--revision",
+                f"{source_workspace}@",
+                str(workspace),
+                cwd=root,
+            )
+            added = True
             result = execute(workspace)
             changes = _diff_paths(workspace)
             escaped = sorted(path for path in changes if not allowed(path, allowed_paths))
@@ -140,7 +147,22 @@ def staged_package(root: Path, package: str, write_set: tuple[str, ...], execute
                     f"writes outside declared paths: {', '.join(escaped)}"
                 )
             if result.returncode == 0:
-                _adopt(root, workspace, changes)
+                try:
+                    _adopt(root, workspace, changes)
+                except OSError as error:
+                    raise AdoptionError(
+                        f"adopting {package} did not complete: {error}"
+                    ) from error
             return result, changes
         finally:
-            _jj("workspace", "forget", workspace_name, cwd=root, check=False)
+            # Report a failed cleanup rather than masking whatever brought us
+            # here: the package's own outcome is the caller's business, and a
+            # leftover workspace must not pass unmentioned.
+            if added:
+                try:
+                    _jj("workspace", "forget", workspace_name, cwd=root)
+                except TransactionError as error:
+                    print(
+                        f"warning: {workspace_name} was not forgotten: {error}",
+                        file=sys.stderr,
+                    )

@@ -107,3 +107,12 @@ restores the declarative path:
 2. Drop the `autoFollow = false` + `follows` throw. The two are not
    contradictory; they mean "I own this one", and flake-edit already skips
    ignored paths.
+
+## Preparation depends on this policy
+
+`.github/scripts/prepare-candidate.sh` regenerates `flake.nix` with `write-flake`
+and then runs `nix flake lock` without an update. A second run must change
+nothing: that is the fixed-point check the update-candidate pipeline and the
+human-pull-request check both enforce. Because auto-follow is disabled, the
+generated file is a function of the declarations alone, which is what makes the
+fixed point hold. Enabling auto-follow would break it.

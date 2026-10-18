@@ -14,6 +14,7 @@ import subprocess
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from package_updates import cli
 from package_updates.transaction import (
@@ -33,10 +34,19 @@ if [ "$name" = "${{FIXTURE_FAIL:-}}" ]; then
   echo "fixture: $name refused" >&2
   exit 7
 fi
+if [ -n "${{FIXTURE_WRITE:-}}" ]; then
+  mkdir -p "$(dirname "$FIXTURE_WRITE")"
+  printf 'fixture edit\n' > "$FIXTURE_WRITE"
+fi
 """
 
 
 class BatchTestCase(unittest.TestCase):
+    def enter(self, directory):
+        previous = Path.cwd()
+        os.chdir(directory)
+        self.addCleanup(os.chdir, previous)
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -83,11 +93,17 @@ class BatchTestCase(unittest.TestCase):
             check=True,
             capture_output=True,
         )
+        # The runner finds its repository from the working directory, so the
+        # test must stand inside its own checkout, never the surrounding repo.
+        self.enter(checkout)
         return checkout
 
-    def register(self, registered, available=None, system="x86_64-linux"):
+    def register(self, registered, available=None, system="x86_64-linux", root=None):
         registry = self.root / "registry.json"
-        root = self.jj_checkout() if registered else self.root
+        if root is None:
+            root = self.jj_checkout() if registered else self.root
+        else:
+            self.enter(root)
         registry.write_text(
             json.dumps(
                 {
@@ -215,6 +231,28 @@ class BatchTestCase(unittest.TestCase):
         self.assertEqual((package / "default.nix").read_text(), "new\n")
         self.assertFalse((package / "extra.txt").exists())
 
+    def test_staging_workspace_is_forgotten_when_the_updater_raises(self):
+        # The workspace is added before the updater runs, so a raise must still
+        # forget it: a leftover name would collide with the next update of the
+        # same package.
+        checkout = self.jj_checkout()
+        jj = shutil.which("jj", path=self.original_environ["PATH"])
+
+        def explode(candidate):
+            raise RuntimeError("updater raised")
+
+        with self.assertRaisesRegex(RuntimeError, "updater raised"):
+            staged_package(checkout, "alpha", ("pkgs/alpha",), explode)
+
+        listed = subprocess.run(
+            [jj, "workspace", "list"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertNotIn("package-update-alpha", listed)
+
     def test_update_script_dispatch_uses_the_standard_interface(self):
         # Package policy reaches nix-update through passthru.updateScript;
         # the batch must not invent a second engine to run it.
@@ -251,9 +289,44 @@ class BatchTestCase(unittest.TestCase):
     def test_failure_is_rolled_back_and_later_packages_continue(self):
         self.register(["alpha", "beta", "gamma"])
         os.environ["FIXTURE_FAIL"] = "beta"
-        self.assertEqual(cli.main([]), 7)
+        # 1: the batch is proposable and carries the failure for the report.
+        self.assertEqual(cli.main([]), 1)
         self.assertEqual(self.edited(), ["alpha", "beta", "gamma"])
         self.assertIn("gamma", self.invoked()[-1])
+
+    def test_a_broken_repository_aborts_rather_than_reporting_partial(self):
+        # A stub directory that is not a jj workspace: the run cannot stage, so
+        # nothing is proposable. An uncaught error's exit 1 must not be reported
+        # as the proposable outcome.
+        self.register(["alpha"], root=self.root)
+        report = self.root / "report.json"
+
+        stderr, output = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(output):
+            code = cli.main(["--json", str(report)])
+
+        self.assertEqual(code, 2)
+        self.assertIn("not inside a jj workspace", stderr.getvalue())
+        self.assertEqual(self.edited(), [])
+
+    def test_a_part_adopted_tree_aborts_the_batch(self):
+        self.register(["alpha", "beta"])
+        os.environ["FIXTURE_WRITE"] = "pkgs/alpha/changed.nix"
+        report = self.root / "report.json"
+
+        output = io.StringIO()
+        # A filesystem write that fails part-way is the only way a tree ends up
+        # part-updated; the run must then propose nothing.
+        with mock.patch(
+            "package_updates.transaction.shutil.copy2",
+            side_effect=OSError("no space left on device"),
+        ):
+            with contextlib.redirect_stdout(output):
+                code = cli.main(["--json", str(report)])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(report.read_text())["outcome"], "aborted")
+        self.assertEqual(self.edited(), ["alpha"])
 
 
 if __name__ == "__main__":

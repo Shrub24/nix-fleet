@@ -37,6 +37,18 @@
 # `contents: read` (permissions cannot be elevated by a called workflow —
 # GitHub rejects the call at parse time if the caller grants less).
 #
+# OUTPUTS: `build` is `success` only when the build completed; an absent output
+# means the stage did not complete and must never be read as success. `systems`,
+# `runner`, `runner_system`, `ts-client-id` and `ts-audience` are the resolved
+# values, so a caller can hand them to verify-cache.yml instead of resolving them
+# again. `runner` is a GitHub runner label and `runner_system` a Nix system: they
+# are different values and are not interchangeable.
+#
+# VERIFICATION IS SEPARATE: cache verification is the reusable verify-cache.yml,
+# not a flag here, because a build failure and a cache-verification failure are
+# different findings and a caller that wants to name which one happened needs
+# them as two job results.
+#
 # Pin to a VERSION TAG, not @main: nix-fleet cuts tagged releases and
 # renovate proposes tag bumps (PR gate + changelog), so consumers opt into
 # changes deliberately. Nothing else is configured per-consumer: builder
@@ -91,6 +103,10 @@ on:
         description: "Public Tailscale audience; empty resolves the fleet CI identity"
         required: false
         default: ""
+      revision:
+        description: "Commit to build; empty builds the triggering ref"
+        required: false
+        default: ""
   workflow_call:
     inputs:
       runner_system:
@@ -133,6 +149,33 @@ on:
         type: string
         required: false
         default: ""
+      revision:
+        description: "Commit to build; empty builds the caller's commit"
+        type: string
+        required: false
+        default: ""
+    outputs:
+      # Set only when the corresponding stage succeeded. An absent output means
+      # the stage did not complete, never that it passed: a caller must require
+      # the value it expects rather than treat emptiness as success.
+      build:
+        description: "success when the build completed"
+        value: ${{ jobs.build.outputs.outcome }}
+      systems:
+        description: "Target systems that were built"
+        value: ${{ jobs.prepare.outputs.systems }}
+      runner:
+        description: "GitHub runner label the build ran on (for a job's runs-on)"
+        value: ${{ jobs.prepare.outputs.runner }}
+      runner_system:
+        description: "Nix system of the coordinator (aarch64-linux or x86_64-linux), for building .#packages.<system>.*"
+        value: ${{ jobs.prepare.outputs.runner_system }}
+      ts-client-id:
+        description: "Resolved public Tailscale client ID, for a reusing cache verifier"
+        value: ${{ jobs.prepare.outputs.ts-client-id }}
+      ts-audience:
+        description: "Resolved public Tailscale audience"
+        value: ${{ jobs.prepare.outputs.ts-audience }}
     secrets:
       FLEET_BUILDER_SSH_KEY:
         description: "Repository coordinator key used by direct dispatch; reusable callers normally pass BUILDER_SSH_KEY"
@@ -151,12 +194,15 @@ jobs:
     outputs:
       systems: ${{ steps.systems.outputs.systems }}
       runner: ${{ steps.systems.outputs.runner }}
+      runner_system: ${{ inputs.runner_system }}
       ts-client-id: ${{ steps.tailscale.outputs.client-id }}
       ts-audience: ${{ steps.tailscale.outputs.audience }}
     steps:
       - name: Check out repository
         if: ${{ inputs.tailnet && inputs.ts_client_id == '' }}
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision }}
 
       - name: Install Nix
         if: ${{ inputs.tailnet && inputs.ts_client_id == '' }}
@@ -205,9 +251,19 @@ jobs:
   build:
     needs: prepare
     runs-on: ${{ needs.prepare.outputs.runner }}
+    # One build at a time repository-wide: concurrent candidates compete for the
+    # same builders and re-warm the same cache. `queue: max` keeps pending runs.
+    concurrency:
+      group: build-push-cache
+      cancel-in-progress: false
+      queue: max
+    outputs:
+      outcome: ${{ steps.build.outputs.outcome }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision }}
 
       - name: Join tailnet (fleet-host builders)
         # MagicDNS names in the registry's machines file resolve only inside
@@ -309,6 +365,7 @@ jobs:
           server-url: ${{ steps.cache-url.outputs.url }}
 
       - name: Build with the selected builder profile
+        id: build
         env:
           BUILDER_ATTR: ${{ inputs.builder_attr }}
           SYSTEMS: ${{ needs.prepare.outputs.systems }}
@@ -359,5 +416,6 @@ jobs:
           trap stop_resources EXIT
 
           nix run nixpkgs#nix-fast-build -- \
-            --eval-workers 2 --eval-max-memory-size 2048 --max-jobs 4 \
+            --eval-workers 2 --eval-max-memory-size 3072 --max-jobs 4 \
             --skip-cached --systems "$SYSTEMS" --flake "${TARGETS:-.#checks}"
+          echo "outcome=success" >> "$GITHUB_OUTPUT"

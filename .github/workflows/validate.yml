@@ -1,0 +1,96 @@
+# The repository's validation in one definition. `ci.yml` calls it for feedback
+# (running the pull request's copy) and `pipeline.yml` calls it from the default
+# branch for the required status, so a pull request cannot weaken what certifies
+# it. The commands are fixed here; the revision is data.
+#
+#   validate:
+#     permissions: { contents: read }
+#     uses: Shrub24/nix-fleet/.github/workflows/validate.yml@v1
+#     with: { revision: "${{ github.sha }}" }
+#
+# Fails when validation fails; no success output.
+name: validate
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+    inputs:
+      revision:
+        description: "Commit to validate"
+        type: string
+        required: true
+      generated_files:
+        description: "check fails when regeneration would change the tree; skip leaves that to candidate preparation"
+        type: string
+        required: false
+        default: check
+
+jobs:
+  # Three jobs so one failure does not hide the others: a formatting failure used
+  # to mask whether evaluation also failed, and for a workflow-only revision the
+  # formatting check is the only meaningful one.
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the revision under test
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision }}
+          path: target
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Check formatting (pinned tooling base)
+        working-directory: target
+        run: nix build --no-link .#checks.x86_64-linux.treefmt
+
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the revision under test
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision }}
+          path: target
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Evaluate all systems
+        working-directory: target
+        run: nix flake check --no-build --no-write-lock-file --all-systems
+
+  consistency:
+    if: ${{ inputs.generated_files == 'check' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the revision under test
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision }}
+          path: target
+
+      - name: Check out the preparation script from the default branch
+        # The consistency check's procedure is trusted even when the revision
+        # under test rewrote its own copy of the script.
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: trusted
+          sparse-checkout: .github/scripts
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Generated flake and lock are current
+        working-directory: target
+        run: bash "$GITHUB_WORKSPACE/trusted/.github/scripts/prepare-candidate.sh" --check

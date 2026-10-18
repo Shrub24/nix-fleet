@@ -1,0 +1,46 @@
+# Acceptance is an operator action, and it has to name the revision it accepted.
+# A label survives a push, and a commit's dates describe when it claims to have
+# been written rather than when it reached the pull request, so the label event
+# itself is the evidence: this workflow is defined on the default branch, takes
+# the head from its own event payload, and posts a marker on that commit.
+# promote-candidate.sh requires the marker on the revision it is about to
+# promote, so a push after the label leaves the newer revision unaccepted.
+#
+# This file holds no credential that can push main; it posts a commit status with
+# the workflow token, which is enough for the promoter to read. Removing the label
+# revokes the marker.
+#
+# Callable, so a consumer owns a two-line trigger file: a `pull_request_target`
+# trigger cannot be inherited, and a called workflow sees the caller's event.
+name: accept-update
+on:
+  pull_request_target:
+    types: [labeled, unlabeled]
+  workflow_call:
+
+permissions:
+  statuses: write
+
+jobs:
+  mark:
+    # Only the acceptance label, and only a revision in this repository: a fork
+    # head is not a commit here and could carry no status.
+    if: >-
+      ${{ github.event.label.name == 'accept-update'
+        && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark the accepted revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          ACTION: ${{ github.event.action }}
+          ACTOR: ${{ github.event.sender.login }}
+        run: |
+          set -euo pipefail
+          if [ "$ACTION" = labeled ]; then state=success; else state=failure; fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state="$state" \
+            -f context=update-accepted \
+            -f "description=${ACTION} by ${ACTOR}" >/dev/null
+          echo "update-accepted=$state on $SHA by $ACTOR"

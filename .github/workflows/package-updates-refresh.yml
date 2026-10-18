@@ -1,30 +1,42 @@
-# Scheduled native-package refresh: run this repository's registered package
-# updaters, evaluate the result, and open or update one pull request with a
-# report of what moved.
+# Scheduled native producer: refresh the moving flake inputs, then this
+# repository's registered package updaters, and open or update one pull request
+# with a report of what moved.
 #
-# This workflow refreshes pins; it does not accept them. Acceptance is the
-# repository's declared checks, which the `ci` workflow runs on the pull request
-# this creates — a green refresh job is not a green candidate.
+# The pull request is a source, not an acceptance: the update-candidate pipeline
+# prepares, evaluates and builds its exact candidate, and promotion lands it only
+# when that candidate is validated. The App token makes the pull request's checks
+# start without manual approval.
 #
-# flake.lock is deliberately not touched: the batch owns package pins, renovate
-# owns the lock.
+# Two jobs: `update` runs the updaters (repository and upstream code) with no
+# credential, and `publish` holds the App key, applies the proposal as data and
+# opens the pull request. Contract: docs/contracts/package-updates.md.
+#
+# REUSABLE WORKFLOW: the runner and its CLIs live in the flake module
+# `flakeModules.packageUpdates`, so a consumer supplies its own schedule and
+# calls this for the run — the branch and labels stay the consumer's. The App key
+# is not a caller-supplied secret: the publishing job selects the `automation`
+# environment, which the caller's repository owns and whose deployment-branch
+# rule admits only its default branch.
 name: package-updates-refresh
 on:
   schedule:
-    - cron: "43 4 * * 1"
+    # Daily: moving inputs move daily, and the pipeline promotes what it validates.
+    - cron: "43 4 * * *"
   workflow_dispatch:
+  workflow_call:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: package-updates-refresh
   cancel-in-progress: true
 
 jobs:
-  refresh:
+  update:
     runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.evaluate.outputs.publish }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -34,51 +46,142 @@ jobs:
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
-      - name: Refresh registered package pins
-        # The report files stay outside the checkout: the pull request must
-        # contain the updaters' pin changes and nothing else, and the change
-        # check below reads the working tree as-is.
+      - name: Initialise jj for staging
+        # Package updates stage each updater in a disposable jj workspace, which
+        # needs a jj repository; a plain git checkout is not one. Colocation
+        # keeps git as the source of truth for the pull request.
+        run: nix shell nixpkgs#jujutsu --command jj git init --colocate
+
+      - name: Refresh flake inputs and registered packages
+        id: run
+        # The report is the evidence, not the exit status: it exists only if the run
+        # reached its own end, and an interpreter's exit 1 for an uncaught error
+        # would otherwise read as the `partial` outcome. The report files stay
+        # outside the checkout, so the pull request contains the refreshed lock and
+        # the updaters' pin changes and nothing else.
         run: |
-          nix run --no-write-lock-file .#update-packages -- \
+          set -euo pipefail
+          echo "propose=false" >> "$GITHUB_OUTPUT"
+          set +e
+          nix run .#update-packages -- --refresh-inputs \
             --json "$RUNNER_TEMP/report.json" \
             --markdown "$RUNNER_TEMP/pr-body.md"
-
-      - name: Evaluate the refreshed tree
-        # path: is deliberate: an updater may write files that are untracked in
-        # this checkout, and the Git-tree form (.#) would omit them.
-        run: nix flake check --no-build --no-write-lock-file path:.
-
-      - name: Check for changes
-        id: diff
-        run: |
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
+          code=$?
+          set -e
+          outcome=$(jq -r '.outcome // "none"' "$RUNNER_TEMP/report.json" 2>/dev/null || echo none)
+          echo "batch exit $code, outcome $outcome"
+          # The status and the report must agree, and both artifacts must exist:
+          # the report is written before the pull-request body, so a completed
+          # report about a run that then failed would otherwise propose a tree.
+          case "$outcome:$code" in
+            complete:0|partial:1)
+              for artifact in report.json pr-body.md; do
+                [ -s "$RUNNER_TEMP/$artifact" ] || {
+                  echo "::error::the run reported $outcome but $artifact is missing or empty"
+                  exit 2
+                }
+              done
+              echo "propose=true" >> "$GITHUB_OUTPUT"
+              if [ "$outcome" = partial ]; then
+                echo "::warning::the refresh completed with failures; the pull request lists them"
+              fi
+              ;;
+            *) echo "::error::nothing to propose (exit $code, outcome $outcome)"; exit 2 ;;
+          esac
 
       - name: Show the refresh report
         if: always()
-        run: |
-          cat "$RUNNER_TEMP/report.json" 2>/dev/null || echo "no report written"
+        run: cat "$RUNNER_TEMP/report.json" 2>/dev/null || echo "no report written"
 
-      - name: Upload the refresh report
+      - name: Record the proposal
+        id: propose
+        if: ${{ steps.run.outputs.propose == 'true' }}
+        run: |
+          set -euo pipefail
+          git add -A .
+          if git diff --cached --quiet; then
+            echo "patch=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --cached --binary > "$RUNNER_TEMP/changes.patch"
+          echo "patch=true" >> "$GITHUB_OUTPUT"
+
+      - name: Evaluate the refreshed tree
+        id: evaluate
+        # The App key's job publishes whatever this step approves, so a skipped or
+        # failed evaluation publishes nothing.
+        if: ${{ steps.propose.outputs.patch == 'true' }}
+        run: |
+          nix flake check --no-build --no-write-lock-file
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the proposal
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: package-updates-report
+          name: package-updates-proposal
           path: |
             ${{ runner.temp }}/report.json
             ${{ runner.temp }}/pr-body.md
+            ${{ runner.temp }}/changes.patch
           if-no-files-found: ignore
 
+  publish:
+    needs: update
+    # Runs after a failed `update` job too: a partial refresh is proposable.
+    if: ${{ !cancelled() && needs.update.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    # The environment holds the App key and admits only the default branch, so it
+    # is unreachable from a pull-request job. This job runs no repository code: it
+    # checks out the base, applies the proposal as data and opens the pull request.
+    environment: automation
+    steps:
+      - name: Check out the base the refresh ran on
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download the proposal
+        uses: actions/download-artifact@v8
+        with:
+          name: package-updates-proposal
+          path: ${{ runner.temp }}
+
+      - name: Refuse a moved base
+        # The patch is only correct against the revision it was taken from: a
+        # wholesale lock rewrite applied to a newer lock would revert what landed
+        # in between. Failing visibly is recovered by the next run.
+        env:
+          BASE: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BRANCH"
+          tip=$(git rev-parse "origin/$BRANCH")
+          if [ "$tip" != "$BASE" ]; then
+            echo "::error::$BRANCH moved from $BASE to $tip; the next run redoes this refresh"
+            exit 1
+          fi
+
+      - name: Apply the proposal
+        run: git apply --verbose "$RUNNER_TEMP/changes.patch"
+
+      - name: Mint the automation token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+
       - name: Create or update pull request
-        if: steps.diff.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
+          token: ${{ steps.app.outputs.token }}
           branch: automation/package-updates
-          commit-message: "chore(deps): refresh registered package pins"
-          title: "chore(deps): refresh registered package pins"
+          commit-message: "chore(deps): refresh flake inputs and registered package pins"
+          title: "chore(deps): refresh flake inputs and registered package pins"
           body-path: ${{ runner.temp }}/pr-body.md
           # Both labels must already exist in the repository: adding a label the
           # repository does not have returns 404 and fails this step.

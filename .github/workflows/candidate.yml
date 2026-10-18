@@ -1,0 +1,332 @@
+# Update candidate for one source revision: prepare the candidate, evaluate it,
+# build it through the fleet builders, verify the cache, and post the
+# `update-candidate` commit status. Promotion is a separate workflow
+# (promote-candidate.yml) that runs from the default branch when that status
+# succeeds, so nothing here can move main.
+#
+# Called only by workflows defined on the default branch: a local `uses:` resolves
+# from the caller's commit. Jobs that run the source's code hold no write
+# credential, and the `automation` environment keeps the App key out of them.
+# Trust tiers and the error contract (a missing stage result is a failure):
+# docs/contracts/update-candidates.md.
+name: candidate
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: "Revision under validation: a pull request head, or a commit re-validated in place"
+        type: string
+        required: true
+      source_pr:
+        description: "Pull request number the revision belongs to"
+        type: string
+        required: true
+      mode:
+        description: "automation prepares, builds and validates a candidate; human only reports the required status"
+        type: string
+        required: false
+        default: automation
+      precheck:
+        description: "Result of the trusted validation of this revision, run from a default-branch definition"
+        type: string
+        required: false
+        default: success
+      targets:
+        description: "Flake selection to evaluate, build and verify"
+        type: string
+        required: false
+        default: ".#checks"
+      systems:
+        description: "Target systems (space-separated); independent of coordinator architecture"
+        type: string
+        required: false
+        default: "x86_64-linux aarch64-linux"
+      runner_system:
+        description: "Nix system of the coordinator (aarch64-linux or x86_64-linux)"
+        type: string
+        required: false
+        default: "aarch64-linux"
+      builder_attr:
+        description: "Builder profile package; empty builds locally only"
+        type: string
+        required: false
+        default: "ci"
+
+permissions:
+  contents: read
+
+# A newer revision supersedes an older candidate for the same pull request.
+concurrency:
+  group: candidate-${{ inputs.source_pr }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    if: ${{ inputs.mode == 'automation' && inputs.precheck == 'success' }}
+    runs-on: ubuntu-latest
+    # Read-only: this job runs the source's code (its regeneration app, its
+    # flake, this repository's preparation script from that revision), so it must
+    # not also hold a token that can write to this repository.
+    permissions:
+      contents: read
+    outputs:
+      candidate: ${{ steps.commit.outputs.sha }}
+      closure: ${{ steps.scope.outputs.closure }}
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: NixOS/nix-installer-action@v1
+
+      - name: Carry the current main
+        # A merge keeps the source head reachable from the candidate, so the pull
+        # request is marked merged when the candidate is promoted, and it is what
+        # makes the candidate landable: promotion is a fast-forward, so a
+        # candidate that does not descend from main can never be promoted. A
+        # conflict fails this job, which reports as an un-preparable candidate.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            git -c user.name="nix-fleet automation" \
+                -c user.email="automation@users.noreply.github.com" \
+                merge --no-edit origin/main
+          fi
+
+      - name: Regenerate the flake and lock
+        # The identity is supplied rather than assumed: `prepare-candidate.sh`
+        # commits, and a hosted runner is not guaranteed to carry a git identity.
+        env:
+          GIT_AUTHOR_NAME: nix-fleet automation
+          GIT_AUTHOR_EMAIL: automation@users.noreply.github.com
+          GIT_COMMITTER_NAME: nix-fleet automation
+          GIT_COMMITTER_EMAIL: automation@users.noreply.github.com
+        run: .github/scripts/prepare-candidate.sh
+
+      - name: Confirm the candidate is a fixed point
+        run: .github/scripts/prepare-candidate.sh --check
+
+      - name: Record the candidate commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether the closure changes
+        # A change confined to workflow files cannot change any derivation, so
+        # the closure build is skipped; the status is still posted.
+        id: scope
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only origin/main HEAD)
+          if [ -n "$changed" ] && ! grep -qv '^\.github/workflows/' <<< "$changed"; then
+            echo "closure=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "closure=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package the candidate for publication
+        # The commit crosses to the publishing job as data, so that job needs no
+        # part of the source tree. If the candidate is exactly main, the range is
+        # empty and the single commit is bundled instead.
+        run: |
+          set -euo pipefail
+          range="origin/main..HEAD"
+          if [ -z "$(git rev-list --max-count=1 "$range")" ]; then
+            range="HEAD^!"
+          fi
+          git bundle create "$RUNNER_TEMP/candidate.bundle" $range
+
+      - name: Upload the candidate bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-bundle
+          path: ${{ runner.temp }}/candidate.bundle
+          if-no-files-found: error
+
+  publish:
+    # The only job with write access, and it runs no source code: a tampered
+    # bundle is caught by the promoter's ref and ancestry checks.
+    needs: prepare
+    if: ${{ needs.prepare.outputs.candidate != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the default branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download the candidate bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: candidate-bundle
+          path: ${{ runner.temp }}
+
+      - name: Publish the candidate ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ inputs.source_sha }}
+          PR: ${{ inputs.source_pr }}
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags "$RUNNER_TEMP/candidate.bundle" HEAD
+          fetched=$(git rev-parse FETCH_HEAD)
+          if [ "$fetched" != "$CANDIDATE" ]; then
+            echo "::error::the bundle carries $fetched, not the prepared candidate $CANDIDATE"
+            exit 1
+          fi
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "$CANDIDATE:refs/candidates/$PR/$SOURCE-$CANDIDATE"
+
+  evaluate:
+    # The definition `ci.yml` calls, from this file, so the candidate is certified
+    # by trusted commands; after publication, since a checkout needs the ref.
+    needs: [prepare, publish]
+    if: ${{ needs.publish.result == 'success' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/validate.yml
+    with:
+      revision: ${{ needs.prepare.outputs.candidate }}
+      generated_files: skip
+
+  build:
+    needs: [prepare, publish]
+    if: ${{ needs.publish.result == 'success' && needs.prepare.outputs.closure == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/build-push-cache.yml
+    with:
+      revision: ${{ needs.prepare.outputs.candidate }}
+      targets: ${{ inputs.targets }}
+      systems: ${{ inputs.systems }}
+      runner_system: ${{ inputs.runner_system }}
+      builder_attr: ${{ inputs.builder_attr }}
+    secrets:
+      BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
+
+  verify:
+    # Distinct from `build` on purpose: "the build did not produce an output" and
+    # "the cache does not serve an output" are different findings, and the status
+    # message names which one happened.
+    needs: [prepare, build]
+    if: ${{ needs.build.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/verify-cache.yml
+    with:
+      revision: ${{ needs.prepare.outputs.candidate }}
+      targets: ${{ inputs.targets }}
+      systems: ${{ needs.build.outputs.systems }}
+      runner_system: ${{ needs.build.outputs.runner_system }}
+      ts_client_id: ${{ needs.build.outputs.ts-client-id }}
+      ts_audience: ${{ needs.build.outputs.ts-audience }}
+
+  status:
+    # Runs even when the stages above failed or were skipped: this job is how a
+    # failure becomes visible on the revision instead of an unexplained block.
+    needs: [prepare, publish, evaluate, build, verify]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    # The environment holds the App key and admits only `main`, so this credential
+    # is unreachable from any pull-request job — including a job whose file the
+    # pull request defines.
+    environment: automation
+    permissions:
+      statuses: write
+      pull-requests: write
+    steps:
+      - name: Mint the automation token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+
+      - name: Post the status and report
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.source_pr }}
+          SOURCE: ${{ inputs.source_sha }}
+          MODE: ${{ inputs.mode }}
+          PRECHECK: ${{ inputs.precheck }}
+          # Without a candidate (preparation failed or was not attempted) the
+          # failure is reported on the source revision; promotion reads only
+          # candidate statuses, so that is inert for promotion.
+          CANDIDATE: ${{ needs.prepare.outputs.candidate || inputs.source_sha }}
+          PREPARE: ${{ needs.prepare.result }}
+          PUBLISH: ${{ needs.publish.result }}
+          EVALUATE: ${{ needs.evaluate.result }}
+          BUILD: ${{ needs.build.result }}
+          VERIFY: ${{ needs.verify.result }}
+          CLOSURE: ${{ needs.prepare.outputs.closure }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = human ]; then
+            # A human change is certified by the trusted validation of its
+            # revision, which the pipeline runs from its own definition rather
+            # than relaying the result of the pull request's copy of `ci`.
+            if [ "$PRECHECK" = success ]; then
+              state=success
+              detail="validated; merge by review"
+            else
+              state=failure
+              detail="validation did not pass"
+            fi
+          elif [ "$PRECHECK" != success ]; then
+            state=failure
+            detail="repository validation did not pass"
+          elif [ "$PREPARE" != success ]; then
+            state=failure
+            detail="candidate could not be prepared (regeneration or the merge with main failed)"
+          elif [ "$PUBLISH" != success ]; then
+            state=failure
+            detail="the candidate ref could not be published"
+          elif [ "$EVALUATE" != success ]; then
+            state=failure
+            detail="evaluation failed"
+          elif [ "$CLOSURE" = false ]; then
+            state=success
+            detail="evaluated; workflow-only change, no closure build"
+          elif [ "$BUILD" != success ]; then
+            state=failure
+            detail="build failed"
+          elif [ "$VERIFY" != success ]; then
+            state=failure
+            detail="built, but the cache does not serve every target"
+          else
+            state=success
+            detail="evaluated, built, and served by the cache"
+          fi
+
+          gh api --method POST "repos/$REPO/statuses/$CANDIDATE" \
+            -f state="$state" -f context=update-candidate \
+            -f description="${detail:0:140}" \
+            -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" >/dev/null
+
+          body=$(printf '%s\n' \
+            "<!-- nix-fleet-candidate -->" \
+            "### Update candidate" \
+            "" \
+            "- source: \`$SOURCE\`" \
+            "- candidate: \`$CANDIDATE\`" \
+            "- prepare: $PREPARE · publish: $PUBLISH · evaluate: $EVALUATE · build: $BUILD · verify-cache: $VERIFY" \
+            "- status \`update-candidate\`: **$state** — $detail")
+          existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '[.[] | select(.body | startswith("<!-- nix-fleet-candidate -->"))][0].id // empty')
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$existing" -f body="$body" >/dev/null
+          else
+            gh api --method POST "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null
+          fi

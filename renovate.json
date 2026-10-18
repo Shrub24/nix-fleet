@@ -6,18 +6,5 @@
   "prConcurrentLimit": 5,
   "automerge": false,
   "schedule": ["before 6am on monday"],
-  "lockFileMaintenance": {
-    "enabled": true,
-    "schedule": ["before 6am on monday"]
-  },
-  "enabledManagers": ["nix", "github-actions"],
-  "nix": {
-    "enabled": true
-  },
-  "packageRules": [
-    {
-      "matchManagers": ["nix"],
-      "groupName": "nix flake inputs"
-    }
-  ]
+  "enabledManagers": ["github-actions"]
 }

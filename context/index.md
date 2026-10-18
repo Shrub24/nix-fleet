@@ -74,6 +74,8 @@
 
 ## U
 
+- [update-candidates.md](update-candidates.md) — how dependency proposals become validated commits on main: promotion, merge-not-rebase, the status event, and cache verification
+
 ## V
 
 ## W

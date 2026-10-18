@@ -134,6 +134,14 @@ def apply(names: list[str], repo: Path) -> list[InputChange]:
     return changes(old, read_lock(repo))
 
 
+def compare_url(change: InputChange) -> str | None:
+    """Return the GitHub comparison between the two revisions, or None."""
+    if change.github is None or not change.old_rev or not change.new_rev:
+        return None
+    owner, repo = change.github
+    return f"https://github.com/{owner}/{repo}/compare/{change.old_rev}...{change.new_rev}"
+
+
 def commits_between(change: InputChange, runner=subprocess.run) -> list[str] | None:
     """Return one-line commit subjects between the two revisions, or None.
 
@@ -168,9 +176,8 @@ def preview(change: InputChange, commits: list[str] | None) -> str:
         f"  from     {change.before}",
         f"  to       {change.after}  ({change.date})",
     ]
-    if change.github and change.old_rev and change.new_rev:
-        owner, repo = change.github
-        lines.append(f"  compare  https://github.com/{owner}/{repo}/compare/{change.old_rev}...{change.new_rev}")
+    if link := compare_url(change):
+        lines.append(f"  compare  {link}")
     lines.append("")
     if commits is None:
         lines.append("  commits  unavailable (needs gh and a GitHub input)")

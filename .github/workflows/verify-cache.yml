@@ -1,0 +1,144 @@
+# Cache verification: prove that the configured substituter serves every target
+# of a revision without building anything.
+#
+# A separate workflow from the build because the two failures are different
+# findings — a build that did not produce an output, versus an output the cache
+# does not serve — and a caller that wants to name which one happened needs them
+# as two job results. It shares the build's resolved coordinates as inputs rather
+# than resolving them again.
+#
+# The store here is a fresh chroot store with an empty database and no builders,
+# so every derivation must be fetched: one the cache does not serve shows as
+# "will be built" and fails this workflow.
+#
+# REUSABLE WORKFLOW — call it from a ~10-line stub, after the build:
+#
+#   verify-cache:
+#     needs: [prepare, build]
+#     permissions:
+#       contents: read
+#       id-token: write
+#     uses: Shrub24/nix-fleet/.github/workflows/verify-cache.yml@v1
+#     with:
+#       revision: ${{ needs.prepare.outputs.candidate }}
+#       targets: .#checks
+#       systems: ${{ needs.build.outputs.systems }}
+#       runner_system: ${{ needs.build.outputs.runner_system }}
+#       ts_client_id: ${{ needs.build.outputs.ts-client-id }}
+#       ts_audience: ${{ needs.build.outputs.ts-audience }}
+#
+# ERROR CONTRACT: this workflow fails when any target is not served. It has no
+# success output: a caller must require the job to have succeeded, so an absent
+# or skipped result can never read as a pass.
+#
+# Design: docs/contracts/update-candidates.md and docs/contracts/ci.md.
+name: verify-cache
+
+permissions:
+  contents: read
+  id-token: write
+
+on:
+  workflow_call:
+    inputs:
+      revision:
+        description: "Commit whose targets must be served by the cache"
+        type: string
+        required: true
+      targets:
+        description: "Flake selection to verify (defaults to .#checks)"
+        type: string
+        required: false
+        default: ".#checks"
+      systems:
+        description: "Target systems (space-separated); independent of runner architecture"
+        type: string
+        required: false
+        default: "x86_64-linux aarch64-linux"
+      runner_system:
+        description: "Nix system of the coordinator (aarch64-linux or x86_64-linux); resolves .#packages.<system> and selects the runner"
+        type: string
+        required: false
+        default: "aarch64-linux"
+      cache_api_url:
+        description: 'niks3 server base URL; empty resolves packages.<system>.cache-api-url (fleet.services."niks3-write")'
+        type: string
+        required: false
+        default: ""
+      tailnet:
+        description: "Join the tailnet to reach a private cache; disable for public-only deployments"
+        type: boolean
+        required: false
+        default: true
+      ts_client_id:
+        description: "Public Tailscale client ID; empty with tailnet enabled is a failure"
+        type: string
+        required: false
+        default: ""
+      ts_audience:
+        description: "Public Tailscale audience; empty derives it from the client ID"
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  verify-cache:
+    runs-on: ${{ inputs.runner_system == 'x86_64-linux' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+    steps:
+      - name: Require a Tailscale identity when the cache is private
+        # No tailnet join would simply fail later with an unreadable cache; the
+        # cause is worth naming instead.
+        if: ${{ inputs.tailnet && inputs.ts_client_id == '' }}
+        run: |
+          echo "::error::verify-cache: tailnet is enabled but no ts_client_id was passed"
+          exit 1
+
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision }}
+
+      - name: Join tailnet (fleet-host cache)
+        if: ${{ inputs.tailnet }}
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ inputs.ts_client_id }}
+          audience: ${{ inputs.ts_audience }}
+          tags: tag:ci
+
+      - name: Install Nix
+        uses: NixOS/nix-installer-action@v1
+
+      - name: Resolve cache API URL
+        id: cache-url
+        run: |
+          url='${{ inputs.cache_api_url }}'
+          if [ -z "$url" ]; then
+            bundle=$(nix build --no-link --print-out-paths ".#packages.${{ inputs.runner_system }}.cache-api-url")
+            url=$(cat "$bundle")
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Configure cache substituter (no upload)
+        uses: Mic92/niks3-action@v1
+        with:
+          server-url: ${{ steps.cache-url.outputs.url }}
+          skip-push: true
+
+      - name: Require every target to be served by the cache
+        env:
+          SYSTEMS: ${{ inputs.systems }}
+          TARGETS: ${{ inputs.targets }}
+        run: |
+          set -euo pipefail
+          for system in $SYSTEMS; do
+            plan="$RUNNER_TEMP/plan-$system.txt"
+            nix build --dry-run --no-link --builders '' \
+              --store "local?root=$RUNNER_TEMP/cache-verify" "$TARGETS.$system" > "$plan" 2>&1
+            if grep -q 'will be built' "$plan"; then
+              cat "$plan"
+              echo "::error::ci: the cache does not serve every derivation of $TARGETS.$system"
+              exit 1
+            fi
+          done
+          echo "ci: the cache serves every target for $SYSTEMS"

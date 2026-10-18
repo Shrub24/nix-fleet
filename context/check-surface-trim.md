@@ -27,6 +27,13 @@ build's evaluator budget rather than in coverage.
 Raising it preserves the distraction; the same measurement that motivated the
 trim showed a leaf's peak is what fails, so a bigger budget only postpones it.
 
+**Follow-up:** the per-worker share was later raised from 2048 to 3072 MiB, for a
+different reason than this rejection — the split surface still had workers
+restarted and occasionally killed once the total budget was crossed, which cost
+wall time and made the build's duration non-deterministic without failing it.
+The thinness decision stands: the ceiling that keeps a leaf to one claim is a
+review rule, not the memory figure.
+
 **Rejected alternative:** delete expensive checks wholesale as "upstream". The
 lean-view profile and the Latitude bridge are artifacts this repo authors, and a
 hand-doubled backslash once produced a valid but wrong regex that neither

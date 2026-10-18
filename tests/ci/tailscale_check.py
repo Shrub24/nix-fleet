@@ -141,7 +141,7 @@ with tempfile.TemporaryDirectory() as directory:
         ]
         assert args_file.read_text().splitlines() == [
             "run", "nixpkgs#nix-fast-build", "--", "--eval-workers", "2",
-            "--eval-max-memory-size", "2048", "--max-jobs", "4", "--skip-cached", "--systems", system, "--flake", selection,
+            "--eval-max-memory-size", "3072", "--max-jobs", "4", "--skip-cached", "--systems", system, "--flake", selection,
         ]
 
 with tempfile.TemporaryDirectory() as directory:

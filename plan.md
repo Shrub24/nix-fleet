@@ -188,7 +188,9 @@ on the contract change; none conflict with it.
       `services.fast-nix-optimise.enable = false`).
 - [ ] **Reusable-workflow adoption notes**: consumers call
       `build-push-cache.yml@v1` (tag cut at 0180d5ec) — stub + inputs in
-      docs/contracts/ci.md; renovate bumps via tags.
+      docs/contracts/ci.md; renovate bumps via tags. The candidate lifecycle
+      needs a newer tag (see the pipeline section above), and
+      `docs/contracts/update-candidates.md` lists the files a consumer owns.
 - [ ] **`nix-baseline` adoption in both consumers** so the substituter
       catalog has one owner.
 - [x] **`sops-bootstrap` package**: homelab's `scripts/secrets-bootstrap.py`
@@ -206,6 +208,37 @@ on the contract change; none conflict with it.
       `oci-melb-1.system = "x86_64-linux"` from topology (canonical says
       aarch64); topology loses per-machine `system`.
 
+## Update-candidate pipeline (open, before the live gate)
+
+Ordered. The first is an operator step for consumers, and the second is the
+evidence that retires the assumptions in `docs/contracts/update-candidates.md`.
+
+- [ ] **Consumer tag** (operator, adoption). `pipeline.yml`, `promote-candidate.yml`,
+      `candidate-sweep.yml` and `accept.yml` are callable, `validate.yml` is one
+      definition called from two places, and a consumer's interface is now a thin
+      trigger per event plus variables, an environment, a permission grant and
+      `secrets: inherit` (`docs/contracts/update-candidates.md`). What is left is
+      a tag containing the pipeline files: `v1` (the line consumers already use
+      for `build-push-cache.yml`) predates them, so cut the next tag once this
+      lands on `main`. Impact: until then a consumer can build and verify through
+      nix-fleet but cannot use the candidate lifecycle, so its updates stay
+      manual, and the call boundary itself is untested.
+- [ ] **Live gate** (evidence). Every trust claim in the contract is currently an
+      assumption about GitHub — environment deployment-branch rules, App-pinned
+      required status, `status`-event triggers, indirect PR merge, a
+      `pull_request_target` label payload supplying the accepted revision,
+      whether repository `vars` resolve inside a called workflow, the seven-day
+      window on a required status, artifact major pairing, niks3 OIDC claims.
+      Impact: the runner-label/Nix-system mismatch was found by review, not by any
+      local gate, which is the precedent for how this class of fault behaves.
+      Runs in the runbook's order; the ruleset and automatic promotion stay off
+      until it passes.
+
+Landed since the pipeline was first written: validation diagnostics are three
+jobs, the producer's status and report must agree before it proposes,
+preparation stages only the two files it owns, and acceptance is bound to a
+revision by an `update-accepted` marker instead of a commit timestamp.
+
 ## CI live-run prerequisites (user-side)
 
 - [ ] Set secret `FLEET_BUILDER_SSH_KEY`; authorize the key for the
@@ -217,6 +250,31 @@ on the contract change; none conflict with it.
 
 ## Deferred / future waves
 
+- [ ] **jactionlint packaging (low priority)**: package
+      [jdx/jactionlint](https://github.com/jdx/jactionlint) (`buildGoModule`, one
+      `vendorHash`, follow its releases) and use it as the workflow linter. It is
+      a maintained fork of actionlint that covers the same checks _and_ knows the
+      `concurrency.queue` key — including the `queue: max` +
+      `cancel-in-progress: true` conflict GitHub rejects — so adopting it retires
+      the formatter's one ignored diagnostic (`modules/flake/tooling.nix`,
+      `rhysd/actionlint#654`). It additionally carries zizmor-style security
+      rules (untrusted input in `run:` scripts, excessive token permissions,
+      credential persistence in checkout) and policy rules (missing
+      `permissions:`, timeout or concurrency group), which are directly
+      interesting for the workflows this repo now ships. Cost: nix-fleet owns a
+      derivation and its bump cadence; it is not in nixpkgs. Worth revisiting on
+      its own merits — not as a way to remove one `-ignore`.
+- [ ] **Userborn user-management backend (medium-high priority)**: evaluate
+      the normal, switchable `services.userborn` mode as a replacement for
+      nixpkgs' legacy Perl account-management activation script. Preserve UID/GID
+      and subordinate-ID continuity, and verify mutable-user and SOPS
+      `neededForUsers` ordering in a disposable host-shaped VM before any rollout.
+      Do not use `services.userborn.static`, which is for appliances without
+      generation updates.
+- [ ] **systemd-oomd fleet policy**: revisit whether a narrow, explicit OOM guard
+      belongs in the shared baseline. The daemon is enabled by nixpkgs, but
+      slice monitoring is opt-in; decide workload boundaries and validate the
+      kill behavior before enabling any fleet-wide policy.
 - [ ] **shrub/spectre canonical records**: sparse host records + host keys;
       input by the nix-dotfiles agent once the v2 contract settles.
 - [ ] **syncthing device IDs**: stays consumer-side (service credentials).

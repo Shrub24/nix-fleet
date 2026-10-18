@@ -21,6 +21,12 @@ PATCH = "patch"
 NONE = "none"
 UNKNOWN = "unknown"
 
+# Batch outcomes: a complete run, one that is proposable but carries failures, and
+# one whose tree is not fit to propose (adoption stopped part-way).
+COMPLETE = "complete"
+PARTIAL = "partial"
+ABORTED = "aborted"
+
 # Placeholder for a value the flake did not yield.
 MISSING = "—"
 
@@ -52,11 +58,37 @@ class Entry:
 
 
 @dataclass(frozen=True)
+class InputEntry:
+    """One flake input whose locked revision moved in this refresh."""
+
+    name: str
+    before: str
+    after: str
+    date: str
+    source: str
+    compare: str | None
+
+
+@dataclass(frozen=True)
 class Report:
-    """The batch's entries in selection order, for the evaluated system."""
+    """The batch's entries in selection order, for the evaluated system.
+
+    ``inputs`` lists only the flake inputs that moved; ``input_failure`` names
+    the refresh that did not complete, or is None.
+    """
 
     system: str
     entries: tuple[Entry, ...]
+    inputs: tuple[InputEntry, ...] = ()
+    input_failure: str | None = None
+    aborted: bool = False
+
+    @property
+    def outcome(self) -> str:
+        """Whether the batch is proposable, proposable with failures, or not at all."""
+        if self.aborted:
+            return ABORTED
+        return PARTIAL if self.failed or self.input_failure is not None else COMPLETE
 
     @property
     def updated(self) -> list[Entry]:
@@ -78,7 +110,19 @@ class Report:
     def document(self) -> dict:
         """The structured report. No timestamps, so two runs stay comparable."""
         return {
+            "outcome": self.outcome,
             "system": self.system,
+            "inputs": [
+                {
+                    "name": entry.name,
+                    "version": {"before": entry.before, "after": entry.after},
+                    "date": entry.date,
+                    "source": entry.source,
+                    "compare": entry.compare,
+                }
+                for entry in self.inputs
+            ],
+            "inputFailure": self.input_failure,
             "packages": [
                 {
                     "name": entry.name,
@@ -96,9 +140,16 @@ class Report:
 
     def markdown_text(self) -> str:
         rows = [_HEADING, ""]
-        if not self.updated:
-            rows.append(_CURRENT)
-        else:
+        if self.inputs:
+            rows += [
+                "| Flake input | From | To | Compare |",
+                "| --- | --- | --- | --- |",
+            ]
+            for entry in self.inputs:
+                link = f"[compare]({entry.compare})" if entry.compare else MISSING
+                rows.append(f"| `{entry.name}` | {entry.before} | {entry.after} | {link} |")
+            rows.append("")
+        if self.updated:
             rows += [
                 "| Package | Change | From | To | Changelog |",
                 "| --- | --- | --- | --- | --- |",
@@ -110,9 +161,17 @@ class Report:
                     f"| {entry.after or MISSING} | {link} |"
                 )
             rows.append("")
-            if self.unchanged:
-                current = ", ".join(f"`{entry.name}` {entry.version}" for entry in self.unchanged)
-                rows += [f"Already current: {current}.", ""]
+        elif not self.inputs and not self.failed:
+            rows.append(_CURRENT)
+        if self.updated and self.unchanged:
+            current = ", ".join(f"`{entry.name}` {entry.version}" for entry in self.unchanged)
+            rows += [f"Already current: {current}.", ""]
+        if self.failed:
+            names = ", ".join(f"`{entry.name}`" for entry in self.failed)
+            rows += [f"Not updated, the updater failed: {names}. Their pins are unchanged.", ""]
+        if self.input_failure is not None:
+            rows += [f"Flake input refresh did not complete: {self.input_failure}", ""]
+        if self.inputs or self.updated or self.failed or self.input_failure is not None:
             rows.append(_FOOTER)
         return "\n".join(rows) + "\n"
 
@@ -124,8 +183,13 @@ def bullet(entry: Entry) -> str:
     return f"• Unchanged '{entry.name}': {entry.version}"
 
 
+def input_bullet(entry: InputEntry) -> str:
+    """The stdout line for a flake input whose locked revision moved."""
+    return f"• Updated input '{entry.name}': {entry.before} → {entry.after}"
+
+
 def failure(name: str, exit_code: int) -> str:
-    """The stdout line for the package that stopped the batch."""
+    """The stdout line for a package whose updater failed."""
     return f"✗ Failed '{name}': update failed (exit {exit_code})"
 
 
