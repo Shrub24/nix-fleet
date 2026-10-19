@@ -83,7 +83,10 @@ jobs:
               emit kind none; exit 0
             fi
             if [ "$EVENT_BRANCH" = "$DEFAULT_BRANCH" ]; then
-              include=$(gh pr list --state open --limit 100 \
+              # This job checks out nothing, so gh cannot read a git remote:
+              # the repository must be passed explicitly, as the gh api calls in
+              # this script already do.
+              include=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
                 --json number,headRefName,headRefOid,author |
                 jq -c --argjson allowed "$allowed" \
                   '[.[] | select((.headRefName | test("^(automation|renovate)/"))
