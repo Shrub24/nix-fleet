@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory() as directory:
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$CALLS"\n'
         'case "$1" in\n'
-        "  build) printf '%s\\n' \"$ROOTS\" ;;\n"
+        "  eval) printf '%s\\n' \"$ROOTS\" ;;\n"
         '  path-info) case "$4" in *missing*) exit 1 ;; esac ;;\n'
         "esac\n"
     )

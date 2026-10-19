@@ -115,7 +115,11 @@ jobs:
           set -euo pipefail
           missing=0
           for system in $SYSTEMS; do
-            roots=$(nix build --dry-run --no-link --print-out-paths "$TARGETS.$system")
+            # `$TARGETS.$system` is an attribute set, not a derivation, so the
+            # roots are read from evaluation: one path per check, which is what a
+            # missing-path report needs to be specific.
+            roots=$(nix eval --raw "$TARGETS.$system" \
+              --apply 'cs: builtins.concatStringsSep "\n" (builtins.map (n: (builtins.getAttr n cs).outPath) (builtins.attrNames cs))')
             while IFS= read -r path; do
               [ -n "$path" ] || continue
               if ! nix path-info --store "$CACHE" "$path" >/dev/null 2>&1; then
@@ -202,6 +206,6 @@ jobs:
           bash "$TOKEN_SCRIPT" > "$token"
           export NIKS3_AUTH_TOKEN_FILE="$token"
           for system in $SYSTEMS; do
-            root=$(nix build --dry-run --no-link --print-out-paths "$TARGETS.$system.cache-root")
+            root=$(nix eval --raw "$TARGETS.$system.cache-root.outPath")
             "$BINARY_DIR/niks3" pins create "$PIN-$system" "$root" --server-url "$API"
           done
