@@ -93,42 +93,28 @@ niks3 pins list --json --server-url "$API"          # narinfo key + updated-at
 A second run repoints rather than duplicating: the list length stays two, and the
 `updated at` moves.
 
-## 6. Reading a pin
+## 6. What a pin is for, and what it is not
 
-The wiki's pattern is `curl https://<cache>/pins/<name>` for the store path, but
-**this cache does not currently serve that prefix publicly.** Measured:
+A pin exists so that **substitution keeps working**: it protects the closure from
+the cache's GC, and a machine that wants that closure asks the cache for it by store
+path, exactly as it always does. Nothing has to read the pin.
 
-| Request                                    | Result                                                                              |
-| ------------------------------------------ | ----------------------------------------------------------------------------------- |
-| `https://cache.shrublab.xyz/<key>.narinfo` | `200` — substitution route works                                                    |
-| `https://cache.shrublab.xyz/pins/<name>`   | `404`, `content-type: text/html` — the fronting's error page, not an S3 `NoSuchKey` |
+So the upstream pattern of resolving a pin to a path over HTTP and realising it
+without evaluation is _not_ part of this procedure. It also does not work on this
+cache today — the public fronting serves `narinfo`/`nar` (measured: `200` for a
+cached path) but not the `pins/` prefix (`404`, `text/html`, so not a bucket miss) —
+and that is not a gap to close for us: it would only matter for a consumer that wants
+deploy-without-evaluation, and such a consumer would read
+`niks3 pins list --json` through the API instead.
 
-So the `pins/` prefix is not proxied (the HTML rules out a bucket miss). Two ways
-forward, both homelab-side:
-
-- widen the public fronting to proxy `pins/` (then the wiki recipe works verbatim), or
-- read pins through the API with a `read` token: `niks3 pins list --json`.
-
-Until one exists, a machine that wants to deploy from a pin must read it through the
-API over the tailnet. Do not document the public recipe as working before this table
-changes.
-
-## 7. Deploying a host to a pinned closure
-
-Once §6 is resolved, the mechanism is: resolve the path, realise it under a GC root,
-then set the system profile — no Nix evaluation on the target.
+Listing pins, which is what operating them needs, is an API call:
 
 ```sh
-system=$(curl -s https://cache.shrublab.xyz/pins/nix-fleet-main-x86_64-linux)
-nix-store -r "$system" --add-root /run/next-system --indirect
-nix-env -p /nix/var/nix/profiles/system --set "$system"
-"$system/bin/switch-to-configuration" switch
+niks3 pins list --server-url "$API"            # names, paths, updated-at
+niks3 pins list --names-only --server-url "$API"
 ```
 
-A consumer pins its **own** deploy roots under its own names; a fleet repoint must
-never unpin something a host is running.
-
-## 8. Retention
+## 7. Retention
 
 - Rolling names keep the pin registry fixed: repointing frees the previous closure,
   and nothing accumulates.
@@ -138,13 +124,12 @@ never unpin something a host is running.
 - Do not create per-revision names (`main-<sha>`); those are the only ones that would
   grow without bound.
 
-## 9. Troubleshooting
+## 8. Troubleshooting
 
-| Symptom                                            | Cause                                                                                                                    |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `pin` job: `403` on `pins create`                  | missing `write` scope, or the name is reserved to another identity (§2)                                                  |
-| `pin` job: `token exchange failed with status 403` | `verify-cache.yml` missing from the tailnet credential's workflow list (§3)                                              |
-| `pin` skipped                                      | `CACHE_PIN_NAME` unset (§4)                                                                                              |
-| `pins create` fails naming a store path            | the path is not in the cache: verification passed but publication did not completing — the finding pins exist to surface |
-| `pins list` empty after a green run                | the run's `pin` job was skipped, or it wrote to a different server than `$API`                                           |
-| `curl …/pins/<name>` returns HTML                  | the fronting does not proxy the prefix (§6)                                                                              |
+| Symptom                                            | Cause                                                                                                                  |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `pin` job: `403` on `pins create`                  | missing `write` scope, or the name is reserved to another identity (§2)                                                |
+| `pin` job: `token exchange failed with status 403` | `verify-cache.yml` missing from the tailnet credential's workflow list (§3)                                            |
+| `pin` skipped                                      | `CACHE_PIN_NAME` unset (§4)                                                                                            |
+| `pins create` fails naming a store path            | the path is not in the cache: verification passed but publication did not complete — the finding pins exist to surface |
+| `pins list` empty after a green run                | the run's `pin` job was skipped, or it wrote to a different server than `$API`                                         |

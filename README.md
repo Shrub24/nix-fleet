@@ -290,7 +290,7 @@ reader needs no tailnet identity and no credential.
 | Public key              | `nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A=`                                   |
 | Write API               | `fleet.services."niks3-write".endpoints.api` — tailnet only                                  |
 | Canonical coordinates   | `packages.<system>.cache-substituter-url`, `.cache-public-key`, `.cache-api-url`             |
-| Pinned closures         | `https://cache.shrublab.xyz/pins/<name>`                                                     |
+| Pins                    | server-side GC protection, listed with `niks3 pins list` against the API                     |
 | Cache status per commit | [verify-cache runs](https://github.com/Shrub24/nix-fleet/actions/workflows/verify-cache.yml) |
 
 These are one record, not four literals: `fleet.services."niks3-write"` carries both
