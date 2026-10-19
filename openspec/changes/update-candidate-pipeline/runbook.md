@@ -33,7 +33,13 @@ Settings → Developer settings → GitHub Apps → New GitHub App, owned by
 | Pull requests           | Read and write | create the refresh PR, update the candidate comment, read PR state                     |
 | Metadata                | Read           | mandatory                                                                              |
 
-Subscribe to no events. Install the App on **only** `Shrub24/nix-fleet`.
+Subscribe to no events. **Registering the App and installing it are two steps**:
+setting the ID, slug and key up as above does nothing until the App is installed on
+this repository. Until then `actions/create-github-app-token` authenticates as the
+App, asks whether that App is installed on the repository, and gets `404 Not Found`
+(`Get a repository installation for the authenticated app`) — the key and ID are
+fine, the installation is what is missing. Install it on **only**
+`Shrub24/nix-fleet` and grant the permissions listed above.
 
 Then:
 
@@ -52,6 +58,13 @@ Verification (task 1.2): dispatch `candidate-sweep` (Actions → candidate-sweep
 Run workflow). It mints the token, lists `refs/candidates/*`, and deletes nothing
 older than 30 days. Success proves the token works and can read refs. Then check
 the App's installation shows the expected repository only.
+
+A free observation of the `status` trigger and its guard: any other app's commit
+status on any commit calls `promote-candidate`, whose job is skipped unless the
+context is `update-candidate` and the state is `success`. Observed with CodeRabbit's
+`success` status on a pull request head: one skipped run, nothing attempted. So the
+trigger can be confirmed before a candidate exists, and a status from another app
+cannot promote.
 
 Verification (task 0.4) — the boundary itself. Open a pull request that
 (a) echoes `${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}` and (b) declares
