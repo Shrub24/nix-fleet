@@ -39,11 +39,21 @@ tailnet only). Reads of substitution go to the public substituter instead — se
 
 ## 2. Reserve the pin names
 
-By default **any** token with `write` scope can create or repoint **any** pin. Bind
-the names to the CI identity with the cache's OIDC rule (`oidc.providers.<name>.pins`),
-so a name that means "the fleet's current main" cannot be moved by anything else.
-Names: `nix-fleet-main-x86_64-linux`, `nix-fleet-main-aarch64-linux`
-(`<CACHE_PIN_NAME>-<system>`).
+Bind the names to the CI identity with the cache's OIDC rule
+(`oidc.providers.<name>.pins`), so a name that means "the fleet's current main"
+cannot be moved by anything else. The rule reserves a **prefix per repository** —
+`<repository>-*` — not individual names: the pattern is an allowlist, so a rule
+with no `pins` cannot pin at all, and one repository's prefix never matches
+another's. A repository therefore invents its own pins (live versions, recent
+generations, milestone releases) with no edit to the cache config and no redeploy.
+
+Two constraints follow from niks3, not from taste. Pin names match
+`^[a-zA-Z0-9._-]+$`, so the delimiter is `-` or `.` and never `/`; and `*` does not
+cross `/`, so a slash-namespaced scheme could not be expressed anyway. Names used
+here: `nix-fleet-main-x86_64-linux`, `nix-fleet-main-aarch64-linux`
+(`<CACHE_PIN_NAME>-<system>`), with `CACHE_PIN_NAME=auto` deriving `nix-fleet-main`
+from the repository name. Deletion stays admin-only, so CI cannot prune; retention
+is an operator action.
 
 The cache's claims (`nix-homelab`, `modules/cache/niks3-cache.nix`) trust the owner,
 the repository and `refs/heads/main`, with one rule and one pin namespace per listed
