@@ -204,7 +204,7 @@ touching anything else. `gh workflow enable promote-candidate` restores it.
    merged (task 6.2's reachability check).
 4. Promotion dispatches `pin-cache` for the promoted revision; the push it performs
    also runs `verify-cache`. Verify: `verify-cache` reports `serves every root of
-.#checks for …` with no tailnet join and no credential, and `pin-cache` reports
+.#packages for …` with no tailnet join and no credential, and `pin-cache` reports
    the two rolling pins (`<pin_name>-x86_64-linux`, `-aarch64-linux`).
 5. Re-run the trigger by pushing to `main` (or dispatching `update-candidate`):
    open automation pull requests are re-prepared and re-validated (task 5.3).
@@ -219,7 +219,7 @@ moved-base refusal, dispatch the refresh and land a commit on `main` while it
 runs: the publishing job fails with `moved from … to …` and opens nothing.
 
 Verification of task 4.2 (cache verification) on a real revision: `verify-cache`
-on `main` reports `serves every root of .#checks for x86_64-linux aarch64-linux`.
+on `main` reports `serves every root of .#packages for x86_64-linux aarch64-linux`.
 A miss names each path and fails the job, and nothing gates on it. To reproduce
 locally without GitHub:
 

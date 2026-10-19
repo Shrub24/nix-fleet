@@ -18,7 +18,8 @@ for event in ("workflow_dispatch", "workflow_call"):
     assert inputs["revision"]["default"] == ""
     assert inputs["pin_name"]["default"] == ""
     assert inputs["systems"]["default"] == "x86_64-linux aarch64-linux"
-    assert inputs["targets"]["default"] == ".#checks"
+    # The pin subject is the artefact aggregate, not the check set.
+    assert inputs["targets"]["default"] == ".#packages"
 
 # A pin needs the private API, so this is the workflow that joins the tailnet and
 # mints the OIDC token; verification deliberately does neither.

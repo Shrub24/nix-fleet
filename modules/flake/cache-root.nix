@@ -1,13 +1,15 @@
-# One linkFarm over the checks, whose closure is every published output; a pin on it
-# covers the selection (checks.packages already includes the packages).
+# The artefacts a pin protects and verification promises: a linkFarm over the
+# published packages, whose closure is exactly that set. Verdicts are not here —
+# they answer questions about a revision, and a selection containing them changes on
+# every commit.
 { lib, ... }:
 {
   perSystem =
     { config, pkgs, ... }:
     {
-      checks.cache-root = pkgs.linkFarm "cache-root" (
+      packages.cache-root = pkgs.linkFarm "cache-root" (
         lib.mapAttrsToList (name: path: { inherit name path; }) (
-          lib.filterAttrs (name: _: name != "cache-root") config.checks
+          lib.filterAttrs (name: _: name != "cache-root") config.packages
         )
       );
     };

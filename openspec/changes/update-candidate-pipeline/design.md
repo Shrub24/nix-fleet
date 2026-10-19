@@ -258,8 +258,9 @@ Settled while applying the change; the rationale is in `context/update-candidate
   nothing may depend on. `pins create` fails by name when a path is absent, so the
   pin asserts presence itself and a revision whose publication was incomplete never
   moves a name that stays on the previous good closure. A pin names one path, so
-  `checks.<system>.cache-root` aggregates the build selection: its closure covers
-  every published output, including `checks.packages`.
+  `packages.<system>.cache-root` aggregates the published artefacts, not `checks`: a
+  verdict changes whenever its inputs do, so a selection containing checks would move
+  on every commit and make "unbuilt" ambiguous.
 - **Outputs never imply success.** `build-push-cache.yml` sets `build` only on
   success, `verify-cache.yml` has no success output, and the status job treats a
   skipped job, a missing result or an absent output as failure. The stage that

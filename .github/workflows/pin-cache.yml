@@ -24,7 +24,7 @@ on:
         description: "Flake selection whose <targets>.<system>.cache-root is pinned"
         type: string
         required: false
-        default: ".#checks"
+        default: ".#packages"
       cache_api_url:
         description: "Private API URL; empty resolves .#packages.<runner_system>.cache-api-url"
         type: string
@@ -56,7 +56,7 @@ on:
         description: "Flake selection whose <targets>.<system>.cache-root is pinned"
         type: string
         required: false
-        default: ".#checks"
+        default: ".#packages"
       cache_api_url:
         description: "Private API URL; empty resolves .#packages.<runner_system>.cache-api-url"
         type: string
@@ -127,7 +127,7 @@ jobs:
       - name: Pin one aggregate root per system
         env:
           SYSTEMS: ${{ inputs.systems || 'x86_64-linux aarch64-linux' }}
-          TARGETS: ${{ inputs.targets || '.#checks' }}
+          TARGETS: ${{ inputs.targets || '.#packages' }}
           PIN: ${{ inputs.pin_name || vars.CACHE_PIN_NAME }}
           API: ${{ steps.api.outputs.url }}
           BINARY_DIR: ${{ steps.niks3.outputs.binary-dir }}

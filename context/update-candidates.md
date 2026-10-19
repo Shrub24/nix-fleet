@@ -509,3 +509,44 @@ window between build and promotion is minutes).
 
 **Revisit when:** a consumer needs its pin to advance on something other than a
 promotion, or the cache grows a pin primitive that is not name-based.
+
+## The cache promises artefacts, not verdicts
+
+**Id:** b2eb8bfa-ade7-425b-ab2c-1671fb420a2a
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `modules/flake/cache-root.nix`, `verify-cache.yml`, `pin-cache.yml`, live verification run 39263293166, 2026-10-19
+
+The pin root and the verification selection are the published artefacts:
+`packages.<system>.cache-root`, a linkFarm over `config.packages`. The fleet build
+still builds `.#checks`, so checks run on the candidate before promotion exactly as
+before; their outputs are simply not the promise.
+
+**Reason:** the subject used to be a linkFarm over `checks`, so its path moved on
+every commit — a docs or workflow change alters `treefmt-check`, which is an input to
+the aggregate. Measured consequences: a pushed revision reported `cache-root`,
+`packages` and `treefmt-check` as unserved while 53 roots were served, none of them a
+fault; and `pins create` could fail for a revision whose new aggregate had
+legitimately never been built. Artefacts only move when a package moves, and a
+promoted revision's packages were built before promotion.
+
+**Measured, on caching checks in general:** it is not a storage problem. A clean
+`treefmt-check` output is 0 bytes (treefmt-nix writes an empty marker) and a
+linkFarm aggregate is ~184 KB of symlink blocks, so per-commit clutter is a narinfo
+plus hundreds of bytes, and niks3's GC reclaims anything unpinned. Hydra behaves the
+same way: it uploads every successful job and restricts the _channel_ to builds. The
+promise was wrong, not the caching.
+
+**Rejected alternatives:** retargeting the build at the artefact aggregate, which
+would stop checks running anywhere (routine CI is evaluation-only); running the check
+phase with publication disabled, which only works for those the coordinator builds
+locally — remote builders publish through their own post-build hooks and Nix has no
+per-selection "don't publish", so aarch64 checks would publish anyway or lose
+coverage; moving formatters out of `checks` into a workflow step, which drops
+`nix flake check` as the enforcement point.
+
+**Revisit when:** consumers adopt pinning — several pins per host, last-N generations
+and release milestones — at which point a tighter niks3 GC policy against unpinned
+paths becomes the retention lever, and what belongs in the pinned closure is worth
+revisiting per consumer.

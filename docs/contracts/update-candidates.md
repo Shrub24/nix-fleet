@@ -214,8 +214,9 @@ Pinning is a separate workflow with its own owner: `pin-cache.yml`, dispatched b
 re-pin a revision whose publication completed late. A pin name means "the fleet's
 current main", so promotion — the event that lands a revision the pipeline built —
 is what may move it; a push-triggered measurement's colour moves nothing. One pin
-per system covers the whole tree: `checks.<system>.cache-root` is an aggregate whose
-closure is every published output. Pinning protects a closure from the cache's own
+per system covers the whole tree: `packages.<system>.cache-root` is a linkFarm whose
+closure is every published package. Artefacts are the subject, not `checks`: a
+verdict changes whenever its inputs do, which is every commit. Pinning protects a closure from the cache's own
 GC, so repointing releases the superseded closure to the cache's next `gc`, and
 `pins create` failing by name is the presence assertion — a revision whose
 publication was incomplete never claims the name, which stays on the previous

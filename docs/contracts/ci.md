@@ -86,17 +86,19 @@ substituting the closure, because uploads are atomic per closure — a served ro
 means its closure was committed — and because a plain store on a fresh runner is
 already empty. It names every missing path and never gates anything.
 
-What a miss means depends on whether the revision was built, and the report says
-which by naming the paths. A promoted revision was built — `main` fast-forwards to
-the candidate the pipeline built — so an unserved root there is a loss to
-investigate. A human push was not, because routine CI never builds: measured on the
-first live run, a pushed revision reported exactly the three derivations its commit
-changed (`cache-root`, the `packages` aggregate, `treefmt-check`) while the other
-53 roots were served. Read the counts, not just the colour.
+The selection is the **artefact set**, `.#packages` per system — what anything would
+actually substitute — not `.#checks`. A check answers a question about a revision and
+is rebuilt whenever its inputs move, so a selection containing checks changes on
+every commit: measured on the first live run, a docs-and-dependency push reported
+three unserved roots (`cache-root`, the `packages` aggregate, `treefmt-check`) while
+53 were served, and none of the three was a fault. Artefacts only move when a package
+moves, and a promoted revision's packages were built before promotion, so an unserved
+package root is a publication that did not complete.
 
 Pinning is a **separate workflow owned by promotion**, not a job here.
 `pin-cache.yml` (dispatch or `workflow_call`) pins one aggregate root per system —
-`checks.<system>.cache-root`, whose closure is every published output — and
+`packages.<system>.cache-root`, a linkFarm whose closure is every published package —
+and
 `promote-candidate.yml` dispatches it after a successful fast-forward. The split is
 about what the two things mean: a pin name means "the fleet's current main", so it
 moves on the event that lands a revision the pipeline built, while `verify-cache`

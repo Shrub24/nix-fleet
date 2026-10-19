@@ -16,10 +16,10 @@ on:
         required: false
         default: ""
       targets:
-        description: "Flake selection to verify (defaults to .#checks)"
+        description: "Flake selection to verify; one root per attribute (defaults to .#packages)"
         type: string
         required: false
-        default: ".#checks"
+        default: ".#packages"
       systems:
         description: "Target systems, space-separated"
         type: string
@@ -68,7 +68,7 @@ jobs:
       - name: Require the cache to serve every realised root
         env:
           SYSTEMS: ${{ inputs.systems || 'x86_64-linux aarch64-linux' }}
-          TARGETS: ${{ inputs.targets || '.#checks' }}
+          TARGETS: ${{ inputs.targets || '.#packages' }}
           CACHE: ${{ steps.cache.outputs.url }}
         run: |
           set -euo pipefail
