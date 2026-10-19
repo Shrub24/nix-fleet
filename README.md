@@ -308,6 +308,9 @@ the derivations its own commit changed, because routine CI never builds. A verif
 revision also moves a rolling `last-known-good` pin per system, whose closure covers
 every published output.
 
+Turning pins on (and what caching guarantees them) is an operator procedure:
+[docs/runbooks/cache-pins.md](docs/runbooks/cache-pins.md).
+
 Using the cache without this flake:
 
 ```nix

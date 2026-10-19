@@ -242,7 +242,10 @@ credential and `verify` is unaffected.
 
 Reserve the pin name prefix through the cache's OIDC rule, so no other write token
 can repoint a name that means "the fleet's current main". Pinning stays off until
-`pin_name` is set on the trigger, so this step gates nothing else.
+`CACHE_PIN_NAME` is set, so this step gates nothing else. The full procedure, its
+verification per step and its known gap (this cache's public fronting does not proxy
+`pins/`, so pin retrieval is API-only today) is
+[docs/runbooks/cache-pins.md](../../../docs/runbooks/cache-pins.md).
 
 ## 7. Niks3 trust for candidate builds (task 1.5) — nix-homelab owner
 

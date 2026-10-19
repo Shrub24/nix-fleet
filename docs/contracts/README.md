@@ -50,6 +50,10 @@ canonical inventory + validation + CI bundles) plus the pure projection API
 consumer's own flake-level module closes over its `config.fleet` and calls
 `resolveBuildProfile` (builders.md carries the pattern).
 
+Operator procedures that are not consumer contracts live in
+[docs/runbooks/](../runbooks/): [cache-pins.md](../runbooks/cache-pins.md) for cache
+pinning, retention and pin retrieval.
+
 ## Reading order for a new consumer
 
 1. [hosts.md](hosts.md) — the canonical identity you derive from, and the
