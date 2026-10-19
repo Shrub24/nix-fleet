@@ -50,13 +50,20 @@ Verify: a `write` token that is _not_ the CI identity gets `403` for that name.
 ## 3. Trust the pin workflow on the tailnet
 
 `pin-cache.yml` writes to the private API, so it joins the tailnet. The Tailscale
-trust credential's workflow rule names the workflow by `job_workflow_ref`, so it must
-list **both**:
+credential matches `job_workflow_ref` against a single pattern — the claim rules are a
+map of claim to one pattern, not a list — so the pattern covers the workflows that may
+join rather than naming one file:
 
 ```
-Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@refs/heads/main
-Shrub24/nix-fleet/.github/workflows/pin-cache.yml@refs/heads/main
+job_workflow_ref = Shrub24/nix-fleet/.github/workflows/*@refs/heads/main
 ```
+
+Keep `subject` at the repository-and-branch form
+(`repo:Shrub24/nix-fleet:ref:refs/heads/main`) so the wildcard cannot match another
+repository, another ref, or a pull request; the containment is then the `tag:ci` ACL,
+which is what decides what a joined node reaches. If a narrower pattern is required
+later, the alternative is one federated identity per workflow, which costs a second
+client id and a varied `ci-tailscale` artifact.
 
 No repository variable carries the Tailscale client id or audience: the job resolves
 `packages.<system>.ci-tailscale` from the fleet contract.
