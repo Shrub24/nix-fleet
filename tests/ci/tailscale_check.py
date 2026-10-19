@@ -115,6 +115,8 @@ with tempfile.TemporaryDirectory() as directory:
     ):
         config_file = root / "config"
         args_file = root / "args"
+        outcome_file = root / "outcome"
+        outcome_file.write_text("")
         result = subprocess.run(
             ["bash", "-euo", "pipefail", "-c", build_script],
             env={
@@ -126,6 +128,7 @@ with tempfile.TemporaryDirectory() as directory:
                 "NIX_CONFIG": "post-build-hook = /action/hook",
                 "CAPTURE_CONFIG": str(config_file),
                 "CAPTURE_ARGS": str(args_file),
+                "GITHUB_OUTPUT": str(outcome_file),
                 "BUILD_EXIT": str(build_exit),
             },
             text=True,
@@ -133,6 +136,10 @@ with tempfile.TemporaryDirectory() as directory:
             timeout=10,
         )
         assert result.returncode == build_exit, result.stderr
+        # A failed build claims no outcome, so a candidate cannot read a success
+        # that never happened; the caller treats an absent output as failure.
+        expected_outcome = "outcome=success\n" if build_exit == 0 else ""
+        assert outcome_file.read_text() == expected_outcome, outcome_file.read_text()
         assert config_file.read_text().splitlines() == [
             "post-build-hook = /action/hook",
             f"builders = {builders}",
