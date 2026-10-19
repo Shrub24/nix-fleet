@@ -23,7 +23,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # The event name is part of the group because this workflow is two paths in one
+  # file: routine validation on push and pull request, and the dispatch-only fleet
+  # build and cache verification. Without it a push to main cancels an in-flight
+  # dispatched build — observed, and an expensive way to lose a build. Superseded
+  # validation still cancels itself.
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
