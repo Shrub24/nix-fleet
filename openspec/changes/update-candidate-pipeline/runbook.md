@@ -228,6 +228,17 @@ nix build --dry-run --no-link --builders '' --store "local?root=$(mktemp -d)" .#
 
 `will be built` lines name the uncached derivations.
 
+## 6b. Tailscale trust for `verify-cache.yml` — operator
+
+The Tailscale trust credential's workflow rule names the reusable workflow that may
+join the tailnet. Cache verification moved out of `build-push-cache.yml` into
+`verify-cache.yml` (so a build failure and a cache failure are separate results),
+and its join is rejected until the credential lists that file too: the first live
+run failed with `token exchange failed with status 403` pointing at the
+credential, while the build job joined in the same run. Add
+`Shrub24/nix-fleet/.github/workflows/verify-cache.yml@refs/heads/main` to the
+allowed workflows (and the tag form once consumers pin one).
+
 ## 7. Niks3 trust for candidate builds (task 1.5) — nix-homelab owner
 
 Candidate builds run from `workflow_run` (this repository's `ci`) triggered by a

@@ -316,7 +316,15 @@ The tailnet side is a **trust credential** on the admin console's Trust
 credentials page: Credential → OpenID Connect, issuer _GitHub Actions_,
 with claim rules selecting the allowed repositories and reusable workflow,
 the writable `auth_keys` scope and the `tag:ci` tag. One credential serves all
-three repositories. Tailscale documents the client id and audience as **not
+three repositories.
+
+The workflow rule must list **every** reusable workflow that joins the tailnet,
+because `job_workflow_ref` names the file that defines the joining job. A new file
+is not covered by a rule naming an existing one: extracting cache verification
+into `verify-cache.yml` failed its join with
+`token exchange failed with status 403` pointing at the credential, while the
+build job in `build-push-cache.yml` joined in the same run. Adding a workflow that
+joins the tailnet is therefore a credential change, not only a repository change. Tailscale documents the client id and audience as **not
 secrets**; they are public fleet metadata.
 A federated identity belongs to no user, so it must tag its nodes:
 `tags: tag:ci` is not optional.
