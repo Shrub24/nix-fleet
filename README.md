@@ -1,5 +1,8 @@
 # nix-fleet — fleet control plane
 
+[![ci](https://github.com/Shrub24/nix-fleet/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Shrub24/nix-fleet/actions/workflows/ci.yml)
+[![cache](https://img.shields.io/badge/cache-cache.shrublab.xyz-2f81f7)](https://cache.shrublab.xyz)
+
 A dendritic flake-parts repository that is the **shared fleet control-plane contract + mechanisms** for saurabhj's machines (nix-homelab fleet, dotfiles, future hosts): canonical cross-fleet facts, shared policy, pure projections, and the implementation packages of the mechanisms it owns. Consumers import this flake as a flake input and select its aspects and projections by name.
 
 ## Mission
@@ -272,5 +275,44 @@ services.niks3-cache = {
     boundClaims.repository_owner = [ "Shrub24" ];
     scopes = [ "write" ];
   };
+};
+```
+
+## Binary cache
+
+The fleet publishes its build outputs to a [niks3](https://github.com/Mic92/niks3)
+cache. Substitution is **public and ungated**; only the write API is private, so a
+reader needs no tailnet identity and no credential.
+
+|                         |                                                                                              |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
+| Substituter             | `https://cache.shrublab.xyz`                                                                 |
+| Public key              | `nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A=`                                   |
+| Write API               | `fleet.services."niks3-write".endpoints.api` — tailnet only                                  |
+| Canonical coordinates   | `packages.<system>.cache-substituter-url`, `.cache-public-key`, `.cache-api-url`             |
+| Pinned closures         | `https://cache.shrublab.xyz/pins/<name>`                                                     |
+| Cache status per commit | [verify-cache runs](https://github.com/Shrub24/nix-fleet/actions/workflows/verify-cache.yml) |
+
+These are one record, not four literals: `fleet.services."niks3-write"` carries both
+routes and `publicKeys`, and `lib.serviceEndpoints` resolves them
+(`cacheSubstituterUrl`, `cachePublicKeys`, `cacheApiUrl`). The `nix-baseline` aspect
+adds the substituter and its key to a host's `nix.conf` from that record, and the CI
+workflows read the rendered `packages.<system>.cache-*` artifacts, so nothing
+restates a hostname.
+
+`verify-cache` runs on every push to `main`: it asks `nix path-info` about each
+realised closure root and publishes the counts. What a miss means depends on whether
+that revision was built — `main` fast-forwards to the candidate the pipeline built,
+so a miss on a promoted revision is a loss to investigate, while a human push reports
+the derivations its own commit changed, because routine CI never builds. A verified
+revision also moves a rolling `last-known-good` pin per system, whose closure covers
+every published output.
+
+Using the cache without this flake:
+
+```nix
+nix.settings = {
+  substituters = [ "https://cache.shrublab.xyz" ];
+  trusted-public-keys = [ "nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A=" ];
 };
 ```
