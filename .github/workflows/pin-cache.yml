@@ -136,6 +136,10 @@ jobs:
           set -euo pipefail
           # An empty name would create pins called "-x86_64-linux".
           [ -n "$PIN" ] || { echo "::error::pin-cache: no pin name (input or CACHE_PIN_NAME)"; exit 1; }
+          # `auto` derives the prefix from the repository, so a consumer needs no
+          # variable; pin names share one server-side registry, so per-repo prefixes
+          # keep the cache's `pins` rule narrow.
+          if [ "$PIN" = auto ]; then PIN="${GITHUB_REPOSITORY#*/}-main"; fi
           token=$(mktemp)
           bash "$TOKEN_SCRIPT" > "$token"
           export NIKS3_AUTH_TOKEN_FILE="$token"

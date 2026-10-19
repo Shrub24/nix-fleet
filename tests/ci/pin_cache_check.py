@@ -62,12 +62,13 @@ with tempfile.TemporaryDirectory() as directory:
                 **os.environ,
                 "PATH": f"{root}:{os.environ['PATH']}",
                 "SYSTEMS": "x86_64-linux aarch64-linux",
-                "TARGETS": ".#checks",
+                "TARGETS": ".#packages",
                 "PIN": pin_name,
                 "API": "https://api.invalid",
                 "BINARY_DIR": str(binary),
                 "TOKEN_SCRIPT": str(token_script),
                 "CALLS": str(calls),
+                "GITHUB_REPOSITORY": "Shrub24/nix-fleet",
                 "GITHUB_STEP_SUMMARY": str(summary),
                 "GITHUB_SHA": "0" * 40,
             },
@@ -83,6 +84,17 @@ with tempfile.TemporaryDirectory() as directory:
     assert "nix-fleet-main-x86_64-linux" in created[0], created
     assert "nix-fleet-main-aarch64-linux" in created[1], created
     assert all("https://api.invalid" in line for line in created), created
+    assert "nix-fleet-main-<system>" in summary.read_text(), summary.read_text()
+
+    # `auto` derives the prefix from the repository, so a consumer needs no variable.
+    result = run("auto")
+    assert result.returncode == 0, result.stderr
+    created = [line for line in calls.read_text().splitlines() if line.startswith("pins create")]
+    assert len(created) == 2, created
+    # The owner is dropped: pin names share one registry, so the repository alone
+    # names the prefix.
+    assert "nix-fleet-main-x86_64-linux" in created[0], created
+    assert "nix-fleet-main-aarch64-linux" in created[1], created
     assert "nix-fleet-main-<system>" in summary.read_text(), summary.read_text()
 
     # Without a name the shell would otherwise create pins called "-<system>".

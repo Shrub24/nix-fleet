@@ -68,17 +68,22 @@ unaffected, because it holds no credential.
 ## 4. Enable it
 
 ```
-CACHE_PIN_NAME=nix-fleet-main      # repository variable
+CACHE_PIN_NAME=auto                # repository variable: prefix derived from the repository
+CACHE_PIN_NAME=nix-fleet-main      # or name the prefix outright
 ```
 
-Empty (or unset) leaves pinning off; verification is unaffected.
+Empty (or unset) leaves pinning off; verification is unaffected. `auto` derives the
+prefix as `<repository>-main`, dropping the owner, so a consumer sets nothing beyond
+the variable's presence and gets `nix-homelab-main-<system>`. Names share one
+server-side registry, so keep the prefix per-repository and reserve it narrowly in the
+cache's `pins` rule (§2) rather than with a wildcard.
 
 ## 5. First run
 
 `promote-candidate` dispatches `pin-cache` after a successful fast-forward. By hand it
-is `gh workflow run pin-cache.yml -f pin_name=nix-fleet-main`, which is also how a
-revision whose publication completed late is re-pinned. One pin per system is
-created.
+is `gh workflow run pin-cache.yml -f pin_name=auto` (or an explicit prefix), which is
+also how a revision whose publication completed late is re-pinned. One pin per system
+is created.
 
 Verify:
 
