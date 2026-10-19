@@ -27,6 +27,12 @@
 # `last-known-good` pointer, and repointing it is what releases the old closure
 # to the cache's own GC.
 #
+# When it runs: promote-candidate.yml dispatches it after a successful promotion,
+# because that is the only revision whose selection was actually built; a schedule
+# or a manual dispatch covers everything else. A push to main is deliberately not
+# a trigger — routine CI never builds, so a human push is unbuildable by design and
+# verifying it would report misses that are not faults.
+#
 # Design: docs/contracts/ci.md and docs/contracts/update-candidates.md.
 name: verify-cache
 
@@ -34,8 +40,10 @@ permissions:
   contents: read
 
 on:
-  push:
-    branches: [main]
+  # NOT on a push to main. Routine CI never builds, so a human push produces a
+  # revision whose new derivations were never realised and therefore cannot be
+  # served; verifying it reports a miss that is not a fault. A revision is worth
+  # verifying when it was built, which means a promoted candidate.
   workflow_dispatch:
   workflow_call:
     inputs:

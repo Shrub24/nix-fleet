@@ -77,13 +77,21 @@ rather than to weaken the check.
 Cache availability is a diagnostic, not a step in the candidate pipeline. An
 unavailable cache would block every dependency update while saying nothing about
 whether a revision is correct, so promotion rests on validation and the build.
-`verify-cache.yml` therefore runs after the revision lands (push to `main`, or
-dispatch) and reads only the public substituter route: substitution is public even
+`verify-cache.yml` therefore runs when a revision was **built** — dispatched by
+`promote-candidate.yml` after a successful promotion, or by hand — and reads only
+the public substituter route: substitution is public even
 though the write API is not, so it needs no tailnet identity, no OIDC and no
 secret. It asks `nix path-info` about each realised closure root rather than
 substituting the closure, because uploads are atomic per closure — a served root
 means its closure was committed — and because a plain store on a fresh runner is
 already empty. It names every missing path and never gates anything.
+
+A push to `main` is deliberately not a trigger. Routine CI never builds, so a
+human push carries new derivations that were never realised: measured on the first
+live run, a pushed revision reported exactly the three derivations its commit
+changed — the new `cache-root`, the changed `packages` aggregate and the changed
+`treefmt-check` — while the other 53 roots were served. Misses there are a
+statement about the trigger, not about the cache.
 
 With `pin_name` set it also pins one aggregate root per system after a green
 verify. A pin protects a closure from the cache's own GC, so the name is a rolling

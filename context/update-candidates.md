@@ -439,6 +439,15 @@ present, so it tests the runner's emptiness, not the cache); a post-merge job th
 rebuilds (a fresh runner has no store, and `--print-out-paths` plus `path-info`
 needs hashes only)
 
+**Evidence, and the trigger it corrected:** the first live run on a pushed revision
+reported three unserved roots on `x86_64-linux` — the new `cache-root`, the changed
+`packages` aggregate and the changed `treefmt-check` — with the other 53 roots
+served, and eight on `aarch64-linux`, where the fixture toplevel changed too. Every
+miss was a derivation that commit had changed and that no build had ever realised.
+So the trigger is a _built_ revision: `promote-candidate.yml` dispatches the
+verifier after a successful promotion, and it stays dispatchable by hand. A push to
+`main` is deliberately not a trigger, because routine CI never builds.
+
 **Revisit when:** the cache is unavailable often enough that a pin alone stops protecting the last
 good closure, or the upload path starts failing closed on a truncated drain, in
 which case the daemon's own verdict replaces this diagnostic

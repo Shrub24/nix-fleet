@@ -18,6 +18,13 @@ import yaml
 
 workflow = yaml.load(Path(sys.argv[1]).read_text(), Loader=yaml.BaseLoader)
 
+# A push to main is not a trigger: routine CI never builds, so a human push has new
+# derivations that were never realised and every one of them reads as a miss. The
+# verifier runs against a revision that was built — a promoted candidate — or when
+# someone dispatches it deliberately.
+assert "push" not in workflow["on"], "verify-cache runs on a push, where unbuilt paths read as misses"
+assert "workflow_dispatch" in workflow["on"]
+
 # Read-only verification must not carry a credential, or it becomes another place
 # a pull request could reach one.
 verify = workflow["jobs"]["verify"]

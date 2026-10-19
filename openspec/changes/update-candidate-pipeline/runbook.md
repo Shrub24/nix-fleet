@@ -202,7 +202,7 @@ touching anything else. `gh workflow enable promote-candidate` restores it.
 3. Promotion: `promote-candidate` fast-forwards `main` to the candidate. Verify:
    `main`'s head is the candidate commit and the source pull request shows as
    merged (task 6.2's reachability check).
-4. The push to `main` runs `verify-cache`. Verify: it reports
+4. Promotion queues `verify-cache` for the promoted revision. Verify: it reports
    `serves every root of .#checks for …`, with no tailnet join and no credential,
    and — when `pin_name` is configured — the `pin` job reports the two rolling pins
    (`<pin_name>-x86_64-linux`, `-aarch64-linux`).

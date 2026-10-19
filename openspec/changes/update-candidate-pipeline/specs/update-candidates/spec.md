@@ -65,6 +65,11 @@ On success the pipeline SHALL post a required status on the candidate SHA, whose
 - **WHEN** the build succeeds but the configured substituter does not serve an output
 - **THEN** the success status is still posted, because availability says nothing about whether the revision is correct and an unavailable cache must not block dependency updates
 
+#### Scenario: Availability is checked only for a built revision
+
+- **WHEN** cache availability is checked
+- **THEN** it is checked for a revision that was built — a promoted candidate or an explicit dispatch — and not for every push to the default branch, because a revision whose new derivations were never realised would report them as misses
+
 #### Scenario: A stage does not report
 
 - **WHEN** any stage is skipped or leaves no result
