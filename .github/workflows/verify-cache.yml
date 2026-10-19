@@ -65,7 +65,7 @@ jobs:
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
-      - name: Require the cache to serve every realised root
+      - name: Report whether the cache serves every realised root
         env:
           SYSTEMS: ${{ inputs.systems || 'x86_64-linux aarch64-linux' }}
           TARGETS: ${{ inputs.targets || '.#packages' }}
@@ -81,7 +81,7 @@ jobs:
               [ -n "$path" ] || continue
               checked=$((checked + 1))
               if ! nix path-info --store "$CACHE" "$path" >/dev/null 2>&1; then
-                echo "::error::verify-cache: $CACHE does not serve $path ($system)"
+                echo "::notice::verify-cache: $CACHE does not serve $path ($system)"
                 missing=$((missing + 1))
               fi
             done <<< "$roots"
@@ -92,9 +92,10 @@ jobs:
             echo "- roots checked: $checked"
             echo "- unserved: $missing"
           } >> "$GITHUB_STEP_SUMMARY"
+          # Coverage is reported, never enforced: presence is asserted fail-closed by
+          # pin-cache.yml at promotion. Only a failure of this job's own work is red.
           if [ "$missing" -gt 0 ]; then
-            echo "::error::verify-cache: $missing of $checked store path(s) missing from $CACHE"
-            echo "::notice::a revision no build realised reports its changed derivations here; a promoted revision was built, so a miss there is a loss to investigate"
-            exit 1
+            echo "::notice::verify-cache: $missing of $checked store path(s) missing from $CACHE; pin-cache asserts presence at promotion"
+            exit 0
           fi
           echo "verify-cache: $CACHE serves every root of $TARGETS for $SYSTEMS ($checked roots)"

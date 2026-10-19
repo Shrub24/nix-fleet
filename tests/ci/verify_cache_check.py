@@ -1,5 +1,6 @@
-"""Exercise the verify step against a stub `nix`: a served root passes, a missing root
-fails by path, both systems are asked, and no credential is held."""
+"""Exercise the verify step against a stub `nix`: a served root reports clean, a missing
+root is named without failing the job, a tool failure still fails, both systems are
+asked, and no credential is held."""
 
 import os
 from pathlib import Path
@@ -31,7 +32,9 @@ assert set(workflow["jobs"]) == {"verify"}, f"verify-cache owns more than measur
 assert "pin_name" not in str(workflow["on"]), "pinning inputs belong to pin-cache.yml"
 
 script = next(
-    s for s in verify["steps"] if s.get("name") == "Require the cache to serve every realised root"
+    s
+    for s in verify["steps"]
+    if s.get("name") == "Report whether the cache serves every realised root"
 )["run"]
 
 with tempfile.TemporaryDirectory() as directory:
@@ -41,7 +44,7 @@ with tempfile.TemporaryDirectory() as directory:
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$CALLS"\n'
         'case "$1" in\n'
-        "  eval) printf '%s\\n' \"$ROOTS\" ;;\n"
+        "  eval) if [ -n \"${CHAOS:-}\" ]; then exit 1; fi; printf '%s\\n' \"$ROOTS\" ;;\n"
         '  path-info) case "$4" in *missing*) exit 1 ;; esac ;;\n'
         "esac\n"
     )
@@ -58,7 +61,7 @@ with tempfile.TemporaryDirectory() as directory:
                 **os.environ,
                 "PATH": f"{root}:{os.environ['PATH']}",
                 "SYSTEMS": "x86_64-linux aarch64-linux",
-                "TARGETS": ".#checks",
+                "TARGETS": ".#packages",
                 "CACHE": "https://cache.invalid",
                 "ROOTS": roots,
                 "CALLS": str(calls),
@@ -82,17 +85,43 @@ with tempfile.TemporaryDirectory() as directory:
     assert "unserved: 0" in summary.read_text(), summary.read_text()
     assert "::error::" not in result.stdout, result.stdout
     # One system checked would pass while proving half the claim.
-    assert ".#checks.x86_64-linux" in log and ".#checks.aarch64-linux" in log, log
+    assert ".#packages.x86_64-linux" in log and ".#packages.aarch64-linux" in log, log
     assert "https://cache.invalid" in log, log
 
+    # Coverage is a report, not a gate: a miss is named and the job stays green.
     # The stub answers both systems alike, so one miss is reported twice.
     result, _ = run(served + "\n/nix/store/cccc-missing")
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.count("/nix/store/cccc-missing") == 2, result.stdout
+    assert "::error::" not in result.stdout, result.stdout
+    assert "::notice::" in result.stdout, result.stdout
     assert "2 of 6 store path(s) missing" in result.stdout, result.stdout
     assert "unserved: 2" in summary.read_text(), summary.read_text()
 
+    # The job fails only when its own work fails, so a broken cache client is not
+    # mistaken for a cache that serves nothing.
+    calls.write_text("")
+    broken = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", script],
+        env={
+            **os.environ,
+            "PATH": f"{root}:{os.environ['PATH']}",
+            "SYSTEMS": "x86_64-linux",
+            "TARGETS": ".#packages",
+            "CACHE": "https://cache.invalid",
+            "ROOTS": served,
+            "CALLS": str(calls),
+            "CHAOS": "1",
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "GITHUB_SHA": "0" * 40,
+        },
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert broken.returncode != 0, "a failing tool reported itself as a clean run"
+
 print(
-    "cache verification passes a served root, names a missing root, asks every system, "
-    "and holds no cache credential"
+    "cache verification reports a served root, names a missing root without failing, "
+    "fails on its own errors, asks every system, and holds no cache credential"
 )

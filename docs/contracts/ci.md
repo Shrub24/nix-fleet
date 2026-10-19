@@ -84,7 +84,11 @@ though the write API is not, so it needs no tailnet identity, no OIDC and no
 secret. It asks `nix path-info` about each realised closure root rather than
 substituting the closure, because uploads are atomic per closure — a served root
 means its closure was committed — and because a plain store on a fresh runner is
-already empty. It names every missing path and never gates anything.
+already empty. It names every missing path and **exits 0 regardless** — misses are
+`::notice` lines and counts, never a failed job. The job fails only when its own work
+fails (evaluation, the store query), so a broken cache client is not reported as a
+cache that serves nothing. Presence is enforced fail-closed elsewhere: `pins create`
+refuses a path the cache does not hold.
 
 The selection is the **artefact set**, `.#packages` per system — what anything would
 actually substitute — not `.#checks`. A check answers a question about a revision and

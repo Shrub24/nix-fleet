@@ -302,8 +302,9 @@ restates a hostname.
 
 `verify-cache` runs on every push to `main`: it asks `nix path-info` about each
 realised root of the artefact set (`.#packages` per system, not `.#checks` — a verdict
-changes whenever its inputs do) and publishes the counts. A promoted revision was
-built, so an unserved package root there is a publication that did not complete. A
+changes whenever its inputs do) and publishes the counts. It reports and never fails
+on a miss; presence is enforced by the pin. A promoted revision was built, so an
+unserved package root there is a publication that did not complete. A
 revision that was built and then promoted also moves a rolling `last-known-good` pin
 per system, whose closure covers every published package; that is `pin-cache.yml`,
 owned by the promotion path rather than by verification.

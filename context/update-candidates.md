@@ -546,6 +546,12 @@ per-selection "don't publish", so aarch64 checks would publish anyway or lose
 coverage; moving formatters out of `checks` into a workflow step, which drops
 `nix flake check` as the enforcement point.
 
+**Also decided here:** verification reports and never fails. A miss is a `::notice`
+and a count, and the job is red only when its own work fails — otherwise a routine
+human push that changes a package (routine CI never builds) reads as a broken cache
+and trains the signal away. Presence is asserted fail-closed by `pins create` at
+promotion, which names the missing path and refuses to move the name.
+
 **Revisit when:** consumers adopt pinning — several pins per host, last-N generations
 and release milestones — at which point a tighter niks3 GC policy against unpinned
 paths becomes the retention lever, and what belongs in the pinned closure is worth
