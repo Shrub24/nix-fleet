@@ -184,10 +184,6 @@ on:
         description: "Coordinator's builder SSH key (authorized by builders' nixbuild account)"
         required: false
 
-concurrency:
-  group: build-push-cache
-  cancel-in-progress: false
-
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -252,9 +248,13 @@ jobs:
     needs: prepare
     runs-on: ${{ needs.prepare.outputs.runner }}
     # One build at a time repository-wide: concurrent candidates compete for the
-    # same builders and re-warm the same cache. `queue: max` keeps pending runs.
+    # same builders and re-warm the same cache. `queue: max` keeps pending runs
+    # instead of replacing them. The group is declared here and nowhere else: a
+    # job whose group is the same as its workflow's group can never acquire it,
+    # because the run itself holds it — on the first live run through this call
+    # path the build job failed at startup with no steps and no runner.
     concurrency:
-      group: build-push-cache
+      group: fleet-build-stage
       cancel-in-progress: false
       queue: max
     outputs:

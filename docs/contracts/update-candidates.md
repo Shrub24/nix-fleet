@@ -117,6 +117,11 @@ exits successfully. A human pull request is merged by its reviewer.
 
 - `ci.yml` runs on pull requests (including the `labeled` activity) and on pushes
   to `main`. It holds no credential.
+- `build-push-cache.yml` serialises only its `build` job (`queue: max`), so two
+  candidates cannot compete for the same builders or re-warm the same cache, while
+  preparation and cache verification stay independent. No workflow-level
+  concurrency group is declared: a group shared between a workflow and one of its
+  own jobs deadlocks the job, which then fails at startup with no runner.
 - `pipeline.yml` runs when `ci.yml` completes, and resolves three cases:
   - an automation pull request → prepared, built and validated;
   - a human pull request → status only;
