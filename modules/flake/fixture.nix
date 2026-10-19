@@ -192,6 +192,8 @@ let
         !(unbound.systemd.units ? "tailscaled-autoconnect.service")
         && (bound.systemd.units ? "sops-install-secrets.service")
         && lib.hasInfix "ExecStart=" (unitText bound)
+        && bound.systemd.services.tailscaled.restartIfChanged == false
+        && bound.systemd.services.tailscaled-autoconnect.restartIfChanged == false
         && hasInstallerDependency bound;
 
       nixGcChecks =

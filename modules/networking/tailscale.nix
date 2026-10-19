@@ -104,8 +104,11 @@ _: {
             authKeyFile = lib.mkIf authKeyReady "/run/secrets/tailscale.auth_key";
           };
 
-          systemd.services.tailscaled.environment = lib.mkIf (cfg.debugMtu != null) {
-            TS_DEBUG_MTU = toString cfg.debugMtu;
+          systemd.services.tailscaled = {
+            restartIfChanged = false;
+            environment = lib.mkIf (cfg.debugMtu != null) {
+              TS_DEBUG_MTU = toString cfg.debugMtu;
+            };
           };
         }
 
@@ -114,6 +117,7 @@ _: {
           # ordering lives under the same condition: defined alone it renders a
           # unit with no ExecStart, which systemd warns about on every boot.
           systemd.services.tailscaled-autoconnect = {
+            restartIfChanged = false;
             wants = [ "sops-install-secrets.service" ];
             after = [ "sops-install-secrets.service" ];
           };

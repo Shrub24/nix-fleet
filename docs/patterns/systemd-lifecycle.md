@@ -46,8 +46,11 @@ Use `restartIfChanged` and `stopIfChanged` for distinct decisions. Disabling
 `restartIfChanged` can leave changed unit settings unapplied until a later
 restart. Setting `stopIfChanged = false` changes a changed unit's switch from a
 separate stop/start to a single restart; it is not a no-restart or
-no-interruption guarantee. The current pinned nixpkgs revision already supplies this stop
-behavior for networkd and resolved, and reloads resolved configuration and
+no-interruption guarantee. nix-fleet keeps `restartIfChanged = false` on both
+Tailscale units: a switch may itself depend on the tailnet, so applying unit
+changes must not restart its transport. Use a separately controlled restart to
+apply those changes. The current pinned nixpkgs revision already supplies this
+stop behavior for networkd and resolved, and reloads resolved configuration and
 reloadable networkd `.network` files. Do not restate those upstream defaults in
 a fleet aspect. Changes to networkd `.netdev` files can still restart
 networkd and deserve host-level transition testing.

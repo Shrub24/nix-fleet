@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory() as directory:
                 "PIN": pin_name,
                 "API": "https://api.invalid",
                 "BINARY_DIR": str(binary),
-                "TOKEN_SCRIPT": str(token_script),
+                "TOKEN_SCRIPT": f'{shutil.which("bash")} {token_script}',
                 "CALLS": str(calls),
                 "GITHUB_REPOSITORY": "Shrub24/nix-fleet",
                 "GITHUB_STEP_SUMMARY": str(summary),
