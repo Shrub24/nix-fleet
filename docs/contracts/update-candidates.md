@@ -263,8 +263,10 @@ that ever resolves differently, the first run fails immediately with a
 missing-workflow error rather than doing something surprising, and the fix is a
 pin inside nix-fleet, not a second copy in the consumer.
 
-A called workflow cannot be granted more than its caller holds, so each thin
-trigger declares the union of the permissions its jobs need — `pipeline.yml`'s
+A called workflow cannot be granted more than its caller holds, and GitHub
+validates _every_ job in the called workflow against the caller's grant when the
+call starts — not only the jobs a given mode runs. So each thin trigger declares
+the union of the permissions its jobs need — `pipeline.yml`'s
 calls need `contents: write`, `statuses: write`, `pull-requests: write` and
 `id-token: write`; `promote-candidate.yml` needs `contents: write`; `accept.yml`
 needs `statuses: write` — and passes `secrets: inherit`, because `candidate.yml`

@@ -309,7 +309,7 @@ move to a sandbox that cannot reach a token even by accident.
 **Type:** decision
 **Status:** active
 **Evidence:** inferred
-**Source:** `.github/workflows/accept.yml`, `.github/scripts/promote-candidate.sh`, 2026-10-15
+**Source:** `.github/workflows/accept.yml`, `.github/scripts/promote-candidate.sh`, 2026-10-19
 
 Applying `accept-update` posts an `update-accepted` commit status on the head the
 label event concerns: `accept.yml` is defined on the default branch, triggered by
@@ -341,7 +341,7 @@ mechanism GitHub supplies directly (a deployment, an environment approval).
 **Status:** active
 **Evidence:** confirmed
 **Source:** `.github/workflows/package-updates-refresh.yml` (job `update`, step
-`Refresh flake inputs and registered packages`), 2026-10-15
+`Refresh flake inputs and registered packages`), 2026-10-19
 
 Evidence: `tests/ci/producer_check.py` executes the decision step for the
 consistent pairs, the contradictory pairs and the missing-artifact cases, and the
@@ -369,7 +369,7 @@ artifacts and the status agreeing is a smaller contract.
 **Type:** decision
 **Status:** active
 **Evidence:** confirmed
-**Source:** `.github/scripts/prepare-candidate.sh`, 2026-10-15
+**Source:** `.github/scripts/prepare-candidate.sh`, 2026-10-19
 
 Evidence: the `write-flake` program compares against and writes only `flake.nix`,
 and `nix flake lock` owns `flake.lock`.
@@ -389,7 +389,7 @@ preparation: narrow, declared, and refused by name when exceeded.
 **Status:** active
 **Evidence:** inferred
 **Source:** `.github/workflows/pipeline.yml` (now `workflow_call`),
-`docs/contracts/update-candidates.md`, 2026-10-15
+`docs/contracts/update-candidates.md`, 2026-10-19
 
 Evidence: actionlint and the producer check pass; no consumer has called it.
 

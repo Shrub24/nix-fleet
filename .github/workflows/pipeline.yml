@@ -167,9 +167,16 @@ jobs:
   human:
     needs: [resolve, validate]
     if: ${{ needs.resolve.outputs.kind == 'human' }}
+    # The same union as `candidate`, not just the status job's scopes: GitHub
+    # validates every job in the called workflow against the caller's grant, so a
+    # narrower grant here fails the whole call at startup even though the human
+    # mode skips preparation, build and verification. Each called job still
+    # receives only what it declares for itself.
     permissions:
+      contents: write
       statuses: write
       pull-requests: write
+      id-token: write
     uses: ./.github/workflows/candidate.yml
     with:
       source_sha: ${{ needs.resolve.outputs.sha }}
