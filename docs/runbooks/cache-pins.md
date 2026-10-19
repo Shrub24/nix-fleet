@@ -45,6 +45,13 @@ so a name that means "the fleet's current main" cannot be moved by anything else
 Names: `nix-fleet-main-x86_64-linux`, `nix-fleet-main-aarch64-linux`
 (`<CACHE_PIN_NAME>-<system>`).
 
+The cache's claims (`nix-homelab`, `modules/cache/niks3-cache.nix`) trust the owner,
+the repository and `refs/heads/main`, with one rule and one pin namespace per listed
+repository — not a particular workflow file. So a listed repository's workflow on
+`main` may publish, and adding a publisher there needs no edit to the cache config;
+adding a _repository_ does. A deployment that still binds `job_workflow_ref` refuses
+`pin-cache` with `401`, which is a claim mismatch, not a credential problem.
+
 Verify: a `write` token that is _not_ the CI identity gets `403` for that name.
 
 ## 3. Trust the pin workflow on the tailnet
@@ -70,7 +77,9 @@ No repository variable carries the Tailscale client id or audience: the job reso
 
 Verify: `pin-cache`'s join succeeds. A missing listing shows as
 `token exchange failed with status 403` pointing at the credential; `verify-cache` is
-unaffected, because it holds no credential.
+unaffected, because it holds no credential. The credential's containment is the
+`tag:ci` ACL, so widening the pattern is a decision about what a joined node reaches,
+not only about which workflow runs.
 
 ## 4. Enable it
 

@@ -345,17 +345,18 @@ with claim rules selecting the allowed repositories and reusable workflow,
 the writable `auth_keys` scope and the `tag:ci` tag. One credential serves all
 three repositories.
 
-The workflow rule must list **every** reusable workflow that joins the tailnet,
-because `job_workflow_ref` names the file that defines the joining job. A new file
-is not covered by a rule naming an existing one: an earlier read-only cache
-verifier failed its join with `token exchange failed with status 403` pointing at
-the credential, while the build job joined in the same run. Adding a workflow that
-joins the tailnet is therefore a credential change, not only a repository change.
+A rule naming one workflow file covers only that file, because
+`job_workflow_ref` names the file that defines the joining job: an earlier
+read-only cache verifier failed its join with `token exchange failed with status
+403` pointing at the credential, while the build job joined in the same run.
+Tailscale's claim rules hold one pattern per claim, so covering several workflows
+means one pattern with a wildcard rather than several entries — the credential
+matches `Shrub24/nix-fleet/.github/workflows/*@refs/heads/main`, with `subject`
+left at the repository-and-branch form so the wildcard cannot reach another
+repository, another ref, or a pull request.
 
-That read check no longer joins: substitution is public, so `verify-cache.yml`
-needs no identity at all, and it holds no credential of any kind. Only
-`pin-cache.yml` touches the private API, so the credential lists two files —
-`build-push-cache.yml` and `pin-cache.yml` — and nothing else. Tailscale documents the client id and audience as **not
+Substitution is public, so `verify-cache.yml` needs no identity at all and holds
+no credential of any kind; only `pin-cache.yml` touches the private API. Tailscale documents the client id and audience as **not
 secrets**; they are public fleet metadata.
 A federated identity belongs to no user, so it must tag its nodes:
 `tags: tag:ci` is not optional.
@@ -391,10 +392,13 @@ claim. The claims worth binding:
   unmerged branches out.
 - `job_workflow_ref` — this entry point and its ref, e.g.
   `Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@refs/heads/main`,
-  or `@refs/tags/v1` for a consumer pinned to a tag. Binding it is what makes
-  the cache trust this workflow rather than any workflow in the repository —
-  and since a missing bound claim is rejected, inlining these steps instead of
-  calling the workflow is denied by design.
+  or `@refs/tags/v1` for a consumer pinned to a tag. The cache does **not**
+  bind it: its rule trusts the owner, the repository and `refs/heads/main`, so
+  any workflow in a listed repository may publish. The reasoning is that code on
+  `main` is merged code and the repository is what the fleet controls, while
+  naming files would mean editing the cache's server config whenever any
+  repository adds a publisher. A missing bound claim is rejected, so inlining
+  these steps instead of calling the workflow still denies a cache token.
 
 ## First-live-run caveats (honest state)
 
@@ -491,10 +495,12 @@ the affected GitHub secrets.
 
 Create one GitHub Actions OIDC trust credential in Tailscale with writable
 `auth_keys` scope and permission to issue `tag:ci` nodes. Restrict its claims
-to the intended repositories and the reusable workflow, for example
-`job_workflow_ref = Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@*`;
-use tighter workflow refs where practical. Avoid assuming all repositories
-have the same name-shaped `sub` (see cache authorization above).
+to the intended repositories and workflows, for example
+`job_workflow_ref = Shrub24/nix-fleet/.github/workflows/*@refs/heads/main` with
+`subject` at the repository-and-branch form. The claim rules hold one pattern per
+claim, so a second workflow is covered by widening that one value, not by adding
+an entry. Avoid assuming all repositories have the same name-shaped `sub` (see
+cache authorization above).
 
 The shared Client ID and derived Audience are already recorded in fleet; no
 GitHub-side copy is required. In tailnet policy, define `tag:ci` ownership and

@@ -472,9 +472,9 @@ artifacts derive from that one record instead of restating a URL or a key.
 **Reason:** A read-only check that joined the tailnet was an invention rather than a
 requirement: substitution is public. The first attempt proved it by failing —
 `token exchange failed with status 403` from the tailnet credential while the build
-job joined successfully in the same run, because the credential's workflow rule
-names `build-push-cache.yml` by `job_workflow_ref`. Reading the public route
-removed the dependency instead of widening the trusted workflow list.
+job joined successfully in the same run, because the credential's workflow rule then
+named only `build-push-cache.yml` through `job_workflow_ref`. Reading the public
+route removed the dependency instead of widening the trusted workflow list.
 
 **Rejected alternatives:** widening the tailnet trust credential to cover a read-only workflow, which would
 have made every cache question depend on an identity it did not need
