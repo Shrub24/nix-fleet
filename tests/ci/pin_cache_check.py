@@ -46,7 +46,25 @@ with tempfile.TemporaryDirectory() as directory:
     binary = root / "bin"
     binary.mkdir()
     stub_niks3 = binary / "niks3"
-    stub_niks3.write_text(f'#!{shutil.which("bash")}\nprintf "%s\\n" "$*" >> "$CALLS"\n')
+    # Mirrors niks3's parse boundary: flags are read from the words after
+    # `pins create`, and Go's flag package stops at the first positional word, so a
+    # flag placed after NAME or PATH is silently taken as an argument.
+    stub_niks3.write_text(
+        f'#!{shutil.which("bash")}\n'
+        'printf "%s\\n" "$*" >> "$CALLS"\n'
+        "shift 2\n"
+        "args=($@)\n"
+        "i=0 pos=0\n"
+        'while [ "$i" -lt "${#args[@]}" ]; do\n'
+        '  case "${args[$i]}" in\n'
+        '    --*)\n'
+        '      if [ "$pos" = 1 ]; then echo "flag after a positional: ${args[$i]}" >&2; exit 2; fi\n'
+        "      i=$((i + 2))\n"
+        "      ;;\n"
+        "    *) pos=1; i=$((i + 1)) ;;\n"
+        "  esac\n"
+        "done\n"
+    )
     stub_niks3.chmod(0o755)
 
     token_script = root / "token.sh"
@@ -84,6 +102,8 @@ with tempfile.TemporaryDirectory() as directory:
     assert "nix-fleet-main-x86_64-linux" in created[0], created
     assert "nix-fleet-main-aarch64-linux" in created[1], created
     assert all("https://api.invalid" in line for line in created), created
+    # The token command is handed to niks3, which runs and refreshes it per request.
+    assert all("--auth-token-script" in line for line in created), created
     assert "nix-fleet-main-<system>" in summary.read_text(), summary.read_text()
 
     # `auto` derives the prefix from the repository, so a consumer needs no variable.

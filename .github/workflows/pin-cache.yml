@@ -140,14 +140,14 @@ jobs:
           # variable; pin names share one server-side registry, so per-repo prefixes
           # keep the cache's `pins` rule narrow.
           if [ "$PIN" = auto ]; then PIN="${GITHUB_REPOSITORY#*/}-main"; fi
-          # The output is a command line (interpreter plus module), not a path.
-          read -r -a token_cmd <<< "$TOKEN_SCRIPT"
-          token=$(mktemp)
-          "${token_cmd[@]}" > "$token"
-          export NIKS3_AUTH_TOKEN_FILE="$token"
           for system in $SYSTEMS; do
             root=$(nix eval --raw "$TARGETS.$system.cache-root.outPath")
-            "$BINARY_DIR/niks3" pins create "$PIN-$system" "$root" --server-url "$API"
+            # Flags precede the positional arguments: niks3 parses with Go's flag
+            # package, which stops at the first non-flag word.
+            "$BINARY_DIR/niks3" pins create \
+              --server-url "$API" \
+              --auth-token-script "$TOKEN_SCRIPT" \
+              "$PIN-$system" "$root"
           done
           {
             echo "### Pins moved for \`${GITHUB_SHA}\`"
