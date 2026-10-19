@@ -72,6 +72,8 @@ in
       };
       cfg = evaluated.config.services.bifrost;
       unit = evaluated.config.systemd.services.bifrost;
+      defaultConfig = (evaluate { }).config;
+      defaultUnit = defaultConfig.systemd.services.bifrost;
       failures =
         extra: map (a: a.message) (builtins.filter (a: !a.assertion) (evaluate extra).config.assertions);
       valid = lib.asserts.checkAssertWarn evaluated.config.assertions evaluated.config.warnings true;
@@ -80,9 +82,16 @@ in
         && unit.serviceConfig.Group == "bifrost"
         && unit.serviceConfig.EnvironmentFile == [ "/run/secrets/bifrost.environment" ]
         && unit.serviceConfig.ReadWritePaths == [ cfg.dataDir ]
+        && !(unit.serviceConfig ? StateDirectory)
         && unit.environment.FIXTURE_PUBLIC_VALUE == "public"
         && unit.restartTriggers == [ cfg.renderedConfigFile ]
         && builtins.elem "d ${cfg.dataDir} 0700 bifrost bifrost - -" evaluated.config.systemd.tmpfiles.rules
+        && !(builtins.elem "network-online.target" unit.wants)
+        && !(builtins.elem "network-online.target" unit.after)
+        && defaultUnit.serviceConfig.StateDirectory == "bifrost"
+        && defaultUnit.serviceConfig.StateDirectoryMode == "0700"
+        && defaultUnit.serviceConfig.ReadWritePaths == [ ]
+        && !(builtins.elem "d /var/lib/bifrost 0700 bifrost bifrost - -" defaultConfig.systemd.tmpfiles.rules)
         && evaluated.config.services.notify.events.bifrost.failure != null
         && cfg.host == "127.0.0.1"
         && cfg.localEndpoint.url == "http://127.0.0.1:${toString cfg.port}"

@@ -1,7 +1,7 @@
 # Tailscale baseline. Selection is enablement. Identity comes from
 # networking.hostName; tailnet suffix, tags, and routes are consumer policy.
-# secretFiles.auth is a two-step sops bootstrap: unbound or missing registers
-# nothing. Consumer requirement: sops-nix.nixosModules.sops when binding auth.
+# secretFiles.auth is a two-step SOPS bootstrap: unbound or missing registers
+# nothing. Binding auth requires sops-nix and the fleet's systemd activation policy.
 # The tailscaled daemon registers a failure event like any other monitored
 # unit (fromPackage: nixpkgs ships the unit file); autoconnect is unregistered
 # — its retry exits are the mechanism working, not news.
@@ -81,14 +81,11 @@ _: {
               assertion = cfg.debugMtu == null || (cfg.debugMtu >= 576 && cfg.debugMtu <= 65535);
               message = "tailscale: services.tailscale.debugMtu must be null or an MTU between 576 and 65535.";
             }
+            {
+              assertion = !authKeyReady || config.sops.useSystemdActivation;
+              message = "tailscale: systemd SOPS activation is required when binding an auth key; select sops-systemd-activation.";
+            }
           ];
-
-          systemd.services = {
-            tailscaled = {
-              restartIfChanged = false;
-              stopIfChanged = false;
-            };
-          };
 
           # Same idiom as the maintenance aspects: registration is unconditional
           # (the fragment declares the namespace); the notify aspect realizes
@@ -117,8 +114,6 @@ _: {
           # ordering lives under the same condition: defined alone it renders a
           # unit with no ExecStart, which systemd warns about on every boot.
           systemd.services.tailscaled-autoconnect = {
-            restartIfChanged = false;
-            stopIfChanged = false;
             wants = [ "sops-install-secrets.service" ];
             after = [ "sops-install-secrets.service" ];
           };

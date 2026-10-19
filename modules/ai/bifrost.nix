@@ -9,6 +9,7 @@
     }:
     let
       cfg = config.services.bifrost;
+      usesStateDirectory = cfg.dataDir == "/var/lib/bifrost";
       localEndpoint = import ../../lib/local-endpoint.nix lib;
       json = pkgs.formats.json { };
       plugins = lib.sort (a: b: a.order < b.order) (
@@ -198,12 +199,12 @@
           isSystemUser = true;
           group = "bifrost";
         };
-        systemd.tmpfiles.rules = [ "d ${cfg.dataDir} 0700 bifrost bifrost - -" ];
+        systemd.tmpfiles.rules = lib.optional (
+          !usesStateDirectory
+        ) "d ${cfg.dataDir} 0700 bifrost bifrost - -";
         systemd.services.bifrost = {
           description = "Bifrost AI gateway";
           wantedBy = [ "multi-user.target" ];
-          wants = [ "network-online.target" ];
-          after = [ "network-online.target" ];
           unitConfig.RequiresMountsFor = [ cfg.dataDir ];
           inherit (cfg) environment;
           restartTriggers = [ configFile ];
@@ -234,7 +235,11 @@
             ProtectSystem = "strict";
             ProtectHome = true;
             PrivateTmp = true;
-            ReadWritePaths = [ cfg.dataDir ];
+            ReadWritePaths = lib.optional (!usesStateDirectory) cfg.dataDir;
+          }
+          // lib.optionalAttrs usesStateDirectory {
+            StateDirectory = "bifrost";
+            StateDirectoryMode = "0700";
           };
         };
       };

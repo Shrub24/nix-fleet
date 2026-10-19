@@ -155,25 +155,30 @@ let
 
       tailscaleAutoconnectChecks =
         let
-          units =
+          host =
             extra:
             (fixtureNixosSystem {
               inherit system;
               modules = [
                 inputs.sops-nix.nixosModules.sops
+                aspects.sops-systemd-activation
                 aspects.tailscale
+                { sops.age.keyFile = fixtureAgeKeyFile; }
                 extra
               ];
-            }).config.systemd.units;
-          unbound = units { };
-          bound = units { services.tailscale.secretFiles.auth = ./fixture.nix; };
+            }).config;
+          unbound = host { };
+          bound = host { services.tailscale.secretFiles.auth = fixtureSecretFile; };
+          unitText = evaluated: evaluated.systemd.units."tailscaled-autoconnect.service".text;
+          hasInstallerDependency =
+            evaluated:
+            lib.elem "sops-install-secrets.service" evaluated.systemd.services.tailscaled-autoconnect.wants
+            && lib.elem "sops-install-secrets.service" evaluated.systemd.services.tailscaled-autoconnect.after;
         in
-        # Unbound, no autoconnect unit exists at all; a unit holding only the
-        # ordering drop-in has no ExecStart and warns on every boot. Bound, the
-        # unit carries nixpkgs' script and the sops ordering together.
-        !(unbound ? "tailscaled-autoconnect.service")
-        && lib.hasInfix "ExecStart=" bound."tailscaled-autoconnect.service".text
-        && lib.hasInfix "sops-install-secrets.service" bound."tailscaled-autoconnect.service".text;
+        !(unbound.systemd.units ? "tailscaled-autoconnect.service")
+        && (bound.systemd.units ? "sops-install-secrets.service")
+        && lib.hasInfix "ExecStart=" (unitText bound)
+        && hasInstallerDependency bound;
 
       nixGcChecks =
         let
@@ -360,6 +365,7 @@ let
         bifrost
         build-account
         nix-baseline
+        sops-systemd-activation
         nix-gc
         node-exporter
         podman

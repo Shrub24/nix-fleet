@@ -13,6 +13,9 @@ placement, per-relationship policy, local additions, secrets. Fact tiers:
 2. **Shared default** — mechanism defaults; overridable normally.
 3. **Consumer-local policy** — belongs downstream, additive only.
 
+Canonical shared conventions that guide implementations even when nix-fleet
+ships no aspect live in [fleet patterns](../patterns/systemd-lifecycle.md).
+
 | Contract                 | File                                   | Surface                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Machine identity + trust | [hosts.md](hosts.md)                   | `fleet.hosts.*` (canonical), known-hosts, ssh Host blocks                                                                                                                                                                                                                                                                                                                                                                            |
