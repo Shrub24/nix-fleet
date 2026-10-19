@@ -39,15 +39,14 @@
 #
 # OUTPUTS: `build` is `success` only when the build completed; an absent output
 # means the stage did not complete and must never be read as success. `systems`,
-# `runner`, `runner_system`, `ts-client-id` and `ts-audience` are the resolved
-# values, so a caller can hand them to verify-cache.yml instead of resolving them
-# again. `runner` is a GitHub runner label and `runner_system` a Nix system: they
-# are different values and are not interchangeable.
+# `runner` and `runner_system` are the resolved values, for a caller that wants to
+# chain its own jobs against the same selection. `runner` is a GitHub runner label
+# and `runner_system` a Nix system: they are different values and are not
+# interchangeable.
 #
-# VERIFICATION IS SEPARATE: cache verification is the reusable verify-cache.yml,
-# not a flag here, because a build failure and a cache-verification failure are
-# different findings and a caller that wants to name which one happened needs
-# them as two job results.
+# CACHE VERIFICATION IS NOT PART OF THIS WORKFLOW and does not gate anything: the
+# cache is warmed here, and whether it actually serves that warming is checked
+# after the revision lands, by verify-cache.yml against the public substituter.
 #
 # Pin to a VERSION TAG, not @main: nix-fleet cuts tagged releases and
 # renovate proposes tag bumps (PR gate + changelog), so consumers opt into
@@ -170,12 +169,6 @@ on:
       runner_system:
         description: "Nix system of the coordinator (aarch64-linux or x86_64-linux), for building .#packages.<system>.*"
         value: ${{ jobs.prepare.outputs.runner_system }}
-      ts-client-id:
-        description: "Resolved public Tailscale client ID, for a reusing cache verifier"
-        value: ${{ jobs.prepare.outputs.ts-client-id }}
-      ts-audience:
-        description: "Resolved public Tailscale audience"
-        value: ${{ jobs.prepare.outputs.ts-audience }}
     secrets:
       FLEET_BUILDER_SSH_KEY:
         description: "Repository coordinator key used by direct dispatch; reusable callers normally pass BUILDER_SSH_KEY"

@@ -1,6 +1,12 @@
 # Shared Nix package, daemon priorities and substitution policy.
 # Selection is enablement; host resource budgets remain consumer-owned.
 { lib, ... }:
+let
+  # The fleet cache's public read route and its signing key are canonical
+  # cross-repository facts, so the host catalog below and nix-fleet's CI cache
+  # artifacts derive them from one record instead of restating them.
+  cache = (import ../../lib/service-inventory.nix)."niks3-write";
+in
 {
   flake.modules.nixos.nix-baseline =
     { pkgs, ... }:
@@ -37,20 +43,22 @@
           substituters = lib.mkAfter [
             "https://nix-community.cachix.org"
             "https://cache.numtide.com"
-            "https://cache.shrublab.xyz"
+            cache.endpoints.cache.publicUrl
           ];
           trusted-substituters = lib.mkAfter [
             "https://nix-community.cachix.org"
             "https://cache.numtide.com"
-            "https://cache.shrublab.xyz"
+            cache.endpoints.cache.publicUrl
             "ssh-ng://eu.nixbuild.net"
           ];
-          trusted-public-keys = lib.mkAfter [
-            "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-            "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
-            "nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A="
-            "nixbuild.net/HWWKWC-1:dnSfpPDHQN/U9wexkK6r3GTaYrwqNwKS70SNGXistKg="
-          ];
+          trusted-public-keys = lib.mkAfter (
+            [
+              "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+              "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
+              "nixbuild.net/HWWKWC-1:dnSfpPDHQN/U9wexkK6r3GTaYrwqNwKS70SNGXistKg="
+            ]
+            ++ cache.publicKeys
+          );
 
           connect-timeout = lib.mkDefault 5;
           stalled-download-timeout = lib.mkDefault 30;

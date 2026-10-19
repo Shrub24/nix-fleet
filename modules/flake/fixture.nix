@@ -53,6 +53,25 @@ let
     }
   );
 
+  # The read side resolves from the public route, not the tailnet one: a cache
+  # check must not inherit a tailnet requirement to answer a question about a
+  # public subsystem.
+  cacheSubstituterUrl = config.flake.lib.serviceEndpoints.cacheSubstituterUrl config.fleet;
+  cacheSubstituterUrlMutated = config.flake.lib.serviceEndpoints.cacheSubstituterUrl (
+    lib.recursiveUpdate config.fleet {
+      services."niks3-write".endpoints.cache.publicUrl = "https://cache-mutated.invalid";
+    }
+  );
+
+  # A substituter with no key fails every substitution silently, so an empty key
+  # list must be a named error rather than an empty nix.conf.
+  cacheKeysFailClosed =
+    !(builtins.tryEval (
+      config.flake.lib.serviceEndpoints.cachePublicKeys (
+        lib.recursiveUpdate config.fleet { services."niks3-write".publicKeys = [ ]; }
+      )
+    )).success;
+
   # A throwaway telemetry host for the caller's system. The contract
   # evaluations below assert on its rendered config, so they are evaluated for
   # the system of the check that carries them.
@@ -414,8 +433,15 @@ let
         }
         {
           assertion =
-            cacheApiUrl == "http://oci-melb-1:5751" && cacheApiUrlMutated == "http://oci-melb-1:5752";
-          message = "fixture: the CI cache URL is not derived from the niks3-write record.";
+            cacheApiUrl == "http://oci-melb-1:5751"
+            && cacheApiUrlMutated == "http://oci-melb-1:5752"
+            && cacheSubstituterUrl == "https://cache.shrublab.xyz"
+            && cacheSubstituterUrlMutated == "https://cache-mutated.invalid";
+          message = "fixture: the CI cache URLs are not derived from the niks3-write record.";
+        }
+        {
+          assertion = cacheKeysFailClosed;
+          message = "fixture: an empty cache key list did not fail closed.";
         }
         {
           assertion =

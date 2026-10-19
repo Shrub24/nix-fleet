@@ -68,23 +68,29 @@ accepted: applying the acceptance label posts a marker on the head that label
 event concerns, and promotion requires the marker on the revision it promotes. See
 also [the package-update contract](package-updates.md).
 
-Cache verification is its own reusable workflow, `verify-cache.yml`: a caller that
-wants to say whether the build or the cache was the problem needs them as two job
-results. `build-push-cache.yml` therefore reports no cache verdict, and its `build`
-output is set only on success — an absent output means the stage did not complete
-and must never be read as one.
-
 **What the cache is promised to serve is the target selection itself** — for
 nix-fleet, `.#checks` for each declared system, the same selection the build
-traverses. Verification realises that selection in an empty chroot store with
-builders disabled and fails if any part of it would be built. It is therefore a
-statement about substitutability of the declared targets, not about every
-derivation the build happened to touch: an output outside the selection is not
-promised, and if part of the selection should not be cacheable the answer is to
-remove it from the selection rather than to weaken the check. (The signal is
-sound: a fully cached attribute produces no "will be built" line, and a miss
-produces one; only the `.drv` files of a target are not carried by a binary
-cache, and nix resolves those locally.)
+traverses. An output outside the selection is not promised, and if part of the
+selection should not be cacheable the answer is to remove it from the selection
+rather than to weaken the check.
+
+Cache availability is a diagnostic, not a step in the candidate pipeline. An
+unavailable cache would block every dependency update while saying nothing about
+whether a revision is correct, so promotion rests on validation and the build.
+`verify-cache.yml` therefore runs after the revision lands (push to `main`, or
+dispatch) and reads only the public substituter route: substitution is public even
+though the write API is not, so it needs no tailnet identity, no OIDC and no
+secret. It asks `nix path-info` about each realised closure root rather than
+substituting the closure, because uploads are atomic per closure — a served root
+means its closure was committed — and because a plain store on a fresh runner is
+already empty. It names every missing path and never gates anything.
+
+With `pin_name` set it also pins one aggregate root per system after a green
+verify. A pin protects a closure from the cache's own GC, so the name is a rolling
+`last-known-good` pointer: repointing releases the superseded closure, and a
+revision that fails verification never moves it. That step writes to the private
+API, so the pin job — and only it — joins the tailnet, and the tailnet trust
+credential must list `verify-cache.yml` alongside `build-push-cache.yml`.
 
 The pipeline's own credentials are not this workflow's. The automation App key
 that posts the required status and pushes `main` is an environment secret of
@@ -320,11 +326,15 @@ three repositories.
 
 The workflow rule must list **every** reusable workflow that joins the tailnet,
 because `job_workflow_ref` names the file that defines the joining job. A new file
-is not covered by a rule naming an existing one: extracting cache verification
-into `verify-cache.yml` failed its join with
-`token exchange failed with status 403` pointing at the credential, while the
-build job in `build-push-cache.yml` joined in the same run. Adding a workflow that
-joins the tailnet is therefore a credential change, not only a repository change. Tailscale documents the client id and audience as **not
+is not covered by a rule naming an existing one: an earlier read-only cache
+verifier failed its join with `token exchange failed with status 403` pointing at
+the credential, while the build job joined in the same run. Adding a workflow that
+joins the tailnet is therefore a credential change, not only a repository change.
+
+That read check no longer joins: substitution is public, so `verify-cache.yml`'s
+`verify` job needs no identity at all. Only its `pin` job writes to the private
+API, so the credential lists two files — `build-push-cache.yml` and
+`verify-cache.yml` — and nothing else. Tailscale documents the client id and audience as **not
 secrets**; they are public fleet metadata.
 A federated identity belongs to no user, so it must tag its nodes:
 `tags: tag:ci` is not optional.

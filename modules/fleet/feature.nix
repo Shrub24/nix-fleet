@@ -433,6 +433,15 @@ let
             builtins.mapAttrs (name: _: ciArtifacts { inherit pkgs; } name) config.fleet.buildProfiles
             // {
               cache-api-url = pkgs.writeText "cache-api-url" (serviceEndpoints.cacheApiUrl config.fleet);
+              # The read side, for checks that only need to ask whether the cache
+              # serves something: public route plus key, so such a check needs no
+              # tailnet identity and no credential.
+              cache-substituter-url = pkgs.writeText "cache-substituter-url" (
+                serviceEndpoints.cacheSubstituterUrl config.fleet
+              );
+              cache-public-key = pkgs.writeText "cache-public-key" (
+                lib.concatStringsSep "\n" (serviceEndpoints.cachePublicKeys config.fleet)
+              );
               ci-tailscale = ciTailscale;
             };
         };

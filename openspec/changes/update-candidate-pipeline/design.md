@@ -230,12 +230,32 @@ Settled while applying the change; the rationale is in `context/update-candidate
   `candidate.yml` or `validate.yml` either. What a consumer owns is a thin trigger
   per event, its variables, its environment, the permission union and
   `secrets: inherit`.
-- **Cache verification is a separate reusable workflow (`verify-cache.yml`).** A
-  build failure and a cache-verification failure are different findings, and a
-  caller that wants to name which one happened needs them as two job results;
-  `build-push-cache.yml` can only fail as a unit. The split also makes each piece
-  callable on its own, and it lets verification reuse the build's resolved
-  coordinates as inputs instead of resolving them again.
+- **Cache verification is post-merge and never gates a candidate.** This replaced
+  an earlier decision to verify inside the candidate pipeline. Gating on
+  availability coupled every dependency update to the cache server's health while
+  saying nothing about whether the revision is correct, and the only consumer of a
+  same-run verdict was the promotion gate. `verify-cache.yml` now runs on a push to
+  `main` and on dispatch, reads the **public** substituter route — substitution is
+  public although the write API is not — and needs no tailnet identity, no OIDC and
+  no secret. It asks `nix path-info` about each realised closure root: uploads are
+  atomic per closure, so a served root means its closure was committed, and
+  `--recursive` would be thousands of requests proving nothing more. Rejected
+  alternatives: reading the upload daemon's SQLite queue (internals, and a dead
+  daemon looks like an empty queue); scraping the drain timeout's warning (emitted
+  by a post step, so nothing inside the job can react, and it binds to upstream
+  wording); a repair push (shares the daemon's server and token, so it rescues only
+  the queue-did-not-send case — which is the case being reported — while risking
+  doubled upload time); and restricting the substitution to `--max-jobs 0
+--builders ''` on a plain store (that passes for any path already present, so it
+  tests the runner's emptiness rather than the cache).
+- **A verified revision is pinned, one aggregate root per system.** Pinning is what
+  turns a point-in-time observation into a guarantee, because the cache's GC
+  excludes pinned closures. Rolling names (`CACHE_PIN_NAME-<system>`) mean
+  supersession is a repoint — no delete, which would need admin — and because the
+  pin runs only after a green verify, a bad revision leaves the last good closure
+  protected. A pin names exactly one path, so `checks.<system>.cache-root`
+  aggregates the build selection: its closure covers every published output,
+  including `checks.packages`.
 - **Outputs never imply success.** `build-push-cache.yml` sets `build` only on
   success, `verify-cache.yml` has no success output, and the status job treats a
   skipped job, a missing result or an absent output as failure. The stage that

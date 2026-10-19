@@ -1,6 +1,7 @@
 # Update candidate for one source revision: prepare the candidate, evaluate it,
-# build it through the fleet builders, verify the cache, and post the
-# `update-candidate` commit status. Promotion is a separate workflow
+# build it through the fleet builders, and post the `update-candidate` commit
+# status. Cache availability is verified after the merge, never here — see
+# verify-cache.yml — so it cannot block a dependency update. Promotion is a separate workflow
 # (promote-candidate.yml) that runs from the default branch when that status
 # succeeds, so nothing here can move main.
 #
@@ -33,7 +34,7 @@ on:
         required: false
         default: success
       targets:
-        description: "Flake selection to evaluate, build and verify"
+        description: "Flake selection to evaluate and build"
         type: string
         required: false
         default: ".#checks"
@@ -214,28 +215,10 @@ jobs:
     secrets:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
 
-  verify:
-    # Distinct from `build` on purpose: "the build did not produce an output" and
-    # "the cache does not serve an output" are different findings, and the status
-    # message names which one happened.
-    needs: [prepare, build]
-    if: ${{ needs.build.result == 'success' }}
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/verify-cache.yml
-    with:
-      revision: ${{ needs.prepare.outputs.candidate }}
-      targets: ${{ inputs.targets }}
-      systems: ${{ needs.build.outputs.systems }}
-      runner_system: ${{ needs.build.outputs.runner_system }}
-      ts_client_id: ${{ needs.build.outputs.ts-client-id }}
-      ts_audience: ${{ needs.build.outputs.ts-audience }}
-
   status:
     # Runs even when the stages above failed or were skipped: this job is how a
     # failure becomes visible on the revision instead of an unexplained block.
-    needs: [prepare, publish, evaluate, build, verify]
+    needs: [prepare, publish, evaluate, build]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     # The environment holds the App key and admits only `main`, so this credential
@@ -269,7 +252,6 @@ jobs:
           PUBLISH: ${{ needs.publish.result }}
           EVALUATE: ${{ needs.evaluate.result }}
           BUILD: ${{ needs.build.result }}
-          VERIFY: ${{ needs.verify.result }}
           CLOSURE: ${{ needs.prepare.outputs.closure }}
         run: |
           set -euo pipefail
@@ -302,12 +284,9 @@ jobs:
           elif [ "$BUILD" != success ]; then
             state=failure
             detail="build failed"
-          elif [ "$VERIFY" != success ]; then
-            state=failure
-            detail="built, but the cache does not serve every target"
           else
             state=success
-            detail="evaluated, built, and served by the cache"
+            detail="evaluated and built"
           fi
 
           gh api --method POST "repos/$REPO/statuses/$CANDIDATE" \
@@ -321,7 +300,7 @@ jobs:
             "" \
             "- source: \`$SOURCE\`" \
             "- candidate: \`$CANDIDATE\`" \
-            "- prepare: $PREPARE · publish: $PUBLISH · evaluate: $EVALUATE · build: $BUILD · verify-cache: $VERIFY" \
+            "- prepare: $PREPARE · publish: $PUBLISH · evaluate: $EVALUATE · build: $BUILD" \
             "- status \`update-candidate\`: **$state** — $detail")
           existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
             --jq '[.[] | select(.body | startswith("<!-- nix-fleet-candidate -->"))][0].id // empty')

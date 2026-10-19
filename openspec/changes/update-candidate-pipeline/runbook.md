@@ -197,19 +197,20 @@ touching anything else. `gh workflow enable promote-candidate` restores it.
    inputs and packages.
 2. Watch `update-candidate` on that pull request. Verify: `prepare` publishes
    `refs/candidates/<pr>/<source>-<candidate>`; `evaluate` passes; `build` runs on
-   the fleet builders and the separate `verify-cache` workflow passes; the `update-candidate` status lands on
-   the candidate commit; the PR comment updates.
+   the fleet builders; the `update-candidate` status lands on the candidate commit
+   reading `evaluated and built`; the PR comment updates.
 3. Promotion: `promote-candidate` fast-forwards `main` to the candidate. Verify:
-   `main`'s head is the candidate commit, the source pull request shows as merged
-   (task 6.2's reachability check), and the candidate's closure is served from the
-   cache (`nix path-info --store <read-url> --recursive`, or the verify-cache log).
-4. Re-run the trigger by pushing to `main` (or dispatching `update-candidate`):
+   `main`'s head is the candidate commit and the source pull request shows as
+   merged (task 6.2's reachability check).
+4. The push to `main` runs `verify-cache`. Verify: it reports
+   `serves every root of .#checks for …`, with no tailnet join and no credential,
+   and — when `pin_name` is configured — the `pin` job reports the two rolling pins
+   (`<pin_name>-x86_64-linux`, `-aarch64-linux`).
+5. Re-run the trigger by pushing to `main` (or dispatching `update-candidate`):
    open automation pull requests are re-prepared and re-validated (task 5.3).
 
 Verification of task 5.5 (no retry): the build stage is the only builder, so the
-description `build failed` is the marker and there is no retry to observe. Confirm
-instead that the `verify` job runs the cache verification as its own job, so a
-cache miss reads as a cache miss rather than as a build failure.
+description `build failed` is the marker and there is no retry to observe.
 
 Verification of the producer's two jobs (task 2.8): the `update` job's log shows
 `propose=true` and the batch's report, and its environment exposes no App key; the
@@ -217,27 +218,31 @@ Verification of the producer's two jobs (task 2.8): the `update` job's log shows
 moved-base refusal, dispatch the refresh and land a commit on `main` while it
 runs: the publishing job fails with `moved from … to …` and opens nothing.
 
-Verification of task 4.2 (cache verification) on a real closure: a candidate
-whose derivations are all cached reports `served by the cache`. A candidate with
-an uncached derivation fails the `verify` job and the `update-candidate` status reads
-`build failed`. To reproduce locally without GitHub:
+Verification of task 4.2 (cache verification) on a real revision: `verify-cache`
+on `main` reports `serves every root of .#checks for x86_64-linux aarch64-linux`.
+A miss names each path and fails the job, and nothing gates on it. To reproduce
+locally without GitHub:
 
 ```sh
-nix build --dry-run --no-link --builders '' --store "local?root=$(mktemp -d)" .#checks.x86_64-linux
+url=https://cache.shrublab.xyz
+for p in $(nix build --dry-run --no-link --print-out-paths .#checks.x86_64-linux); do
+  nix path-info --store "$url" "$p" >/dev/null || echo "not served: $p"
+done
 ```
 
-`will be built` lines name the uncached derivations.
+## 6b. Tailscale trust for the pin job, and the pin names — operator
 
-## 6b. Tailscale trust for `verify-cache.yml` — operator
+`verify-cache.yml`'s `verify` job reads the public substituter and joins nothing.
+Its `pin` job writes to the private API, so the Tailscale trust credential's
+workflow rule must list
+`Shrub24/nix-fleet/.github/workflows/verify-cache.yml@refs/heads/main` alongside
+`build-push-cache.yml` (plus the tag form once consumers pin one). Until it does,
+`pin` fails to join with `token exchange failed with status 403` pointing at the
+credential and `verify` is unaffected.
 
-The Tailscale trust credential's workflow rule names the reusable workflow that may
-join the tailnet. Cache verification moved out of `build-push-cache.yml` into
-`verify-cache.yml` (so a build failure and a cache failure are separate results),
-and its join is rejected until the credential lists that file too: the first live
-run failed with `token exchange failed with status 403` pointing at the
-credential, while the build job joined in the same run. Add
-`Shrub24/nix-fleet/.github/workflows/verify-cache.yml@refs/heads/main` to the
-allowed workflows (and the tag form once consumers pin one).
+Reserve the pin name prefix through the cache's OIDC rule, so no other write token
+can repoint a name that means "the fleet's current main". Pinning stays off until
+`pin_name` is set on the trigger, so this step gates nothing else.
 
 ## 7. Niks3 trust for candidate builds (task 1.5) — nix-homelab owner
 

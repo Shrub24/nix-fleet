@@ -214,6 +214,12 @@
             default = { };
             description = "Named access endpoints for this service (for example api or mcp).";
           };
+
+          options.publicKeys = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = "Public signing keys of this service in nix.conf `key:base64` form. Public metadata; it is a service fact rather than a route fact, so it is declared once however many endpoints front it.";
+          };
         }
       );
       default = { };

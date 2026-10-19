@@ -2,6 +2,8 @@
 # service, endpoint, and access route; no public or tailnet fallback is made.
 lib:
 let
+  cacheService = "niks3-write";
+
   resolveEndpoint =
     fleet:
     {
@@ -60,7 +62,6 @@ in
   inherit resolveEndpoint;
   canonicalServices = import ./service-inventory.nix;
   url = fleet: selection: (resolveEndpoint fleet selection).url;
-
   # The fleet write cache's API base URL, resolved from the canonical
   # `niks3-write` record the same way a consumer would. The build-push-cache
   # workflow defaults its `cache_api_url` input here, so the coordinate is not
@@ -69,8 +70,32 @@ in
   cacheApiUrl =
     fleet:
     (resolveEndpoint fleet {
-      service = "niks3-write";
+      service = cacheService;
       endpoint = "api";
       via = "tailnet";
     }).url;
+
+  # The cache's public read route: what a substituter client or a read-only cache
+  # check needs. Deliberately not cacheApiUrl — reads are public, the write API is
+  # not, and a reader must not inherit the tailnet requirement.
+  cacheSubstituterUrl =
+    fleet:
+    (resolveEndpoint fleet {
+      service = cacheService;
+      endpoint = "cache";
+      via = "public";
+    }).url;
+
+  # Signing keys are service facts, not route facts. Empty fails closed: a
+  # substituter without its key fails every substitution, and the cause is worth
+  # naming instead of leaving a silent miss.
+  cachePublicKeys =
+    fleet:
+    let
+      keys = fleet.services.${cacheService}.publicKeys or [ ];
+    in
+    if keys == [ ] then
+      throw "fleet: service '${cacheService}' declares no publicKeys — a substituter without its key fails every substitution"
+    else
+      keys;
 }

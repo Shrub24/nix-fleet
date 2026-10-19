@@ -22,6 +22,10 @@
     host = "oci-melb-1";
     port = 5751;
   };
+  # The read-only public route. Reads need no tailnet identity, so this is what
+  # substituter clients and cache checks use; the write API above stays private.
+  niks3-write.endpoints.cache.publicUrl = "https://cache.shrublab.xyz";
+  niks3-write.publicKeys = [ "nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A=" ];
   bifrost.endpoints.embeddings.tailnet = {
     host = "oci-melb-1";
     port = 7411;

@@ -65,19 +65,3 @@ jobs:
       builder_attr: ci
     secrets:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
-
-  fleet-cache:
-    # The dogfood build's verification, as its own job so its failure reads as a
-    # cache problem rather than a build problem.
-    if: github.event_name == 'workflow_dispatch'
-    needs: fleet-build
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/verify-cache.yml
-    with:
-      revision: ${{ github.sha }}
-      systems: ${{ needs.fleet-build.outputs.systems }}
-      runner_system: ${{ needs.fleet-build.outputs.runner_system }}
-      ts_client_id: ${{ needs.fleet-build.outputs.ts-client-id }}
-      ts_audience: ${{ needs.fleet-build.outputs.ts-audience }}

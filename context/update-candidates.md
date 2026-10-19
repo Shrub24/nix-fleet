@@ -410,3 +410,60 @@ repositories multiplies exactly the path where the defects keep appearing.
 **Residual:** the call's permission inheritance, `secrets: inherit` and whether
 repository `vars` resolve to the caller inside a called workflow are unverified
 until a consumer calls it (tracked as the live gate).
+
+## Cache availability is diagnosed after the merge, never gated before it
+
+**Id:** 69f3fda1-424c-409b-88e7-c3aa6c10489f
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `.github/workflows/verify-cache.yml`, `docs/contracts/ci.md`, `.github/workflows/candidate.yml`, 2026-10-19
+
+Cache verification is not a candidate stage. `verify-cache.yml` runs on a push
+to `main` and on dispatch, reads only the public substituter route, and gates
+nothing; promotion rests on validation and the build. With `CACHE_PIN_NAME` set, a
+`pin` job runs only after a green verify and pins one aggregate root per system
+under a rolling name, so a revision that fails verification never moves the pin.
+
+**Reason:** Gating on availability coupled every dependency update to the cache server's
+health while saying nothing about whether the revision is correct, and the only
+consumer of a same-run verdict was the promotion gate.
+
+**Rejected alternatives:** reading the upload daemon's SQLite queue (internals, and a dead daemon reads as
+an empty queue); scraping the drain timeout's warning (a post-step line, so nothing
+in the job can react, and it binds to upstream wording); a repair `niks3 push`
+after the build (same server and token as the daemon, so it rescues only the
+queue-did-not-send case — the case being reported — and risks doubled upload
+time); `--max-jobs 0 --builders ''` on a plain store (passes for any path already
+present, so it tests the runner's emptiness, not the cache); a post-merge job that
+rebuilds (a fresh runner has no store, and `--print-out-paths` plus `path-info`
+needs hashes only)
+
+**Revisit when:** the cache is unavailable often enough that a pin alone stops protecting the last
+good closure, or the upload path starts failing closed on a truncated drain, in
+which case the daemon's own verdict replaces this diagnostic
+
+## The cache's read route is public, its write API is not
+
+**Id:** a339fbfb-66a8-4125-b2b6-642ac512008c
+**Type:** constraint
+**Status:** active
+**Evidence:** confirmed
+**Source:** `lib/service-inventory.nix`, `lib/service-endpoints.nix`, `modules/system/nix-baseline.nix`, 2026-10-19
+
+The canonical `niks3-write` record carries both routes — `endpoints.api`
+(tailnet) for the write API and `endpoints.cache` (public) for substitution — plus
+`publicKeys`. `lib/serviceEndpoints` exposes `cacheSubstituterUrl` and
+`cachePublicKeys` beside `cacheApiUrl`, and both `nix-baseline` and the CI cache
+artifacts derive from that one record instead of restating a URL or a key.
+`packages.<system>.cache-substituter-url` and `cache-public-key` render it.
+
+**Reason:** A read-only check that joined the tailnet was an invention rather than a
+requirement: substitution is public. The first attempt proved it by failing —
+`token exchange failed with status 403` from the tailnet credential while the build
+job joined successfully in the same run, because the credential's workflow rule
+names `build-push-cache.yml` by `job_workflow_ref`. Reading the public route
+removed the dependency instead of widening the trusted workflow list.
+
+**Rejected alternatives:** widening the tailnet trust credential to cover a read-only workflow, which would
+have made every cache question depend on an identity it did not need

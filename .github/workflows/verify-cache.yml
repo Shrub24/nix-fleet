@@ -1,144 +1,207 @@
-# Cache verification: prove that the configured substituter serves every target
-# of a revision without building anything.
+# Cache verification: does the configured substituter actually serve what the
+# fleet built? This is a diagnostic on the landed revision, never a promotion
+# gate — an unavailable cache must not block dependency updates, and availability
+# says nothing about whether a revision is correct.
 #
-# A separate workflow from the build because the two failures are different
-# findings — a build that did not produce an output, versus an output the cache
-# does not serve — and a caller that wants to name which one happened needs them
-# as two job results. It shares the build's resolved coordinates as inputs rather
-# than resolving them again.
+# READS THE PUBLIC ROUTE ONLY. The write API is private, but substitution is
+# public, so verification needs no tailnet identity, no OIDC and no secret; it
+# resolves `.#packages.<system>.cache-substituter-url` from the fleet contract
+# rather than restating a hostname.
 #
-# The store here is a fresh chroot store with an empty database and no builders,
-# so every derivation must be fetched: one the cache does not serve shows as
-# "will be built" and fails this workflow.
+# CALLER GRANT: GitHub validates every job in a called workflow against the
+# caller's grant when the call starts, so a `workflow_call` caller must grant
+# `contents: read` AND `id-token: write` — the pin job's write, even when pinning
+# is off. A narrower grant fails the whole call at startup, not just that job.
 #
-# REUSABLE WORKFLOW — call it from a ~10-line stub, after the build:
+# It asks `nix path-info` about each realised closure root. Uploads are atomic
+# per closure, so a served root means its closure was committed — recursing would
+# be thousands of requests proving nothing extra. Nothing is built and no store is
+# prepared: `--print-out-paths` only evaluates and prints, and `path-info` needs
+# hashes rather than contents, so a runner with an empty store is fine.
 #
-#   verify-cache:
-#     needs: [prepare, build]
-#     permissions:
-#       contents: read
-#       id-token: write
-#     uses: Shrub24/nix-fleet/.github/workflows/verify-cache.yml@v1
-#     with:
-#       revision: ${{ needs.prepare.outputs.candidate }}
-#       targets: .#checks
-#       systems: ${{ needs.build.outputs.systems }}
-#       runner_system: ${{ needs.build.outputs.runner_system }}
-#       ts_client_id: ${{ needs.build.outputs.ts-client-id }}
-#       ts_audience: ${{ needs.build.outputs.ts-audience }}
+# ERROR CONTRACT: fails when any root is not served, naming every missing path.
+# No success output, so an absent or skipped result can never read as a pass.
 #
-# ERROR CONTRACT: this workflow fails when any target is not served. It has no
-# success output: a caller must require the job to have succeeded, so an absent
-# or skipped result can never read as a pass.
+# Pinning (`pin_name`) runs only after a green verify, which is what makes a bad
+# revision leave the previous pin in place: the name is a rolling
+# `last-known-good` pointer, and repointing it is what releases the old closure
+# to the cache's own GC.
 #
-# Design: docs/contracts/update-candidates.md and docs/contracts/ci.md.
+# Design: docs/contracts/ci.md and docs/contracts/update-candidates.md.
 name: verify-cache
 
 permissions:
   contents: read
-  id-token: write
 
 on:
+  push:
+    branches: [main]
+  workflow_dispatch:
   workflow_call:
     inputs:
       revision:
-        description: "Commit whose targets must be served by the cache"
+        description: "Commit to verify; empty verifies the triggering revision"
         type: string
-        required: true
+        required: false
+        default: ""
       targets:
         description: "Flake selection to verify (defaults to .#checks)"
         type: string
         required: false
         default: ".#checks"
       systems:
-        description: "Target systems (space-separated); independent of runner architecture"
+        description: "Target systems, space-separated"
         type: string
         required: false
         default: "x86_64-linux aarch64-linux"
+      cache_url:
+        description: "Substituter URL; empty resolves .#packages.<runner_system>.cache-substituter-url"
+        type: string
+        required: false
+        default: ""
       runner_system:
-        description: "Nix system of the coordinator (aarch64-linux or x86_64-linux); resolves .#packages.<system> and selects the runner"
+        description: "Nix system used to resolve the cache URL artifact"
         type: string
         required: false
-        default: "aarch64-linux"
+        default: "x86_64-linux"
+      pin_name:
+        description: "Pin name prefix; empty falls back to the CACHE_PIN_NAME repository variable, and empty in both disables pinning. One pin per system is created as <prefix>-<system>."
+        type: string
+        required: false
+        default: ""
       cache_api_url:
-        description: 'niks3 server base URL; empty resolves packages.<system>.cache-api-url (fleet.services."niks3-write")'
-        type: string
-        required: false
-        default: ""
-      tailnet:
-        description: "Join the tailnet to reach a private cache; disable for public-only deployments"
-        type: boolean
-        required: false
-        default: true
-      ts_client_id:
-        description: "Public Tailscale client ID; empty with tailnet enabled is a failure"
-        type: string
-        required: false
-        default: ""
-      ts_audience:
-        description: "Public Tailscale audience; empty derives it from the client ID"
+        description: "Private API URL for pinning; empty resolves .#packages.<runner_system>.cache-api-url"
         type: string
         required: false
         default: ""
 
 jobs:
-  verify-cache:
-    runs-on: ${{ inputs.runner_system == 'x86_64-linux' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      cache: ${{ steps.cache.outputs.url }}
     steps:
-      - name: Require a Tailscale identity when the cache is private
-        # No tailnet join would simply fail later with an unreadable cache; the
-        # cause is worth naming instead.
-        if: ${{ inputs.tailnet && inputs.ts_client_id == '' }}
-        run: |
-          echo "::error::verify-cache: tailnet is enabled but no ts_client_id was passed"
-          exit 1
-
-      - name: Check out repository
+      - name: Check out the revision under test
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.revision }}
-
-      - name: Join tailnet (fleet-host cache)
-        if: ${{ inputs.tailnet }}
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ inputs.ts_client_id }}
-          audience: ${{ inputs.ts_audience }}
-          tags: tag:ci
+          ref: ${{ inputs.revision || github.sha }}
 
       - name: Install Nix
         uses: NixOS/nix-installer-action@v1
 
-      - name: Resolve cache API URL
-        id: cache-url
+      - name: Resolve the substituter URL
+        id: cache
+        env:
+          CACHE_URL: ${{ inputs.cache_url }}
+          RUNNER_SYSTEM: ${{ inputs.runner_system || 'x86_64-linux' }}
         run: |
-          url='${{ inputs.cache_api_url }}'
+          url=$CACHE_URL
           if [ -z "$url" ]; then
-            bundle=$(nix build --no-link --print-out-paths ".#packages.${{ inputs.runner_system }}.cache-api-url")
-            url=$(cat "$bundle")
+            url=$(nix build --no-link --print-out-paths ".#packages.$RUNNER_SYSTEM.cache-substituter-url")
+            url=$(cat "$url")
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
-      - name: Configure cache substituter (no upload)
-        uses: Mic92/niks3-action@v1
-        with:
-          server-url: ${{ steps.cache-url.outputs.url }}
-          skip-push: true
-
-      - name: Require every target to be served by the cache
+      - name: Require the cache to serve every realised root
+        # The defaults are repeated here because a push event carries no inputs: an
+        # empty SYSTEMS would iterate nothing and pass without checking anything.
         env:
-          SYSTEMS: ${{ inputs.systems }}
-          TARGETS: ${{ inputs.targets }}
+          SYSTEMS: ${{ inputs.systems || 'x86_64-linux aarch64-linux' }}
+          TARGETS: ${{ inputs.targets || '.#checks' }}
+          CACHE: ${{ steps.cache.outputs.url }}
         run: |
           set -euo pipefail
+          missing=0
           for system in $SYSTEMS; do
-            plan="$RUNNER_TEMP/plan-$system.txt"
-            nix build --dry-run --no-link --builders '' \
-              --store "local?root=$RUNNER_TEMP/cache-verify" "$TARGETS.$system" > "$plan" 2>&1
-            if grep -q 'will be built' "$plan"; then
-              cat "$plan"
-              echo "::error::ci: the cache does not serve every derivation of $TARGETS.$system"
-              exit 1
-            fi
+            roots=$(nix build --dry-run --no-link --print-out-paths "$TARGETS.$system")
+            while IFS= read -r path; do
+              [ -n "$path" ] || continue
+              if ! nix path-info --store "$CACHE" "$path" >/dev/null 2>&1; then
+                echo "::error::verify-cache: $CACHE does not serve $path ($system)"
+                missing=$((missing + 1))
+              fi
+            done <<< "$roots"
           done
-          echo "ci: the cache serves every target for $SYSTEMS"
+          if [ "$missing" -gt 0 ]; then
+            echo "::error::verify-cache: $missing store path(s) missing from $CACHE"
+            exit 1
+          fi
+          echo "verify-cache: $CACHE serves every root of $TARGETS for $SYSTEMS"
+
+  pin:
+    # Only a verified revision may move the pin, so a revision that fails
+    # verification leaves the last good closure protected.
+    needs: verify
+    if: ${{ (inputs.pin_name || vars.CACHE_PIN_NAME) != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the revision under test
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+
+      - name: Install Nix
+        uses: NixOS/nix-installer-action@v1
+
+      - name: Resolve public Tailscale identity
+        # The fleet contract carries the client ID and audience, so a consumer
+        # configures no extra variable to pin its own cache.
+        id: ts
+        env:
+          RUNNER_SYSTEM: ${{ inputs.runner_system || 'x86_64-linux' }}
+        run: |
+          metadata=$(nix build --no-link --print-out-paths ".#packages.$RUNNER_SYSTEM.ci-tailscale")
+          echo "client-id=$(jq -er '.clientId' "$metadata")" >> "$GITHUB_OUTPUT"
+          echo "audience=$(jq -er '.audience' "$metadata")" >> "$GITHUB_OUTPUT"
+
+      - name: Join tailnet (cache write API)
+        # Pinning writes to the private API, so unlike `verify` this job needs the
+        # tailnet. Reads never come here.
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ steps.ts.outputs.client-id }}
+          audience: ${{ steps.ts.outputs.audience }}
+          tags: tag:ci
+
+      - name: Resolve the cache API URL
+        id: api
+        env:
+          API_URL: ${{ inputs.cache_api_url }}
+          RUNNER_SYSTEM: ${{ inputs.runner_system || 'x86_64-linux' }}
+        run: |
+          url=$API_URL
+          if [ -z "$url" ]; then
+            url=$(nix build --no-link --print-out-paths ".#packages.$RUNNER_SYSTEM.cache-api-url")
+            url=$(cat "$url")
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Configure the cache client
+        id: niks3
+        uses: Mic92/niks3-action@v1
+        with:
+          server-url: ${{ steps.api.outputs.url }}
+          skip-push: true
+
+      - name: Pin one aggregate root per system
+        env:
+          SYSTEMS: ${{ inputs.systems || 'x86_64-linux aarch64-linux' }}
+          TARGETS: ${{ inputs.targets || '.#checks' }}
+          PIN: ${{ inputs.pin_name || vars.CACHE_PIN_NAME }}
+          API: ${{ steps.api.outputs.url }}
+          BINARY_DIR: ${{ steps.niks3.outputs.binary-dir }}
+          TOKEN_SCRIPT: ${{ steps.niks3.outputs.auth-token-script }}
+        run: |
+          set -euo pipefail
+          token=$(mktemp)
+          bash "$TOKEN_SCRIPT" > "$token"
+          export NIKS3_AUTH_TOKEN_FILE="$token"
+          for system in $SYSTEMS; do
+            root=$(nix build --dry-run --no-link --print-out-paths "$TARGETS.$system.cache-root")
+            "$BINARY_DIR/niks3" pins create "$PIN-$system" "$root" --server-url "$API"
+          done

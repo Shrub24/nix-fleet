@@ -9,7 +9,8 @@ commit it built.
 Implementation: `.github/workflows/pipeline.yml` (the default-branch entry
 point), `validate.yml` (the repository's validation, in one definition),
 `candidate.yml` (reusable pipeline body), `build-push-cache.yml` (builds),
-`verify-cache.yml` (cache verification), `promote-candidate.yml` (promotion),
+`verify-cache.yml` (post-merge cache verification and pinning),
+`promote-candidate.yml` (promotion),
 `accept.yml` (acceptance marker), `candidate-sweep.yml` (retention),
 `package-updates-refresh.yml` (the producer), and
 `.github/scripts/prepare-candidate.sh` and `promote-candidate.sh`.
@@ -32,17 +33,12 @@ point), `validate.yml` (the repository's validation, in one definition),
 4. **Build** (job `build`). `build-push-cache.yml` builds `.#checks` at the
    candidate revision on the fleet builders. Skipped when the source changes only
    `.github/workflows/**`.
-5. **Verify** (job `verify`). `verify-cache.yml` re-evaluates the same selection
-   in a fresh chroot store with no builders, so every derivation must come from
-   the substituter. Separate from the build because "the build produced nothing"
-   and "the cache does not serve the output" are different findings, and the
-   status message names which one happened.
-6. **Status** (job `status`, always runs). Posts the `update-candidate` commit
+5. **Status** (job `status`, always runs). Posts the `update-candidate` commit
    status on the candidate commit and creates or updates one pull request
    comment. Without a candidate the failure is reported on the source revision,
    where promotion ignores it. `success` requires an explicit success path: a
-   skipped job, a missing result or an absent output is a failure.
-7. **Promote** (`promote-candidate.yml`, a `status` event). Refusals (each exits
+   skipped build, a missing result or an absent output is a failure.
+6. **Promote** (`promote-candidate.yml`, a `status` event). Refusals (each exits
    nonzero, moves nothing): the latest `update-candidate` status on the commit
    was not posted by the automation App; it is not `success`; it succeeded more
    than seven days ago, because a required status check must have succeeded
@@ -167,16 +163,16 @@ repository at the pinned ref, so a consumer needs no copy of `candidate.yml` or
 its `automation` environment, the permission union the called jobs declare, and
 `secrets: inherit`.
 
-| Workflow                      | Called with                                                                                          | Consumer supplies                                    |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `build-push-cache.yml`        | `targets`, `builder_attr`, `runner_system`, `systems`, `revision`, `cache_api_url`, tailnet identity | `BUILDER_SSH_KEY` secret                             |
-| `verify-cache.yml`            | `revision`, `targets`, `systems`, `runner_system`, resolved tailnet identity                         | nothing (no secret)                                  |
-| `validate.yml`                | `revision`, `generated_files`                                                                        | nothing (no secret)                                  |
-| `candidate.yml`               | `source_sha`, `source_pr`, `mode`, `precheck`, `targets`, `systems`, `runner_system`, `builder_attr` | environment `automation`                             |
-| `pipeline.yml`                | `source_pr` (only when the caller's event is a dispatch)                                             | the variables and permission grant below             |
-| `package-updates-refresh.yml` | —                                                                                                    | environment `automation`, in the publishing job only |
-| `promote-candidate.yml`       | — (call it from a thin `on: status` file)                                                            | environment `automation`                             |
-| `candidate-sweep.yml`         | — (call it from a thin `on: schedule` file)                                                          | environment `automation`                             |
+| Workflow                      | Called with                                                                                          | Consumer supplies                                                                                                |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `build-push-cache.yml`        | `targets`, `builder_attr`, `runner_system`, `systems`, `revision`, `cache_api_url`, tailnet identity | `BUILDER_SSH_KEY` secret                                                                                         |
+| `verify-cache.yml`            | `revision`, `targets`, `systems`, `runner_system`, `cache_url`, `pin_name`                           | nothing (no secret); `CACHE_PIN_NAME` for the push trigger; a caller grants `contents: read` + `id-token: write` |
+| `validate.yml`                | `revision`, `generated_files`                                                                        | nothing (no secret)                                                                                              |
+| `candidate.yml`               | `source_sha`, `source_pr`, `mode`, `precheck`, `targets`, `systems`, `runner_system`, `builder_attr` | environment `automation`                                                                                         |
+| `pipeline.yml`                | `source_pr` (only when the caller's event is a dispatch)                                             | the variables and permission grant below                                                                         |
+| `package-updates-refresh.yml` | —                                                                                                    | environment `automation`, in the publishing job only                                                             |
+| `promote-candidate.yml`       | — (call it from a thin `on: status` file)                                                            | environment `automation`                                                                                         |
+| `candidate-sweep.yml`         | — (call it from a thin `on: schedule` file)                                                          | environment `automation`                                                                                         |
 
 Build selection is typed workflow input, so a consumer sets its closure per
 repository without editing a workflow — `pipeline.yml` passes `CANDIDATE_TARGETS`,
@@ -190,9 +186,34 @@ caller with `secrets: inherit` still works.
 Error contract: `build-push-cache.yml` sets its `build` output only on success.
 An absent output means the stage did not complete and must never be read as
 success. `verify-cache.yml` has no success output for the same reason: a caller
-must require the job to have succeeded. `runner` is a GitHub runner label
-(for a job's `runs-on`) and `runner_system` a Nix system (for
-`.#packages.<system>.*`); they are different values and are not
+must require the job to have succeeded. It is a diagnostic, though, so nothing
+gates on it, and its absence is never read as a pass.
+
+## Cache verification and pinning are post-merge
+
+Cache availability does not gate a candidate. An unavailable cache would block
+every dependency update while saying nothing about whether a revision is correct,
+and a revision that built correctly stays correct whether or not its outputs are
+being served at that moment. Promotion therefore rests on validation and the
+build.
+
+`verify-cache.yml` runs on a push to `main` and on dispatch. It reads the **public**
+substituter route only — substitution is public even though the write API is not —
+so it needs no tailnet identity, no OIDC and no secret, and it holds no cache
+client. It asks `nix path-info` about each realised closure root, naming every
+missing path; uploads are atomic per closure, so a served root means its closure
+was committed.
+
+With `pin_name` set, a `pin` job runs only after a green verify and pins one
+aggregate root per system (`checks.<system>.cache-root`, whose closure is every
+published output). Pinning protects a closure from the cache's own GC, so the
+name becomes a rolling `last-known-good` pointer: repointing it is what releases
+the superseded closure, and a revision that fails verification never moves it.
+That job writes to the private API and therefore does join the tailnet. Pinning
+is off until `CACHE_PIN_NAME` is set, so `verify` never depends on it.
+
+`runner` is a GitHub runner label (for a job's `runs-on`) and `runner_system` a
+Nix system (for `.#packages.<system>.*`); they are different values and are not
 interchangeable.
 
 ## Policy
@@ -261,7 +282,7 @@ event and no orchestration:
 | a thin `sweep` trigger     | `on: schedule` + `uses: .../candidate-sweep.yml@<ref>`                                        |
 | a thin `accept` trigger    | `on: pull_request_target: {types: [labeled, unlabeled]}` + `uses: .../accept.yml@<ref>`       |
 
-`candidate.yml` calls `validate.yml`, `build-push-cache.yml` and `verify-cache.yml`
+`candidate.yml` calls `validate.yml` and `build-push-cache.yml`
 by path, and a called workflow's local paths resolve from the caller's commit —
 for these the caller is the pinned ref, so a consumer needs no copy of them. If
 that ever resolves differently, the first run fails immediately with a

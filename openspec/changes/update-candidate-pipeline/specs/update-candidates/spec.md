@@ -50,20 +50,20 @@ The pipeline SHALL build and evaluate the exact candidate SHA, checked out by SH
 
 On success the pipeline SHALL post a required status on the candidate SHA, whose context is `update-candidate` and stable across all pull requests. Only the pipeline identity SHALL post it, and success SHALL require an explicit success path: a skipped stage, an absent result or an output a stage did not set is a failure.
 
-#### Scenario: Evidence requires a build and a cache verdict
+#### Scenario: Evidence requires validation and a build
 
 - **WHEN** the status is evaluated
-- **THEN** it requires every declared evaluation and build target to build, and the closure to be available from the configured substituters without building
+- **THEN** it requires the declared validation to pass and every declared build target to build
 
 #### Scenario: Build failure withholds evidence
 
 - **WHEN** any declared target fails to build
 - **THEN** no success status is posted on the candidate SHA
 
-#### Scenario: Cache verification gates evidence
+#### Scenario: Cache availability does not withhold evidence
 
-- **WHEN** the build succeeds but a required output would still have to be built on a cache-only evaluation
-- **THEN** the status is not posted
+- **WHEN** the build succeeds but the configured substituter does not serve an output
+- **THEN** the success status is still posted, because availability says nothing about whether the revision is correct and an unavailable cache must not block dependency updates
 
 #### Scenario: A stage does not report
 
@@ -170,7 +170,7 @@ An update PR that changes only CI references or container image tags SHALL recei
 
 ### Requirement: Candidate reports and lifecycle
 
-The pipeline SHALL record on the source PR, in a comment that is replaced on each run, the candidate SHA, input revision changes, package version changes, build and cache results. Superseded runs SHALL be cancelled, an in-flight promotion SHALL NOT be cancelled, and candidate refs SHALL expire after a bounded time.
+The pipeline SHALL record on the source PR, in a comment that is replaced on each run, the candidate SHA, input revision changes, package version changes and build results. Superseded runs SHALL be cancelled, an in-flight promotion SHALL NOT be cancelled, and candidate refs SHALL expire after a bounded time.
 
 #### Scenario: Run is superseded
 
