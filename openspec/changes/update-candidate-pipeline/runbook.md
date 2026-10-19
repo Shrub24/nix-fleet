@@ -198,6 +198,12 @@ description `build failed` is the marker and there is no retry to observe. Confi
 instead that the `verify` job runs the cache verification as its own job, so a
 cache miss reads as a cache miss rather than as a build failure.
 
+Verification of the validation split (task 5.7): `validate.yml` reports `format`,
+`evaluate` and `consistency` as three jobs, so a human pull request whose
+formatting fails still reports its evaluation result, and the failing job names
+itself in the checks list rather than leaving the reader to interpret a skipped
+step.
+
 Verification of the producer's two jobs (task 2.8): the `update` job's log shows
 `propose=true` and the batch's report, and its environment exposes no App key; the
 `publish` job applies `changes.patch` and opens the pull request. To see the
