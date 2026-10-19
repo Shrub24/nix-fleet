@@ -1,18 +1,7 @@
-# Acceptance is an operator action, and it has to name the revision it accepted.
-# A label survives a push, and a commit's dates describe when it claims to have
-# been written rather than when it reached the pull request, so the label event
-# itself is the evidence: this workflow is defined on the default branch, takes
-# the head from its own event payload, and posts a marker on that commit.
-# promote-candidate.sh requires the marker on the revision it is about to
-# promote, so a push after the label leaves the newer revision unaccepted.
-#
-# This file holds no credential that can push main; it posts a commit status with
-# the workflow token, which is enough for the promoter to read. Removing the label
-# revokes the marker.
-#
-# Callable, so a consumer owns a two-line trigger file: a `pull_request_target`
-# trigger cannot be inherited, and a called workflow sees the caller's event.
+# Records acceptance on the revision the label was applied to; a label survives a
+# push, so the event payload's head is the evidence. See docs/contracts/update-candidates.md.
 name: accept-update
+
 on:
   pull_request_target:
     types: [labeled, unlabeled]
@@ -23,8 +12,6 @@ permissions:
 
 jobs:
   mark:
-    # Only the acceptance label, and only a revision in this repository: a fork
-    # head is not a commit here and could carry no status.
     if: >-
       ${{ github.event.label.name == 'accept-update'
         && github.event.pull_request.head.repo.full_name == github.repository }}

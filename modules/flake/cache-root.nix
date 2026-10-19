@@ -1,10 +1,5 @@
-# One aggregate root whose closure is every build this repository publishes. The
-# candidate pipeline builds exactly this selection and the cache warms it; the
-# post-merge verifier pins this one path per system, and because a pin protects
-# the pinned path's whole dependency tree, one pin covers the selection.
-#
-# It aggregates the checks rather than the packages because `checks.packages`
-# already covers the published packages, so including the checks covers both.
+# One linkFarm over the checks, whose closure is every published output; a pin on it
+# covers the selection (checks.packages already includes the packages).
 { lib, ... }:
 {
   perSystem =

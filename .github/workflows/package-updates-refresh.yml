@@ -1,26 +1,11 @@
-# Scheduled native producer: refresh the moving flake inputs, then this
-# repository's registered package updaters, and open or update one pull request
-# with a report of what moved.
-#
-# The pull request is a source, not an acceptance: the update-candidate pipeline
-# prepares, evaluates and builds its exact candidate, and promotion lands it only
-# when that candidate is validated. The App token makes the pull request's checks
-# start without manual approval.
-#
-# Two jobs: `update` runs the updaters (repository and upstream code) with no
-# credential, and `publish` holds the App key, applies the proposal as data and
-# opens the pull request. Contract: docs/contracts/package-updates.md.
-#
-# REUSABLE WORKFLOW: the runner and its CLIs live in the flake module
-# `flakeModules.packageUpdates`, so a consumer supplies its own schedule and
-# calls this for the run — the branch and labels stay the consumer's. The App key
-# is not a caller-supplied secret: the publishing job selects the `automation`
-# environment, which the caller's repository owns and whose deployment-branch
-# rule admits only its default branch.
+# Scheduled native producer: refresh moving flake inputs, run the registered package
+# updaters, and propose one pull request. The proposal is a source for the candidate
+# pipeline, not an acceptance. Contract: docs/contracts/package-updates.md.
 name: package-updates-refresh
+
 on:
   schedule:
-    # Daily: moving inputs move daily, and the pipeline promotes what it validates.
+    # Daily: moving inputs move daily.
     - cron: "43 4 * * *"
   workflow_dispatch:
   workflow_call:
@@ -47,18 +32,13 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Initialise jj for staging
-        # Package updates stage each updater in a disposable jj workspace, which
-        # needs a jj repository; a plain git checkout is not one. Colocation
-        # keeps git as the source of truth for the pull request.
+        # Updaters stage in jj workspaces; colocation keeps git authoritative.
         run: nix shell nixpkgs#jujutsu --command jj git init --colocate
 
       - name: Refresh flake inputs and registered packages
         id: run
-        # The report is the evidence, not the exit status: it exists only if the run
-        # reached its own end, and an interpreter's exit 1 for an uncaught error
-        # would otherwise read as the `partial` outcome. The report files stay
-        # outside the checkout, so the pull request contains the refreshed lock and
-        # the updaters' pin changes and nothing else.
+        # The report is the evidence, not the exit status: an uncaught error also
+        # exits 1. Reports stay outside the checkout.
         run: |
           set -euo pipefail
           echo "propose=false" >> "$GITHUB_OUTPUT"

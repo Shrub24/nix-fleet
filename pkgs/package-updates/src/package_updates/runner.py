@@ -1,17 +1,8 @@
 """Refresh flake inputs, then run each package update as a local file transaction.
 
-The runner owns selection, deterministic ordering and per-package reporting.
-Package-specific update policy stays in each package expression: nix-update's
-``--use-update-script`` runs a package's ``passthru.updateScript`` when it
-declares one and its ordinary release discovery otherwise, so the batch never
-guesses a custom source layout.
-
-The flake lock refresh runs first and changes the working copy, so every
-package updater is staged on top of the refreshed lock. Each package's before
-version is read before the refresh, so a version that moved only because the
-lock moved is reported against the pin it started from. Each package's before
-and after version, its changelog link and whether the working copy moved are
-read from outside the updater, so the report never parses nix-update's output.
+Package update policy stays in each package expression (``passthru.updateScript`` and
+nix-update's own discovery). Versions and the working-copy diff are read outside the
+updater, so the report never parses nix-update's output.
 """
 
 from __future__ import annotations

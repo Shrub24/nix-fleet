@@ -1,14 +1,6 @@
-# Published package-update flakeModule: a typed per-system registry of locally
-# owned package outputs plus one batch app over the shared runner
-# (`pkgs/package-updates/`). Consumers select it
-# (`imports = [ inputs.nix-fleet.flakeModules.packageUpdates ];`), register
-# their own outputs, and get `nix run .#update-packages`.
-#
-# The module is bound in a `let` and used twice: flake.flakeModules entries are
-# published only, never auto-applied to the defining flake. Its perSystem
-# contributes the option and the app only — the regression checks below are
-# contributors of *this* repository, so a consumer never inherits a fixture
-# pinned to the producer's evaluated packages.
+# Published package-update flakeModule: a typed registry of owned package outputs plus
+# one batch app over the shared runner. Consumers import it and register their own
+# outputs; the checks in this file are this repository's, not a consumer's.
 #
 # Contract: docs/contracts/package-updates.md.
 { inputs, ... }:

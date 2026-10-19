@@ -1,65 +1,14 @@
-# Coordinated fleet build + cache push.
+# Coordinated fleet build: one coordinator runs nix-fast-build and distributes to the
+# remote builders rendered from the fleet inventory. Interface and prerequisites:
+# docs/contracts/ci.md.
 #
-# Model: ONE coordinator runs nix-fast-build, which evaluates locally and
-# distributes builds to nix remote builders (nix's own builders = ssh-ng://
-# fan-out, multiple hosts, results return to the coordinator's store).
-# Each remote builder publishes through its existing niks3 post-build-hook.
-# GHA-local builds use niks3-action's native hook with GitHub OIDC.
-# No path collection or --niks3-server upload: publication belongs to hooks.
-# The coordinator installs niks3-action for its own local builds.
+#   uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v1
+#   with: { targets: .#checks }
+#   secrets: { BUILDER_SSH_KEY: "${{ secrets.FLEET_BUILDER_SSH_KEY }}" }
 #
-# BUILDER CONFIGURATION COMES FROM THE FLEET INVENTORY — the workflow holds
-# no builder coordinates. nix-fleet (inputs.nix-fleet.flakeModules.fleet)
-# is the canonical authority; the consumer flake renders its selected
-# builder profile as `packages.ci` (canonical) or `packages.<profile>`
-# (consumer-local sets) — machines file, known_hosts, ssh_config — and this
-# workflow installs those artifacts. Consumers select the coordinator
-# architecture, target systems and builder profile.
-#
-# REUSABLE WORKFLOW: call it from a ~10-line consumer stub —
-#
-#   jobs:
-#     build-push-cache:
-#       uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v1
-#       with:
-#         cache_api_url: https://niks3.tailnet.example.com   # optional; the fleet contract supplies it
-#         targets: .#nixosConfigurations.myhost.config.system.build.toplevel
-#         builder_attr: ci            # optional; empty means local-only
-#         runner_system: x86_64-linux # optional; ARM coordinator by default
-#         systems: x86_64-linux       # optional; both architectures by default
-#         tailnet: false              # optional; default true
-#         ts_client_id: ${{ vars.TS_OAUTH_CLIENT_ID }} # optional public override
-#         ts_audience: ${{ vars.TS_AUDIENCE }}         # optional public override
-#       secrets:
-#         BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
-#
-# CALLER REQUIREMENT: the calling job MUST grant `id-token: write` +
-# `contents: read` (permissions cannot be elevated by a called workflow —
-# GitHub rejects the call at parse time if the caller grants less).
-#
-# OUTPUTS: `build` is `success` only when the build completed; an absent output
-# means the stage did not complete and must never be read as success. `systems`,
-# `runner` and `runner_system` are the resolved values, for a caller that wants to
-# chain its own jobs against the same selection. `runner` is a GitHub runner label
-# and `runner_system` a Nix system: they are different values and are not
-# interchangeable.
-#
-# CACHE VERIFICATION IS NOT PART OF THIS WORKFLOW and does not gate anything: the
-# cache is warmed here, and whether it actually serves that warming is checked
-# after the revision lands, by verify-cache.yml against the public substituter.
-#
-# Pin to a VERSION TAG, not @main: nix-fleet cuts tagged releases and
-# renovate proposes tag bumps (PR gate + changelog), so consumers opt into
-# changes deliberately. Nothing else is configured per-consumer: builder
-# coordinates render from the fleet inventory, cache substituter/keys/
-# audience from the cache's /api/cache-config.
-#
-# Builder prerequisites: nixpkgs revisions aligned (consumers follow
-# nix-fleet's nixpkgs input), coordinator key authorized by the builders'
-# nixbuild account, substituter pointing at the cache so --skip-cached is
-# meaningful. Degradation is native: an unreachable builder simply drops
-# out of nix's scheduling and work lands on the remaining builders and the
-# runner's own store — the inventory carries no failover logic.
+# The calling job must grant `contents: read` and `id-token: write`; a narrower grant
+# fails the call at startup. Outputs: `build` (success only when the build
+# completed), `systems`, `runner`, `runner_system` (a label and a Nix system).
 name: build-push-cache
 permissions:
   contents: read
@@ -154,9 +103,7 @@ on:
         required: false
         default: ""
     outputs:
-      # Set only when the corresponding stage succeeded. An absent output means
-      # the stage did not complete, never that it passed: a caller must require
-      # the value it expects rather than treat emptiness as success.
+      # Set only on success: an absent output means the stage did not complete.
       build:
         description: "success when the build completed"
         value: ${{ jobs.build.outputs.outcome }}
@@ -240,12 +187,8 @@ jobs:
   build:
     needs: prepare
     runs-on: ${{ needs.prepare.outputs.runner }}
-    # One build at a time repository-wide: concurrent candidates compete for the
-    # same builders and re-warm the same cache. `queue: max` keeps pending runs
-    # instead of replacing them. The group is declared here and nowhere else: a
-    # job whose group is the same as its workflow's group can never acquire it,
-    # because the run itself holds it — on the first live run through this call
-    # path the build job failed at startup with no steps and no runner.
+    # One build at a time; `queue: max` keeps pending runs. This group is declared
+    # here and nowhere else: a job cannot acquire a group its own run holds.
     concurrency:
       group: fleet-build-stage
       cancel-in-progress: false
@@ -259,12 +202,8 @@ jobs:
           ref: ${{ inputs.revision }}
 
       - name: Join tailnet (fleet-host builders)
-        # MagicDNS names in the registry's machines file resolve only inside
-        # the tailnet. External-only profiles pass tailnet: false; the
-        # registry's ssh_config/known_hosts carry everything else.
-        # Workload identity federation: the action exchanges GitHub's OIDC
-        # token (from the caller's id-token: write) for a node key, so no
-        # long-lived OAuth secret exists anywhere.
+        # Registry MagicDNS names need the tailnet; the OIDC exchange means no
+        # long-lived OAuth secret.
         if: ${{ inputs.tailnet }}
         uses: tailscale/github-action@v4
         with:
@@ -277,9 +216,7 @@ jobs:
 
       - name: Install fleet builder artifacts from the registry
         if: ${{ inputs.builder_attr != '' }}
-        # Builds the consumer's rendered profile bundle (nix eval only) and
-        # installs machines/known_hosts/ssh_config. The workflow never
-        # stores builder coordinates; the registry is the SSOT.
+        # Installs the rendered profile bundle; the registry holds the coordinates.
         run: |
           BUNDLE=$(nix build --no-link --print-out-paths \
             ".#packages.${{ inputs.runner_system }}.${{ inputs.builder_attr }}")
@@ -299,10 +236,7 @@ jobs:
 
       - name: Verify the selected builders answer before scheduling
         if: ${{ inputs.builder_attr != '' }}
-        # A builder that cannot be dialled surfaces deep inside the build as a
-        # bare "platform mismatch". Prove dial-in here, name the host, and fail
-        # only when a requested system is left with nowhere to build — the
-        # coordinator covers its own system locally.
+        # Prove dial-in here: unreachable builders surface as "platform mismatch".
         env:
           SYSTEMS: ${{ needs.prepare.outputs.systems }}
           COORDINATOR: ${{ inputs.runner_system }}
@@ -340,9 +274,7 @@ jobs:
           fi
 
       - name: Resolve cache API URL
-        # The fleet contract already carries this coordinate
-        # (fleet.services."niks3-write"), so the input is an override rather
-        # than something every repository restates.
+        # An override: the fleet contract already carries this coordinate.
         id: cache-url
         run: |
           url='${{ inputs.cache_api_url }}'

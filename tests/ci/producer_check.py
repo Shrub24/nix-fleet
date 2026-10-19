@@ -1,11 +1,5 @@
-"""Exercise the native producer's decision step and its credential boundary.
-
-The step reads the batch's report and exit status to decide whether anything is
-proposable: a missing report, a report that contradicts the exit status, a missing
-artifact, or nothing to propose all fail the step, and a successful refresh must
-not fail its own step. The updaters run repository code, so the job that runs them
-must hold no credential.
-"""
+"""Exercise the producer's decision step: a missing, contradictory or empty report
+proposes nothing, and the updater job holds no credential."""
 
 import json
 import os

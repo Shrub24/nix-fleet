@@ -1,6 +1,4 @@
-# The cache verifier is this repository's own claim that the cache serves what the
-# fleet built, and its shell is not exercised by evaluating the workflow. One leaf
-# states one invariant: the credential boundary plus the pass/fail verdict.
+# Exercises verify-cache.yml's verdict step: pass, miss, counts, and no credential.
 {
   perSystem =
     { pkgs, ... }:

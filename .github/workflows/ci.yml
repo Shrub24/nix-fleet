@@ -1,19 +1,7 @@
-# nix-fleet's own CI: the contributor-facing mirror of the repository's
-# validation (`validate.yml`), plus the fleet build pipeline via the reusable
-# workflow (this repo is its own first consumer — the ci builder set is the
-# canonical inventory).
-#
-# This workflow holds no credential and runs on every pull request, including
-# one that modifies it. The candidate pipeline (pipeline.yml) is triggered by
-# this workflow's completion and runs the default branch's definition, so the
-# credential that reports validation and the one that promotes never come from a
-# file a pull request can edit.
-#
-# `labeled` is in the trigger because applying a label is how a consumer accepts
-# an update: the resulting re-run re-validates the candidate and reposts its
-# status, which is what a label policy promotes on. The same event is what
-# accept.yml records against the accepted revision.
+# Contributor-facing validation plus the fleet build (dispatch only). Holds no
+# credential; see docs/contracts/ci.md.
 name: ci
+
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
@@ -23,11 +11,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # The event name is part of the group because this workflow is two paths in one
-  # file: routine validation on push and pull request, and the dispatch-only fleet
-  # build and cache verification. Without it a push to main cancels an in-flight
-  # dispatched build — observed, and an expensive way to lose a build. Superseded
-  # validation still cancels itself.
+  # The event name keeps a push from cancelling a dispatched build.
   group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
@@ -36,22 +20,14 @@ permissions:
 
 jobs:
   validate:
-    # The same definition the trusted pipeline uses for the required status; this
-    # call is the contributor-facing mirror, and it runs the pull request's copy
-    # of both this file and the validation workflow.
     permissions:
       contents: read
     uses: ./.github/workflows/validate.yml
     with:
       revision: ${{ github.sha }}
-      # Automation branches carry their regeneration in the candidate's child
-      # commit (candidate.yml), so the consistency check is for human changes.
       generated_files: ${{ (startsWith(github.head_ref, 'automation/') || startsWith(github.head_ref, 'renovate/')) && 'skip' || 'check' }}
 
   fleet-build:
-    # Dogfood: nix-fleet schedules against its own canonical ci set. The
-    # cache coordinates are the fixture's — first live run needs the real
-    # secret (docs/contracts/ci.md caveats apply).
     if: github.event_name == 'workflow_dispatch'
     needs: validate
     permissions:
@@ -59,9 +35,6 @@ jobs:
       id-token: write
     uses: ./.github/workflows/build-push-cache.yml
     with:
-      # cache_api_url is deliberately absent: empty resolves the canonical
-      # fleet.services."niks3-write" record, which is the point of the
-      # contract. Pass it here only to point a run at a different cache.
       builder_attr: ci
     secrets:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}

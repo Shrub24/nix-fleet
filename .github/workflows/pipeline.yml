@@ -1,15 +1,6 @@
-# The candidate pipeline's entry point and the only file that decides what is
-# under validation. Defined on the default branch so no pull request can change
-# what runs with the automation credential; the revision comes from the API, not
-# from the event payload. Routes automation sources, human revisions (validated
-# here, never promoted) and pushes to main. Contract:
-# docs/contracts/update-candidates.md.
-#
-# Callable, so a consumer keeps one thin trigger file per event rather than a copy
-# of this routing. Its local `./` calls below resolve from the caller's commit,
-# which is this repository at the pinned ref, so a consumer needs no copy of
-# validate.yml or candidate.yml either. A caller grants the union of the
-# permissions these jobs declare and passes `secrets: inherit`.
+# Entry point of the candidate pipeline, defined on the default branch so a pull
+# request cannot change it. Routes automation sources, human revisions and pushes to
+# main. Contract: docs/contracts/update-candidates.md.
 name: pipeline
 
 on:
@@ -64,8 +55,7 @@ jobs:
           set -euo pipefail
           emit() { printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"; }
 
-          # Who may be an automation source: a prefix routes, this authorises.
-          # Both entry paths use this one list.
+          # A branch prefix routes a proposal; this authorises one.
           allowed=$(printf '%s\n' "${APP_SLUG}[bot]" "renovate[bot]" \
             "$(printf '%s' "${EXTRA_AUTHORS:-}" | tr ' ' '\n')" |
             jq -R -s 'split("\n") | map(select(length > 0))')
@@ -77,15 +67,13 @@ jobs:
           else
             sha=$EVENT_SHA
             conclusion=$EVENT_CONCLUSION
-            # A revision from a fork cannot be a source: its code is not ours.
+            # A fork revision's code is not ours.
             if [ "$EVENT_REPO" != "$GITHUB_REPOSITORY" ]; then
               echo "::notice::pipeline: $EVENT_REPO is not this repository; nothing to do"
               emit kind none; exit 0
             fi
             if [ "$EVENT_BRANCH" = "$DEFAULT_BRANCH" ]; then
-              # This job checks out nothing, so gh cannot read a git remote:
-              # the repository must be passed explicitly, as the gh api calls in
-              # this script already do.
+              # No checkout here, so gh needs the repository explicitly.
               include=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
                 --json number,headRefName,headRefOid,author |
                 jq -c --argjson allowed "$allowed" \
@@ -110,10 +98,7 @@ jobs:
           branch=$(jq -r .head.ref <<< "$pull")
           author=$(jq -r .user.login <<< "$pull")
 
-          # A branch prefix routes a proposal; it is not an identity. Only a known
-          # update producer's revision is treated as one, because a validated
-          # candidate may be promoted without a human. Anything else is a human
-          # change, which needs review.
+          # Only a known producer's revision may be promoted without a human.
           case "$branch" in
             automation/*|renovate/*)
               if jq -en --argjson allowed "$allowed" --arg a "$author" \
@@ -130,8 +115,7 @@ jobs:
           emit kind "$kind"; emit sha "$sha"; emit pr "$pr"; emit conclusion "$conclusion"
 
   validate:
-    # The authoritative validation of a human revision, run from this definition
-    # rather than relayed from the pull request's own `ci` run.
+    # Validation of a human revision from this definition, not relayed from ci.
     needs: resolve
     if: ${{ needs.resolve.outputs.kind == 'human' }}
     permissions:
@@ -144,8 +128,7 @@ jobs:
   candidate:
     needs: resolve
     if: ${{ needs.resolve.outputs.kind == 'automation' }}
-    # The union of what candidate.yml's jobs request: a called workflow cannot
-    # elevate beyond its caller, and GitHub rejects a call that grants less.
+    # The union of candidate.yml's grants: a call granting less fails at startup.
     permissions:
       contents: write
       statuses: write
@@ -156,11 +139,9 @@ jobs:
       source_sha: ${{ needs.resolve.outputs.sha }}
       source_pr: ${{ needs.resolve.outputs.pr }}
       mode: automation
-      # The candidate's own stages are the trusted ones for this path: they run
-      # from this file's definition, and formatting is gated by the build.
+      # The candidate's stages run from this definition, so they certify this path.
       precheck: success
-      # Per-repository build selection, so a consumer configures its closure
-      # without editing a workflow.
+      # Per-repository build selection.
       targets: ${{ vars.CANDIDATE_TARGETS || '.#checks' }}
       systems: ${{ vars.CANDIDATE_SYSTEMS || 'x86_64-linux aarch64-linux' }}
       runner_system: ${{ vars.CANDIDATE_RUNNER_SYSTEM || 'aarch64-linux' }}
@@ -170,11 +151,7 @@ jobs:
   human:
     needs: [resolve, validate]
     if: ${{ needs.resolve.outputs.kind == 'human' }}
-    # The same union as `candidate`, not just the status job's scopes: GitHub
-    # validates every job in the called workflow against the caller's grant, so a
-    # narrower grant here fails the whole call at startup even though the human
-    # mode skips preparation, build and verification. Each called job still
-    # receives only what it declares for itself.
+    # Same union as `candidate`: a narrower caller grant fails the whole call.
     permissions:
       contents: write
       statuses: write
@@ -189,10 +166,8 @@ jobs:
     secrets: inherit
 
   refresh-open:
-    # Re-validation after a push to main: a candidate that does not descend from
-    # the current main can never be promoted, so an open proposal would silently
-    # rot. Under a `label` policy the re-validation happens at acceptance instead,
-    # where it is also what the operator's label re-triggers.
+    # A candidate that no longer descends from main can never promote; under a
+    # `label` policy acceptance re-validates instead.
     needs: resolve
     if: >-
       ${{ needs.resolve.outputs.kind == 'main-push'

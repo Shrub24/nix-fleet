@@ -43,9 +43,7 @@ let
   resolve = import ../../lib/build-profile.nix lib;
   resolvedProfile = resolve.resolveBuildProfile config.fleet "fixture";
 
-  # The CI cache coordinate the build-push-cache workflow defaults to must be
-  # derived from the contract, not a literal that happens to match it: the
-  # mutation moves the record and the resolved URL has to move with it.
+  # Mutating the record must move the resolved URL.
   cacheApiUrl = config.flake.lib.serviceEndpoints.cacheApiUrl config.fleet;
   cacheApiUrlMutated = config.flake.lib.serviceEndpoints.cacheApiUrl (
     lib.recursiveUpdate config.fleet {
@@ -53,9 +51,7 @@ let
     }
   );
 
-  # The read side resolves from the public route, not the tailnet one: a cache
-  # check must not inherit a tailnet requirement to answer a question about a
-  # public subsystem.
+  # Reads resolve from the public route, not the tailnet one.
   cacheSubstituterUrl = config.flake.lib.serviceEndpoints.cacheSubstituterUrl config.fleet;
   cacheSubstituterUrlMutated = config.flake.lib.serviceEndpoints.cacheSubstituterUrl (
     lib.recursiveUpdate config.fleet {
@@ -63,8 +59,7 @@ let
     }
   );
 
-  # A substituter with no key fails every substitution silently, so an empty key
-  # list must be a named error rather than an empty nix.conf.
+  # An empty key list must be a named error, not a silent miss.
   cacheKeysFailClosed =
     !(builtins.tryEval (
       config.flake.lib.serviceEndpoints.cachePublicKeys (

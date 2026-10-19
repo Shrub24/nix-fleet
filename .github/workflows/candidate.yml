@@ -1,15 +1,5 @@
-# Update candidate for one source revision: prepare the candidate, evaluate it,
-# build it through the fleet builders, and post the `update-candidate` commit
-# status. Cache availability is verified after the merge, never here — see
-# verify-cache.yml — so it cannot block a dependency update. Promotion is a separate workflow
-# (promote-candidate.yml) that runs from the default branch when that status
-# succeeds, so nothing here can move main.
-#
-# Called only by workflows defined on the default branch: a local `uses:` resolves
-# from the caller's commit. Jobs that run the source's code hold no write
-# credential, and the `automation` environment keeps the App key out of them.
-# Trust tiers and the error contract (a missing stage result is a failure):
-# docs/contracts/update-candidates.md.
+# Prepares, evaluates and builds one update candidate and posts its
+# `update-candidate` status. Promotion is separate: promote-candidate.yml.
 name: candidate
 
 on:
@@ -66,9 +56,7 @@ jobs:
   prepare:
     if: ${{ inputs.mode == 'automation' && inputs.precheck == 'success' }}
     runs-on: ubuntu-latest
-    # Read-only: this job runs the source's code (its regeneration app, its
-    # flake, this repository's preparation script from that revision), so it must
-    # not also hold a token that can write to this repository.
+    # Read-only: this job runs the source revision's code.
     permissions:
       contents: read
     outputs:
@@ -85,11 +73,7 @@ jobs:
         uses: NixOS/nix-installer-action@v1
 
       - name: Carry the current main
-        # A merge keeps the source head reachable from the candidate, so the pull
-        # request is marked merged when the candidate is promoted, and it is what
-        # makes the candidate landable: promotion is a fast-forward, so a
-        # candidate that does not descend from main can never be promoted. A
-        # conflict fails this job, which reports as an un-preparable candidate.
+        # Merging keeps the source head reachable and makes the candidate landable.
         run: |
           set -euo pipefail
           git fetch --no-tags origin main
@@ -100,8 +84,7 @@ jobs:
           fi
 
       - name: Regenerate the flake and lock
-        # The identity is supplied rather than assumed: `prepare-candidate.sh`
-        # commits, and a hosted runner is not guaranteed to carry a git identity.
+        # prepare-candidate.sh commits; a hosted runner carries no git identity.
         env:
           GIT_AUTHOR_NAME: nix-fleet automation
           GIT_AUTHOR_EMAIL: automation@users.noreply.github.com
@@ -117,8 +100,7 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Decide whether the closure changes
-        # A change confined to workflow files cannot change any derivation, so
-        # the closure build is skipped; the status is still posted.
+        # A workflow-only change builds nothing; the status is still posted.
         id: scope
         run: |
           set -euo pipefail
@@ -130,9 +112,7 @@ jobs:
           fi
 
       - name: Package the candidate for publication
-        # The commit crosses to the publishing job as data, so that job needs no
-        # part of the source tree. If the candidate is exactly main, the range is
-        # empty and the single commit is bundled instead.
+        # The commit crosses to publishing as data; an empty range bundles the one commit.
         run: |
           set -euo pipefail
           range="origin/main..HEAD"
@@ -149,8 +129,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    # The only job with write access, and it runs no source code: a tampered
-    # bundle is caught by the promoter's ref and ancestry checks.
+    # The only job with write access; the promoter verifies the bundle's ancestry.
     needs: prepare
     if: ${{ needs.prepare.outputs.candidate != '' }}
     runs-on: ubuntu-latest
@@ -188,8 +167,7 @@ jobs:
             "$CANDIDATE:refs/candidates/$PR/$SOURCE-$CANDIDATE"
 
   evaluate:
-    # The definition `ci.yml` calls, from this file, so the candidate is certified
-    # by trusted commands; after publication, since a checkout needs the ref.
+    # Trusted validation from this file, after publication so the ref exists.
     needs: [prepare, publish]
     if: ${{ needs.publish.result == 'success' }}
     permissions:
@@ -216,14 +194,11 @@ jobs:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
 
   status:
-    # Runs even when the stages above failed or were skipped: this job is how a
-    # failure becomes visible on the revision instead of an unexplained block.
+    # Always runs: a failure must appear on the revision, not as a silent block.
     needs: [prepare, publish, evaluate, build]
     if: ${{ always() }}
     runs-on: ubuntu-latest
-    # The environment holds the App key and admits only `main`, so this credential
-    # is unreachable from any pull-request job — including a job whose file the
-    # pull request defines.
+    # The App key lives in an environment restricted to `main`.
     environment: automation
     permissions:
       statuses: write
@@ -244,9 +219,8 @@ jobs:
           SOURCE: ${{ inputs.source_sha }}
           MODE: ${{ inputs.mode }}
           PRECHECK: ${{ inputs.precheck }}
-          # Without a candidate (preparation failed or was not attempted) the
-          # failure is reported on the source revision; promotion reads only
-          # candidate statuses, so that is inert for promotion.
+          # Without a candidate the failure goes on the source revision; promotion
+          # reads candidate statuses only.
           CANDIDATE: ${{ needs.prepare.outputs.candidate || inputs.source_sha }}
           PREPARE: ${{ needs.prepare.result }}
           PUBLISH: ${{ needs.publish.result }}

@@ -419,16 +419,8 @@ let
                 cat "$machinesPath" > "$out"
               '';
 
-          # CI builder bundles, one per declared build profile: machines file,
-          # known-hosts (projection of the profile selection only), ssh client
-          # config. The build-push-cache workflow installs these; the profile
-          # name is the only selection the workflow makes.
-          #
-          # cache-api-url sits alongside them because gha-build needs the cache
-          # coordinate without any builder bundle: it is the canonical
-          # `niks3-write` record resolved through the same public API a consumer
-          # uses, which keeps the workflow's `cache_api_url` input an override
-          # rather than a fact every repository restates.
+          # Builder bundles per profile, plus the cache coordinates a caller needs
+          # without one. build-push-cache.yml installs these.
           packages =
             builtins.mapAttrs (name: _: ciArtifacts { inherit pkgs; } name) config.fleet.buildProfiles
             // {

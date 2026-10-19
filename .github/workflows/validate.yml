@@ -1,18 +1,6 @@
-# The repository's validation in one definition. `ci.yml` calls it for feedback
-# (running the pull request's copy) and `pipeline.yml` calls it from the default
-# branch for the required status, so a pull request cannot weaken what certifies
-# it. The commands are fixed here; the revision is data.
-#
-#   validate:
-#     permissions: { contents: read }
-#     uses: Shrub24/nix-fleet/.github/workflows/validate.yml@v1
-#     with: { revision: "${{ github.sha }}" }
-#
-# Fails when validation fails; no success output.
+# The repository's validation, in one definition: ci.yml calls it for feedback and
+# pipeline.yml from the default branch for the required status. The revision is data.
 name: validate
-
-permissions:
-  contents: read
 
 on:
   workflow_call:
@@ -28,9 +16,7 @@ on:
         default: check
 
 jobs:
-  # Three jobs so one failure does not hide the others: a formatting failure used
-  # to mask whether evaluation also failed, and for a workflow-only revision the
-  # formatting check is the only meaningful one.
+  # Three jobs so one failure cannot hide the others.
   format:
     runs-on: ubuntu-latest
     steps:
@@ -78,8 +64,7 @@ jobs:
           path: target
 
       - name: Check out the preparation script from the default branch
-        # The consistency check's procedure is trusted even when the revision
-        # under test rewrote its own copy of the script.
+        # The trusted copy of the procedure runs even if the revision rewrote its own.
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
