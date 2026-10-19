@@ -1,11 +1,5 @@
-"""Exercise the post-merge cache verifier without a cache or a tailnet.
-
-The verify step is the repository's own claim that the cache serves what the fleet
-built, so it is executed here against a stub `nix`: a served root passes, a missing
-root fails naming the path, and both systems are asked. The credential boundary is
-asserted structurally, because that is the property that decides whether a read
-check can be run by anyone.
-"""
+"""Exercise the verify step against a stub `nix`: a served root passes, a missing root
+fails by path, both systems are asked, and no credential is held."""
 
 import os
 from pathlib import Path
@@ -30,11 +24,11 @@ assert "tailscale" not in str(verify), "the verify job joins the tailnet for a p
 assert "niks3-action" not in str(verify), "the verify job needs no cache client to ask about a path"
 assert verify["outputs"]["cache"] == "${{ steps.cache.outputs.url }}"
 
-# A pin may only move after a green verify, which is what makes a failed revision
-# leave the previous pin in place.
-pin = workflow["jobs"]["pin"]
-assert pin["needs"] == "verify"
-assert "pin_name" in pin["if"], "pinning is not gated on an explicit pin name"
+# Verification owns measurement only. Pinning moves a name that means "main's
+# current build", so it belongs to promotion (pin-cache.yml); keeping it here would
+# make a pin's correctness depend on the colour of a diagnostic.
+assert set(workflow["jobs"]) == {"verify"}, f"verify-cache owns more than measurement: {sorted(workflow['jobs'])}"
+assert "pin_name" not in str(workflow["on"]), "pinning inputs belong to pin-cache.yml"
 
 script = next(
     s for s in verify["steps"] if s.get("name") == "Require the cache to serve every realised root"
@@ -83,17 +77,15 @@ with tempfile.TemporaryDirectory() as directory:
     result, log = run(served)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "serves every root" in result.stdout, result.stdout
-    # The counts are the reading the job exists to publish.
+    # The counts are what the run publishes.
     assert "roots checked: 4" in summary.read_text(), summary.read_text()
     assert "unserved: 0" in summary.read_text(), summary.read_text()
     assert "::error::" not in result.stdout, result.stdout
-    # A verifier that checked one system would pass while proving half the claim.
+    # One system checked would pass while proving half the claim.
     assert ".#checks.x86_64-linux" in log and ".#checks.aarch64-linux" in log, log
     assert "https://cache.invalid" in log, log
 
-    # A miss is the finding this workflow exists for: named per system, counted,
-    # non-zero. The stub answers both systems with the same roots, so one missing
-    # root is reported once per system rather than deduplicated away.
+    # The stub answers both systems alike, so one miss is reported twice.
     result, _ = run(served + "\n/nix/store/cccc-missing")
     assert result.returncode != 0, result.stdout
     assert result.stdout.count("/nix/store/cccc-missing") == 2, result.stdout

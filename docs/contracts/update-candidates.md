@@ -163,16 +163,17 @@ repository at the pinned ref, so a consumer needs no copy of `candidate.yml` or
 its `automation` environment, the permission union the called jobs declare, and
 `secrets: inherit`.
 
-| Workflow                      | Called with                                                                                          | Consumer supplies                                                                                                |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `build-push-cache.yml`        | `targets`, `builder_attr`, `runner_system`, `systems`, `revision`, `cache_api_url`, tailnet identity | `BUILDER_SSH_KEY` secret                                                                                         |
-| `verify-cache.yml`            | `revision`, `targets`, `systems`, `runner_system`, `cache_url`, `pin_name`                           | nothing (no secret); `CACHE_PIN_NAME` for the push trigger; a caller grants `contents: read` + `id-token: write` |
-| `validate.yml`                | `revision`, `generated_files`                                                                        | nothing (no secret)                                                                                              |
-| `candidate.yml`               | `source_sha`, `source_pr`, `mode`, `precheck`, `targets`, `systems`, `runner_system`, `builder_attr` | environment `automation`                                                                                         |
-| `pipeline.yml`                | `source_pr` (only when the caller's event is a dispatch)                                             | the variables and permission grant below                                                                         |
-| `package-updates-refresh.yml` | —                                                                                                    | environment `automation`, in the publishing job only                                                             |
-| `promote-candidate.yml`       | — (call it from a thin `on: status` file)                                                            | environment `automation`                                                                                         |
-| `candidate-sweep.yml`         | — (call it from a thin `on: schedule` file)                                                          | environment `automation`                                                                                         |
+| Workflow                      | Called with                                                                                          | Consumer supplies                                                                |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `build-push-cache.yml`        | `targets`, `builder_attr`, `runner_system`, `systems`, `revision`, `cache_api_url`, tailnet identity | `BUILDER_SSH_KEY` secret                                                         |
+| `verify-cache.yml`            | `revision`, `targets`, `systems`, `runner_system`, `cache_url`                                       | nothing (no secret, no identity); a caller grants `contents: read`               |
+| `pin-cache.yml`               | `revision`, `pin_name`, `targets`, `systems`, `cache_api_url`, `runner_system`                       | `CACHE_PIN_NAME`; a caller grants `contents: read` + `id-token: write` (tailnet) |
+| `validate.yml`                | `revision`, `generated_files`                                                                        | nothing (no secret)                                                              |
+| `candidate.yml`               | `source_sha`, `source_pr`, `mode`, `precheck`, `targets`, `systems`, `runner_system`, `builder_attr` | environment `automation`                                                         |
+| `pipeline.yml`                | `source_pr` (only when the caller's event is a dispatch)                                             | the variables and permission grant below                                         |
+| `package-updates-refresh.yml` | —                                                                                                    | environment `automation`, in the publishing job only                             |
+| `promote-candidate.yml`       | — (call it from a thin `on: status` file)                                                            | environment `automation`                                                         |
+| `candidate-sweep.yml`         | — (call it from a thin `on: schedule` file)                                                          | environment `automation`                                                         |
 
 Build selection is typed workflow input, so a consumer sets its closure per
 repository without editing a workflow — `pipeline.yml` passes `CANDIDATE_TARGETS`,
@@ -208,13 +209,18 @@ client. It asks `nix path-info` about each realised closure root, naming every
 missing path; uploads are atomic per closure, so a served root means its closure
 was committed.
 
-With `pin_name` set, a `pin` job runs only after a green verify and pins one
-aggregate root per system (`checks.<system>.cache-root`, whose closure is every
-published output). Pinning protects a closure from the cache's own GC, so the
-name becomes a rolling `last-known-good` pointer: repointing it is what releases
-the superseded closure, and a revision that fails verification never moves it.
-That job writes to the private API and therefore does join the tailnet. Pinning
-is off until `CACHE_PIN_NAME` is set, so `verify` never depends on it.
+Pinning is a separate workflow with its own owner: `pin-cache.yml`, dispatched by
+`promote-candidate.yml` after a successful fast-forward and dispatchable by hand to
+re-pin a revision whose publication completed late. A pin name means "the fleet's
+current main", so promotion — the event that lands a revision the pipeline built —
+is what may move it; a push-triggered measurement's colour moves nothing. One pin
+per system covers the whole tree: `checks.<system>.cache-root` is an aggregate whose
+closure is every published output. Pinning protects a closure from the cache's own
+GC, so repointing releases the superseded closure to the cache's next `gc`, and
+`pins create` failing by name is the presence assertion — a revision whose
+publication was incomplete never claims the name, which stays on the previous
+`last-known-good` revision. Only this workflow mints an OIDC token or joins the
+tailnet, and pinning is off until `CACHE_PIN_NAME` is set.
 
 `runner` is a GitHub runner label (for a job's `runs-on`) and `runner_system` a
 Nix system (for `.#packages.<system>.*`); they are different values and are not

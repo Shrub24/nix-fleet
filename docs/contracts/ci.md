@@ -94,12 +94,18 @@ first live run, a pushed revision reported exactly the three derivations its com
 changed (`cache-root`, the `packages` aggregate, `treefmt-check`) while the other
 53 roots were served. Read the counts, not just the colour.
 
-With `pin_name` set it also pins one aggregate root per system after a green
-verify. A pin protects a closure from the cache's own GC, so the name is a rolling
-`last-known-good` pointer: repointing releases the superseded closure, and a
-revision that fails verification never moves it. That step writes to the private
-API, so the pin job — and only it — joins the tailnet, and the tailnet trust
-credential must list `verify-cache.yml` alongside `build-push-cache.yml`.
+Pinning is a **separate workflow owned by promotion**, not a job here.
+`pin-cache.yml` (dispatch or `workflow_call`) pins one aggregate root per system —
+`checks.<system>.cache-root`, whose closure is every published output — and
+`promote-candidate.yml` dispatches it after a successful fast-forward. The split is
+about what the two things mean: a pin name means "the fleet's current main", so it
+moves on the event that lands a revision the pipeline built, while `verify-cache`
+on a push is a measurement whose colour nothing may depend on. `pins create` fails
+by name when a path is not in the cache, so the pin asserts presence itself and
+needs no verification verdict; a revision that fails to publish never moves the
+name. That workflow is the only cache reader-or-writer that mints an OIDC token and
+joins the tailnet, so the tailnet trust credential lists `build-push-cache.yml` and
+`pin-cache.yml`.
 
 The pipeline's own credentials are not this workflow's. The automation App key
 that posts the required status and pushes `main` is an environment secret of
@@ -340,10 +346,10 @@ verifier failed its join with `token exchange failed with status 403` pointing a
 the credential, while the build job joined in the same run. Adding a workflow that
 joins the tailnet is therefore a credential change, not only a repository change.
 
-That read check no longer joins: substitution is public, so `verify-cache.yml`'s
-`verify` job needs no identity at all. Only its `pin` job writes to the private
-API, so the credential lists two files — `build-push-cache.yml` and
-`verify-cache.yml` — and nothing else. Tailscale documents the client id and audience as **not
+That read check no longer joins: substitution is public, so `verify-cache.yml`
+needs no identity at all, and it holds no credential of any kind. Only
+`pin-cache.yml` touches the private API, so the credential lists two files —
+`build-push-cache.yml` and `pin-cache.yml` — and nothing else. Tailscale documents the client id and audience as **not
 secrets**; they are public fleet metadata.
 A federated identity belongs to no user, so it must tag its nodes:
 `tags: tag:ci` is not optional.

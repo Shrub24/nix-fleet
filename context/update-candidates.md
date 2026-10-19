@@ -478,3 +478,34 @@ removed the dependency instead of widening the trusted workflow list.
 
 **Rejected alternatives:** widening the tailnet trust credential to cover a read-only workflow, which would
 have made every cache question depend on an identity it did not need
+
+## Cache pinning is owned by promotion, not by verification
+
+**Id:** 671962a5-673a-4386-9b98-40ec5e9ea4d7
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `.github/workflows/pin-cache.yml`, `.github/workflows/verify-cache.yml`, `.github/workflows/promote-candidate.yml`, 2026-10-19
+
+A pin name means "the fleet's current main", so it moves when a revision that the
+pipeline built lands on main. `pin-cache.yml` owns that, dispatched by
+`promote-candidate.yml` after the fast-forward. `verify-cache.yml` owns measurement
+only: it runs on every push to main, holds no credential, and nothing branches on its
+exit status. `pins create` failing by name is the presence assertion, so the pin
+path needs no verification verdict to be safe.
+
+**Reason:** while the pin was a `needs: verify` job, the invariant "main's pin points
+at something we built" held only because a diagnostic happened to be green on a
+promoted revision, and was false for the right reason on a human push, where
+verification fails over unbuilt derivations. Ownership by the promotion event makes
+the rule readable in the file that lands the revision, and it removes a tailnet join
+from every green push.
+
+**Rejected alternatives:** gating the pin job on `github.event_name ==
+'workflow_dispatch'` inside `verify-cache.yml` (one file still owns both duties, and a
+diagnostic dispatch would attempt to pin); pinning at candidate build time (a
+candidate may never promote, so the name would claim something untrue, and the GC
+window between build and promotion is minutes).
+
+**Revisit when:** a consumer needs its pin to advance on something other than a
+promotion, or the cache grows a pin primitive that is not name-based.

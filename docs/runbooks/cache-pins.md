@@ -47,23 +47,23 @@ Names: `nix-fleet-main-x86_64-linux`, `nix-fleet-main-aarch64-linux`
 
 Verify: a `write` token that is _not_ the CI identity gets `403` for that name.
 
-## 3. Trust the pin job on the tailnet
+## 3. Trust the pin workflow on the tailnet
 
-The `pin` job writes to the private API, so it joins the tailnet. The Tailscale
-trust credential's workflow rule names the reusable workflow by `job_workflow_ref`,
-so it must list **both**:
+`pin-cache.yml` writes to the private API, so it joins the tailnet. The Tailscale
+trust credential's workflow rule names the workflow by `job_workflow_ref`, so it must
+list **both**:
 
 ```
 Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@refs/heads/main
-Shrub24/nix-fleet/.github/workflows/verify-cache.yml@refs/heads/main
+Shrub24/nix-fleet/.github/workflows/pin-cache.yml@refs/heads/main
 ```
 
 No repository variable carries the Tailscale client id or audience: the job resolves
 `packages.<system>.ci-tailscale` from the fleet contract.
 
-Verify: the `pin` job's join succeeds. The symptom of a missing listing is
-`token exchange failed with status 403` pointing at the credential — **the `verify`
-job still passes**, because reads never join the tailnet.
+Verify: `pin-cache`'s join succeeds. A missing listing shows as
+`token exchange failed with status 403` pointing at the credential; `verify-cache` is
+unaffected, because it holds no credential.
 
 ## 4. Enable it
 
@@ -75,13 +75,10 @@ Empty (or unset) leaves pinning off; verification is unaffected.
 
 ## 5. First run
 
-Trigger by pushing to `main` (a promotion does this) or by dispatching
-`verify-cache`. Both jobs run:
-
-1. `verify` — reads the public substituter, asks `nix path-info` about every
-   realised closure root, publishes `roots checked` / `unserved` in the job summary.
-   No credential, no tailnet.
-2. `pin` — runs only after a green `verify`. Creates one pin per system.
+`promote-candidate` dispatches `pin-cache` after a successful fast-forward. By hand it
+is `gh workflow run pin-cache.yml -f pin_name=nix-fleet-main`, which is also how a
+revision whose publication completed late is re-pinned. One pin per system is
+created.
 
 Verify:
 
@@ -126,10 +123,10 @@ niks3 pins list --names-only --server-url "$API"
 
 ## 8. Troubleshooting
 
-| Symptom                                            | Cause                                                                                                                  |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `pin` job: `403` on `pins create`                  | missing `write` scope, or the name is reserved to another identity (§2)                                                |
-| `pin` job: `token exchange failed with status 403` | `verify-cache.yml` missing from the tailnet credential's workflow list (§3)                                            |
-| `pin` skipped                                      | `CACHE_PIN_NAME` unset (§4)                                                                                            |
-| `pins create` fails naming a store path            | the path is not in the cache: verification passed but publication did not complete — the finding pins exist to surface |
-| `pins list` empty after a green run                | the run's `pin` job was skipped, or it wrote to a different server than `$API`                                         |
+| Symptom                                 | Cause                                                                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `403` on `pins create`                  | missing `write` scope, or the name is reserved to another identity (§2)                                 |
+| `403` on the tailnet join               | `pin-cache.yml` missing from the tailnet credential's workflow list (§3)                                |
+| no pin run after a promotion            | `CACHE_PIN_NAME` unset (§4)                                                                             |
+| `pins create` fails naming a store path | the path is not in the cache: the build's publication did not complete (this is the check pins provide) |
+| `pins list` empty after a promotion     | that dispatch failed (the promoter only warns), or it wrote to a different server than `$API`           |

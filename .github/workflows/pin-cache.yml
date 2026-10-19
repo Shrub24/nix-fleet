@@ -1,0 +1,151 @@
+# Moves the fleet's rolling cache pins to a promoted revision. Dispatched by
+# promote-candidate.yml; see docs/runbooks/cache-pins.md.
+name: pin-cache
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Commit to pin; empty pins the triggering revision"
+        type: string
+        required: false
+        default: ""
+      pin_name:
+        description: "Pin name prefix, one pin per system as <prefix>-<system>; empty falls back to CACHE_PIN_NAME"
+        type: string
+        required: false
+        default: ""
+      systems:
+        description: "Target systems, space-separated"
+        type: string
+        required: false
+        default: "x86_64-linux aarch64-linux"
+      targets:
+        description: "Flake selection whose <targets>.<system>.cache-root is pinned"
+        type: string
+        required: false
+        default: ".#checks"
+      cache_api_url:
+        description: "Private API URL; empty resolves .#packages.<runner_system>.cache-api-url"
+        type: string
+        required: false
+        default: ""
+      runner_system:
+        description: "Nix system used to resolve the fleet artifacts"
+        type: string
+        required: false
+        default: "x86_64-linux"
+  workflow_call:
+    inputs:
+      revision:
+        description: "Commit to pin; empty pins the triggering revision"
+        type: string
+        required: false
+        default: ""
+      pin_name:
+        description: "Pin name prefix, one pin per system as <prefix>-<system>; empty falls back to CACHE_PIN_NAME"
+        type: string
+        required: false
+        default: ""
+      systems:
+        description: "Target systems, space-separated"
+        type: string
+        required: false
+        default: "x86_64-linux aarch64-linux"
+      targets:
+        description: "Flake selection whose <targets>.<system>.cache-root is pinned"
+        type: string
+        required: false
+        default: ".#checks"
+      cache_api_url:
+        description: "Private API URL; empty resolves .#packages.<runner_system>.cache-api-url"
+        type: string
+        required: false
+        default: ""
+      runner_system:
+        description: "Nix system used to resolve the fleet artifacts"
+        type: string
+        required: false
+        default: "x86_64-linux"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: pin-cache
+  cancel-in-progress: false
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the revision to pin
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+
+      - name: Install Nix
+        uses: NixOS/nix-installer-action@v1
+
+      - name: Resolve public Tailscale identity
+        id: ts
+        env:
+          RUNNER_SYSTEM: ${{ inputs.runner_system || 'x86_64-linux' }}
+        run: |
+          metadata=$(nix build --no-link --print-out-paths ".#packages.$RUNNER_SYSTEM.ci-tailscale")
+          echo "client-id=$(jq -er '.clientId' "$metadata")" >> "$GITHUB_OUTPUT"
+          echo "audience=$(jq -er '.audience' "$metadata")" >> "$GITHUB_OUTPUT"
+
+      - name: Join tailnet (cache write API)
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ steps.ts.outputs.client-id }}
+          audience: ${{ steps.ts.outputs.audience }}
+          tags: tag:ci
+
+      - name: Resolve the cache API URL
+        id: api
+        env:
+          API_URL: ${{ inputs.cache_api_url }}
+          RUNNER_SYSTEM: ${{ inputs.runner_system || 'x86_64-linux' }}
+        run: |
+          url=$API_URL
+          if [ -z "$url" ]; then
+            url=$(nix build --no-link --print-out-paths ".#packages.$RUNNER_SYSTEM.cache-api-url")
+            url=$(cat "$url")
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Configure the cache client
+        id: niks3
+        uses: Mic92/niks3-action@v1
+        with:
+          server-url: ${{ steps.api.outputs.url }}
+          skip-push: true
+
+      - name: Pin one aggregate root per system
+        env:
+          SYSTEMS: ${{ inputs.systems || 'x86_64-linux aarch64-linux' }}
+          TARGETS: ${{ inputs.targets || '.#checks' }}
+          PIN: ${{ inputs.pin_name || vars.CACHE_PIN_NAME }}
+          API: ${{ steps.api.outputs.url }}
+          BINARY_DIR: ${{ steps.niks3.outputs.binary-dir }}
+          TOKEN_SCRIPT: ${{ steps.niks3.outputs.auth-token-script }}
+        run: |
+          set -euo pipefail
+          # An empty name would create pins called "-x86_64-linux".
+          [ -n "$PIN" ] || { echo "::error::pin-cache: no pin name (input or CACHE_PIN_NAME)"; exit 1; }
+          token=$(mktemp)
+          bash "$TOKEN_SCRIPT" > "$token"
+          export NIKS3_AUTH_TOKEN_FILE="$token"
+          for system in $SYSTEMS; do
+            root=$(nix eval --raw "$TARGETS.$system.cache-root.outPath")
+            "$BINARY_DIR/niks3" pins create "$PIN-$system" "$root" --server-url "$API"
+          done
+          {
+            echo "### Pins moved for \`${GITHUB_SHA}\`"
+            echo ""
+            echo "- name: \`$PIN-<system>\`"
+            echo "- systems: $SYSTEMS"
+          } >> "$GITHUB_STEP_SUMMARY"

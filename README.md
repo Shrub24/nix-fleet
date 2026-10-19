@@ -304,9 +304,10 @@ restates a hostname.
 realised closure root and publishes the counts. What a miss means depends on whether
 that revision was built — `main` fast-forwards to the candidate the pipeline built,
 so a miss on a promoted revision is a loss to investigate, while a human push reports
-the derivations its own commit changed, because routine CI never builds. A verified
-revision also moves a rolling `last-known-good` pin per system, whose closure covers
-every published output.
+the derivations its own commit changed, because routine CI never builds. A revision
+that was built and then promoted also moves a rolling `last-known-good` pin per
+system, whose closure covers every published output; that is `pin-cache.yml`, owned
+by the promotion path rather than by verification.
 
 Turning pins on (and what caching guarantees them) is an operator procedure:
 [docs/runbooks/cache-pins.md](docs/runbooks/cache-pins.md).

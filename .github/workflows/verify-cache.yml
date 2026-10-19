@@ -1,50 +1,10 @@
-# Cache verification: does the configured substituter actually serve what the
-# fleet built? This is a diagnostic on the landed revision, never a promotion
-# gate — an unavailable cache must not block dependency updates, and availability
-# says nothing about whether a revision is correct.
-#
-# READS THE PUBLIC ROUTE ONLY. The write API is private, but substitution is
-# public, so verification needs no tailnet identity, no OIDC and no secret; it
-# resolves `.#packages.<system>.cache-substituter-url` from the fleet contract
-# rather than restating a hostname.
-#
-# CALLER GRANT: GitHub validates every job in a called workflow against the
-# caller's grant when the call starts, so a `workflow_call` caller must grant
-# `contents: read` AND `id-token: write` — the pin job's write, even when pinning
-# is off. A narrower grant fails the whole call at startup, not just that job.
-#
-# It asks `nix path-info` about each realised closure root. Uploads are atomic
-# per closure, so a served root means its closure was committed — recursing would
-# be thousands of requests proving nothing extra. Nothing is built and no store is
-# prepared: `--print-out-paths` only evaluates and prints, and `path-info` needs
-# hashes rather than contents, so a runner with an empty store is fine.
-#
-# ERROR CONTRACT: fails when any root is not served, naming every missing path.
-# No success output, so an absent or skipped result can never read as a pass.
-#
-# Pinning (`pin_name`) runs only after a green verify, which is what makes a bad
-# revision leave the previous pin in place: the name is a rolling
-# `last-known-good` pointer, and repointing it is what releases the old closure
-# to the cache's own GC.
-#
-# When it runs: on every push to main, and by hand. The per-commit reading is worth
-# having; what it means depends on whether that revision was built. A promoted
-# revision was (main fast-forwards to the candidate that the pipeline built), so
-# any unserved root is a loss to investigate. A human push was not — routine CI
-# never builds — so its unserved roots are the derivations that commit changed.
-#
-# Design: docs/contracts/ci.md and docs/contracts/update-candidates.md.
+# Post-merge cache diagnostic. Never gates promotion; see docs/contracts/ci.md.
 name: verify-cache
 
 permissions:
   contents: read
 
 on:
-  # Every push to main, so its cache status is a fact about the commit rather than
-  # something to remember to ask for. Routine CI never builds, so a revision no
-  # build ever realised reports its changed derivations as unserved — read the
-  # counts, not just the colour. A promoted revision IS built (main fast-forwards
-  # to the candidate that was built), so a miss there is a real loss.
   push:
     branches: [main]
   workflow_dispatch:
@@ -75,16 +35,6 @@ on:
         type: string
         required: false
         default: "x86_64-linux"
-      pin_name:
-        description: "Pin name prefix; empty falls back to the CACHE_PIN_NAME repository variable, and empty in both disables pinning. One pin per system is created as <prefix>-<system>."
-        type: string
-        required: false
-        default: ""
-      cache_api_url:
-        description: "Private API URL for pinning; empty resolves .#packages.<runner_system>.cache-api-url"
-        type: string
-        required: false
-        default: ""
 
 jobs:
   verify:
@@ -116,8 +66,6 @@ jobs:
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Require the cache to serve every realised root
-        # The defaults are repeated here because a push event carries no inputs: an
-        # empty SYSTEMS would iterate nothing and pass without checking anything.
         env:
           SYSTEMS: ${{ inputs.systems || 'x86_64-linux aarch64-linux' }}
           TARGETS: ${{ inputs.targets || '.#checks' }}
@@ -127,9 +75,6 @@ jobs:
           missing=0
           checked=0
           for system in $SYSTEMS; do
-            # `$TARGETS.$system` is an attribute set, not a derivation, so the
-            # roots are read from evaluation: one path per check, which is what a
-            # missing-path report needs to be specific.
             roots=$(nix eval --raw "$TARGETS.$system" \
               --apply 'cs: builtins.concatStringsSep "\n" (builtins.map (n: (builtins.getAttr n cs).outPath) (builtins.attrNames cs))')
             while IFS= read -r path; do
@@ -153,79 +98,3 @@ jobs:
             exit 1
           fi
           echo "verify-cache: $CACHE serves every root of $TARGETS for $SYSTEMS ($checked roots)"
-
-  pin:
-    # Only a verified revision may move the pin, so a revision that fails
-    # verification leaves the last good closure protected.
-    needs: verify
-    if: ${{ (inputs.pin_name || vars.CACHE_PIN_NAME) != '' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Check out the revision under test
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.revision || github.sha }}
-
-      - name: Install Nix
-        uses: NixOS/nix-installer-action@v1
-
-      - name: Resolve public Tailscale identity
-        # The fleet contract carries the client ID and audience, so a consumer
-        # configures no extra variable to pin its own cache.
-        id: ts
-        env:
-          RUNNER_SYSTEM: ${{ inputs.runner_system || 'x86_64-linux' }}
-        run: |
-          metadata=$(nix build --no-link --print-out-paths ".#packages.$RUNNER_SYSTEM.ci-tailscale")
-          echo "client-id=$(jq -er '.clientId' "$metadata")" >> "$GITHUB_OUTPUT"
-          echo "audience=$(jq -er '.audience' "$metadata")" >> "$GITHUB_OUTPUT"
-
-      - name: Join tailnet (cache write API)
-        # Pinning writes to the private API, so unlike `verify` this job needs the
-        # tailnet. Reads never come here.
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ steps.ts.outputs.client-id }}
-          audience: ${{ steps.ts.outputs.audience }}
-          tags: tag:ci
-
-      - name: Resolve the cache API URL
-        id: api
-        env:
-          API_URL: ${{ inputs.cache_api_url }}
-          RUNNER_SYSTEM: ${{ inputs.runner_system || 'x86_64-linux' }}
-        run: |
-          url=$API_URL
-          if [ -z "$url" ]; then
-            url=$(nix build --no-link --print-out-paths ".#packages.$RUNNER_SYSTEM.cache-api-url")
-            url=$(cat "$url")
-          fi
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-
-      - name: Configure the cache client
-        id: niks3
-        uses: Mic92/niks3-action@v1
-        with:
-          server-url: ${{ steps.api.outputs.url }}
-          skip-push: true
-
-      - name: Pin one aggregate root per system
-        env:
-          SYSTEMS: ${{ inputs.systems || 'x86_64-linux aarch64-linux' }}
-          TARGETS: ${{ inputs.targets || '.#checks' }}
-          PIN: ${{ inputs.pin_name || vars.CACHE_PIN_NAME }}
-          API: ${{ steps.api.outputs.url }}
-          BINARY_DIR: ${{ steps.niks3.outputs.binary-dir }}
-          TOKEN_SCRIPT: ${{ steps.niks3.outputs.auth-token-script }}
-        run: |
-          set -euo pipefail
-          token=$(mktemp)
-          bash "$TOKEN_SCRIPT" > "$token"
-          export NIKS3_AUTH_TOKEN_FILE="$token"
-          for system in $SYSTEMS; do
-            root=$(nix eval --raw "$TARGETS.$system.cache-root.outPath")
-            "$BINARY_DIR/niks3" pins create "$PIN-$system" "$root" --server-url "$API"
-          done

@@ -202,10 +202,10 @@ touching anything else. `gh workflow enable promote-candidate` restores it.
 3. Promotion: `promote-candidate` fast-forwards `main` to the candidate. Verify:
    `main`'s head is the candidate commit and the source pull request shows as
    merged (task 6.2's reachability check).
-4. The push that promotion performs runs `verify-cache` for the promoted revision. Verify: it reports
-   `serves every root of .#checks for …`, with no tailnet join and no credential,
-   and — when `pin_name` is configured — the `pin` job reports the two rolling pins
-   (`<pin_name>-x86_64-linux`, `-aarch64-linux`).
+4. Promotion dispatches `pin-cache` for the promoted revision; the push it performs
+   also runs `verify-cache`. Verify: `verify-cache` reports `serves every root of
+.#checks for …` with no tailnet join and no credential, and `pin-cache` reports
+   the two rolling pins (`<pin_name>-x86_64-linux`, `-aarch64-linux`).
 5. Re-run the trigger by pushing to `main` (or dispatching `update-candidate`):
    open automation pull requests are re-prepared and re-validated (task 5.3).
 
@@ -232,13 +232,12 @@ done
 
 ## 6b. Tailscale trust for the pin job, and the pin names — operator
 
-`verify-cache.yml`'s `verify` job reads the public substituter and joins nothing.
-Its `pin` job writes to the private API, so the Tailscale trust credential's
-workflow rule must list
-`Shrub24/nix-fleet/.github/workflows/verify-cache.yml@refs/heads/main` alongside
+`verify-cache.yml` reads the public substituter and joins nothing. `pin-cache.yml`
+writes to the private API, so the Tailscale trust credential's workflow rule must
+list `Shrub24/nix-fleet/.github/workflows/pin-cache.yml@refs/heads/main` alongside
 `build-push-cache.yml` (plus the tag form once consumers pin one). Until it does,
-`pin` fails to join with `token exchange failed with status 403` pointing at the
-credential and `verify` is unaffected.
+the pin job fails to join with `token exchange failed with status 403` pointing at
+the credential, and verification is unaffected.
 
 Reserve the pin name prefix through the cache's OIDC rule, so no other write token
 can repoint a name that means "the fleet's current main". Pinning stays off until

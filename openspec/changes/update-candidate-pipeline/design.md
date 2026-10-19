@@ -248,14 +248,18 @@ Settled while applying the change; the rationale is in `context/update-candidate
   doubled upload time); and restricting the substitution to `--max-jobs 0
 --builders ''` on a plain store (that passes for any path already present, so it
   tests the runner's emptiness rather than the cache).
-- **A verified revision is pinned, one aggregate root per system.** Pinning is what
-  turns a point-in-time observation into a guarantee, because the cache's GC
-  excludes pinned closures. Rolling names (`CACHE_PIN_NAME-<system>`) mean
-  supersession is a repoint — no delete, which would need admin — and because the
-  pin runs only after a green verify, a bad revision leaves the last good closure
-  protected. A pin names exactly one path, so `checks.<system>.cache-root`
-  aggregates the build selection: its closure covers every published output,
-  including `checks.packages`.
+- **A promoted revision is pinned, one aggregate root per system, by a workflow of
+  its own.** Pinning turns a point-in-time observation into a guarantee, because the
+  cache's GC excludes pinned closures. Rolling names (`CACHE_PIN_NAME-<system>`)
+  mean supersession is a repoint — no delete, which would need admin. The pin lives
+  in `pin-cache.yml`, dispatched by `promote-candidate.yml`, because a pin name
+  means "the fleet's current main": promotion is the event that lands a revision the
+  pipeline built, whereas `verify-cache.yml` on a push is a measurement whose colour
+  nothing may depend on. `pins create` fails by name when a path is absent, so the
+  pin asserts presence itself and a revision whose publication was incomplete never
+  moves a name that stays on the previous good closure. A pin names one path, so
+  `checks.<system>.cache-root` aggregates the build selection: its closure covers
+  every published output, including `checks.packages`.
 - **Outputs never imply success.** `build-push-cache.yml` sets `build` only on
   success, `verify-cache.yml` has no success output, and the status job treats a
   skipped job, a missing result or an absent output as failure. The stage that
