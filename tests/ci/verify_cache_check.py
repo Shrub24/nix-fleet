@@ -18,11 +18,7 @@ import yaml
 
 workflow = yaml.load(Path(sys.argv[1]).read_text(), Loader=yaml.BaseLoader)
 
-# A push to main is not a trigger: routine CI never builds, so a human push has new
-# derivations that were never realised and every one of them reads as a miss. The
-# verifier runs against a revision that was built — a promoted candidate — or when
-# someone dispatches it deliberately.
-assert "push" not in workflow["on"], "verify-cache runs on a push, where unbuilt paths read as misses"
+assert workflow["on"]["push"]["branches"] == ["main"], "the per-commit cache status of main is the point"
 assert "workflow_dispatch" in workflow["on"]
 
 # Read-only verification must not carry a credential, or it becomes another place
@@ -57,9 +53,11 @@ with tempfile.TemporaryDirectory() as directory:
     )
     stub.chmod(0o755)
     calls = root / "calls"
+    summary = root / "summary"
 
     def run(roots):
         calls.write_text("")
+        summary.write_text("")
         result = subprocess.run(
             ["bash", "-euo", "pipefail", "-c", script],
             env={
@@ -70,6 +68,10 @@ with tempfile.TemporaryDirectory() as directory:
                 "CACHE": "https://cache.invalid",
                 "ROOTS": roots,
                 "CALLS": str(calls),
+                # The step records its counts here, so a harness that omits this
+                # fails rather than silently skipping the report.
+                "GITHUB_STEP_SUMMARY": str(summary),
+                "GITHUB_SHA": "0" * 40,
             },
             text=True,
             capture_output=True,
@@ -81,6 +83,9 @@ with tempfile.TemporaryDirectory() as directory:
     result, log = run(served)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "serves every root" in result.stdout, result.stdout
+    # The counts are the reading the job exists to publish.
+    assert "roots checked: 4" in summary.read_text(), summary.read_text()
+    assert "unserved: 0" in summary.read_text(), summary.read_text()
     assert "::error::" not in result.stdout, result.stdout
     # A verifier that checked one system would pass while proving half the claim.
     assert ".#checks.x86_64-linux" in log and ".#checks.aarch64-linux" in log, log
@@ -92,7 +97,8 @@ with tempfile.TemporaryDirectory() as directory:
     result, _ = run(served + "\n/nix/store/cccc-missing")
     assert result.returncode != 0, result.stdout
     assert result.stdout.count("/nix/store/cccc-missing") == 2, result.stdout
-    assert "2 store path(s) missing" in result.stdout, result.stdout
+    assert "2 of 6 store path(s) missing" in result.stdout, result.stdout
+    assert "unserved: 2" in summary.read_text(), summary.read_text()
 
 print(
     "cache verification passes a served root, names a missing root, asks every system, "

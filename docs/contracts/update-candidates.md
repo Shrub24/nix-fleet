@@ -197,10 +197,11 @@ and a revision that built correctly stays correct whether or not its outputs are
 being served at that moment. Promotion therefore rests on validation and the
 build.
 
-`verify-cache.yml` runs when a revision was built: `promote-candidate.yml`
-dispatches it after a successful promotion, and it stays dispatchable by hand. A
-push to `main` is not a trigger — routine CI never builds, so a human push has new
-derivations that were never realised and every one reads as a miss. It reads the **public**
+`verify-cache.yml` runs on every push to `main` and by hand, so each commit's cache
+status is published rather than remembered. A promoted revision was built, so an
+unserved root is a loss; a human push was not — routine CI never builds — so its
+unserved roots are the derivations that commit changed, and the report names them
+alongside the counts. It reads the **public**
 substituter route only — substitution is public even though the write API is not —
 so it needs no tailnet identity, no OIDC and no secret, and it holds no cache
 client. It asks `nix path-info` about each realised closure root, naming every

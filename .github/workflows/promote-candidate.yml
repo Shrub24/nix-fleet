@@ -72,19 +72,3 @@ jobs:
           # sets the repository variable PROMOTION_POLICY=label.
           POLICY: ${{ vars.PROMOTION_POLICY || 'auto' }}
         run: .github/scripts/promote-candidate.sh
-
-      - name: Queue cache verification for the promoted revision
-        # Non-gating and a separate run: the revision is already on main. Only a
-        # promoted revision was built, so this is the first moment its selection
-        # can be asked about without reporting unbuilt paths as misses.
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          CANDIDATE: ${{ github.event.sha }}
-        run: |
-          set -euo pipefail
-          # The App token is required: a GITHUB_TOKEN dispatch does not start a run.
-          gh workflow run verify-cache.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref main \
-            -f revision="$CANDIDATE" 2>/dev/null || \
-            echo "::warning::could not queue cache verification for $CANDIDATE; dispatch verify-cache.yml by hand"

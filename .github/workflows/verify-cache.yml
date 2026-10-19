@@ -27,11 +27,11 @@
 # `last-known-good` pointer, and repointing it is what releases the old closure
 # to the cache's own GC.
 #
-# When it runs: promote-candidate.yml dispatches it after a successful promotion,
-# because that is the only revision whose selection was actually built; a schedule
-# or a manual dispatch covers everything else. A push to main is deliberately not
-# a trigger — routine CI never builds, so a human push is unbuildable by design and
-# verifying it would report misses that are not faults.
+# When it runs: on every push to main, and by hand. The per-commit reading is worth
+# having; what it means depends on whether that revision was built. A promoted
+# revision was (main fast-forwards to the candidate that the pipeline built), so
+# any unserved root is a loss to investigate. A human push was not — routine CI
+# never builds — so its unserved roots are the derivations that commit changed.
 #
 # Design: docs/contracts/ci.md and docs/contracts/update-candidates.md.
 name: verify-cache
@@ -40,10 +40,13 @@ permissions:
   contents: read
 
 on:
-  # NOT on a push to main. Routine CI never builds, so a human push produces a
-  # revision whose new derivations were never realised and therefore cannot be
-  # served; verifying it reports a miss that is not a fault. A revision is worth
-  # verifying when it was built, which means a promoted candidate.
+  # Every push to main, so its cache status is a fact about the commit rather than
+  # something to remember to ask for. Routine CI never builds, so a revision no
+  # build ever realised reports its changed derivations as unserved — read the
+  # counts, not just the colour. A promoted revision IS built (main fast-forwards
+  # to the candidate that was built), so a miss there is a real loss.
+  push:
+    branches: [main]
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -122,6 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
+          checked=0
           for system in $SYSTEMS; do
             # `$TARGETS.$system` is an attribute set, not a derivation, so the
             # roots are read from evaluation: one path per check, which is what a
@@ -130,17 +134,25 @@ jobs:
               --apply 'cs: builtins.concatStringsSep "\n" (builtins.map (n: (builtins.getAttr n cs).outPath) (builtins.attrNames cs))')
             while IFS= read -r path; do
               [ -n "$path" ] || continue
+              checked=$((checked + 1))
               if ! nix path-info --store "$CACHE" "$path" >/dev/null 2>&1; then
                 echo "::error::verify-cache: $CACHE does not serve $path ($system)"
                 missing=$((missing + 1))
               fi
             done <<< "$roots"
           done
+          {
+            echo "### Cache status of \`${GITHUB_SHA}\` in $CACHE"
+            echo ""
+            echo "- roots checked: $checked"
+            echo "- unserved: $missing"
+          } >> "$GITHUB_STEP_SUMMARY"
           if [ "$missing" -gt 0 ]; then
-            echo "::error::verify-cache: $missing store path(s) missing from $CACHE"
+            echo "::error::verify-cache: $missing of $checked store path(s) missing from $CACHE"
+            echo "::notice::a revision no build realised reports its changed derivations here; a promoted revision was built, so a miss there is a loss to investigate"
             exit 1
           fi
-          echo "verify-cache: $CACHE serves every root of $TARGETS for $SYSTEMS"
+          echo "verify-cache: $CACHE serves every root of $TARGETS for $SYSTEMS ($checked roots)"
 
   pin:
     # Only a verified revision may move the pin, so a revision that fails

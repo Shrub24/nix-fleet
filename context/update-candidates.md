@@ -439,14 +439,16 @@ present, so it tests the runner's emptiness, not the cache); a post-merge job th
 rebuilds (a fresh runner has no store, and `--print-out-paths` plus `path-info`
 needs hashes only)
 
-**Evidence, and the trigger it corrected:** the first live run on a pushed revision
-reported three unserved roots on `x86_64-linux` — the new `cache-root`, the changed
-`packages` aggregate and the changed `treefmt-check` — with the other 53 roots
-served, and eight on `aarch64-linux`, where the fixture toplevel changed too. Every
-miss was a derivation that commit had changed and that no build had ever realised.
-So the trigger is a _built_ revision: `promote-candidate.yml` dispatches the
-verifier after a successful promotion, and it stays dispatchable by hand. A push to
-`main` is deliberately not a trigger, because routine CI never builds.
+**Measured:** the first live run on a pushed revision reported three unserved roots
+on `x86_64-linux` — the new `cache-root`, the changed `packages` aggregate and the
+changed `treefmt-check` — with the other 53 roots served, and eight on
+`aarch64-linux`, where the fixture toplevel changed too. Every miss was a
+derivation that commit had changed and that no build had ever realised, and 53 of
+56 served roots is positive evidence for the publication path. Verification stays
+on every push to `main` because the per-commit status is the point and the run
+blocks nothing; what a miss means is read from the counts and the named paths — a
+promoted revision was built, so a miss there is a loss, while a human push reports
+its own changed derivations.
 
 **Revisit when:** the cache is unavailable often enough that a pin alone stops protecting the last
 good closure, or the upload path starts failing closed on a truncated drain, in
