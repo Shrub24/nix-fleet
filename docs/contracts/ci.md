@@ -20,10 +20,11 @@ without editing the workflow.
 
 Building checks against the fleet's configured builders and cache is a separate
 path: the manually dispatched fleet-build job uses `nix-fast-build` and the
-selected profile. It is not part of routine push/PR validation. This keeps the
-routine gate focused on fast evaluation rather than compiling every check on
-the GitHub runner, which would neither exercise the fleet builder path nor its
-cache behavior.
+selected profile. Routine push/PR validation never builds, and this is the only
+build path — `ci.yml`'s `fleet-build` and `fleet-cache` jobs are that path on
+dispatch, not a routine build. Building natively would neither exercise the fleet
+builder path nor warm the cache that consumers read, so its output would be
+evidence no one can reuse.
 
 The fixture host asserts only what it can read from its own configuration. Contract
 checks are independent feature-owned leaves rather than nested evaluations forced

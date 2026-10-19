@@ -51,7 +51,7 @@ Routine push and pull-request CI checks formatting and evaluates declared checks
 
 **Rejected alternative:** build all native check outputs on every push and pull request. This is expensive and tests the runner's fallback build path rather than the fleet builder/cache path.
 
-**Consequence:** routine CI proves formatting and evaluation, not that every derivation builds. Use the fleet-build dispatch when build and cache acceptance is required.
+**Consequence:** routine CI proves formatting and evaluation, not that every derivation builds. Use the fleet-build dispatch when build and cache acceptance is required. A harness that executes a workflow step is itself only executed where checks are built, so a step that starts writing an output (`$GITHUB_OUTPUT`, `$GITHUB_STEP_SUMMARY`) and a harness that does not provide it diverge silently — nothing evaluates it, and only a build fails. When a workflow step's contract or a harness changes, build the leaf (`nix build .#checks.<system>.<leaf>`) or dispatch the fleet build before trusting the gate.
 
 ## Named fail-closed errors are public contract surface
 
