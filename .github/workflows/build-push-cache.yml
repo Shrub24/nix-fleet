@@ -201,6 +201,9 @@ jobs:
             "github:${FLEET_REPO}/${FLEET_SHA}#packages.${RUNNER_SYSTEM}.ci-coordinator-${PROFILE}")
           echo "coordinator=$coord" >> "$GITHUB_OUTPUT"
           sudo "$coord/install.sh"
+          # Read the applied value back from the caller's own context: client settings
+          # are per-invocation, and sudo has no `nix` on its PATH.
+          nix config show builders
 
       - name: Resolve the tailnet identity
         id: tailscale

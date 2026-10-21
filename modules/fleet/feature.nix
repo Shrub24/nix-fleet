@@ -358,9 +358,6 @@ let
         install -m 0644 "$src/known_hosts" /etc/ssh/ssh_known_hosts
         grep -qxF 'include /etc/nix/coordinator.conf' /etc/nix/nix.conf 2>/dev/null \
           || echo 'include /etc/nix/coordinator.conf' >> /etc/nix/nix.conf
-        # Client settings are read per invocation, so no daemon restart is needed;
-        # confirmed by the run report rather than assumed.
-        NIX_CONF_DIR=/etc/nix nix config show builders > /dev/null
         EOF
         chmod 0755 $out/install.sh
       '';

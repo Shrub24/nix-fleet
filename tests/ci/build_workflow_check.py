@@ -57,6 +57,9 @@ assert "github:${FLEET_REPO}/${FLEET_SHA}#packages.${RUNNER_SYSTEM}.ci-coordinat
 )
 assert "@${FLEET_SHA}" not in coordinator["run"]
 assert 'sudo "$coord/install.sh"' in coordinator["run"]
+# The readback runs outside sudo: the installer's PATH has no nix, and the point is
+# to observe the installed configuration from the caller's context.
+assert coordinator["run"].index("nix config show builders") > coordinator["run"].index('sudo "$coord/install.sh"')
 
 resolver = steps["Resolve the tailnet identity"]
 assert resolver["if"] == "${{ inputs.tailnet }}"
