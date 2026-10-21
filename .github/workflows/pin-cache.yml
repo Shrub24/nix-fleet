@@ -95,14 +95,8 @@ jobs:
         with:
           ref: ${{ inputs.revision || github.sha }}
 
-      # No substituters from the caller's environment: the pinned path must be a
-      # function of the checked-out tree, not of what a workflow file decided.
       - name: Install Nix
         uses: NixOS/nix-installer-action@v1
-        with:
-          extra-conf: |
-            substituters =
-            trusted-public-keys =
 
       # The coordinator pattern: the fleet revision is the one that defines this
       # workflow, so coordinates come from nix-fleet and only the subject comes from
