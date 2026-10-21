@@ -613,3 +613,31 @@ another reason).
 **Revisit when:** a third repository needs its own claims block instead of the shared
 list, a third workflow needs cache authority, or a second consumer has to know what
 the fleet trusts.
+
+## Consumer adoption is documented as two paths, and B is unproven
+
+**Id:** 0b7f3c25-9d64-4a18-b0e2-8c1a45d9e7b3
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `docs/runbooks/consumer-adoption.md`, 2026-10-21
+
+Adoption splits by intent, not by repository shape: **A** is build-and-publish
+(one workflow file calling `build-push-cache.yml`), **B** adds the update
+lifecycle (validation, pipeline, promotion, acceptance, sweep, App, environment,
+labels, ruleset). A consumer needs a cache rule, a tailnet identity matching its
+repository and the called workflow, and nothing else — no fleet input, no
+re-exported metadata.
+
+**Reason:** the two halves have different risk. A has run in production on
+nix-fleet (build 39543925779, pin 39593416105). B has run every part in nix-fleet
+but has never completed a consumer promotion, so recommending it as a single
+"adopt the fleet" step would present unproven machinery as ready.
+
+**Rejected alternatives:** copying workflow bodies into consumers (the `on:` block
+cannot be inherited, so each consumer keeps a thin file — but only a file, never
+orchestration); documenting a tag pin (`v1` predates the coordinator and the
+`profile` input, so it is not a usable reference for a new consumer).
+
+**Revisit when:** a consumer completes a Path B promotion, or `flakeModules.cacheRoot`
+is published so a consumer can pin and verify its own closure.

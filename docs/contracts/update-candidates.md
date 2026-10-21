@@ -177,7 +177,7 @@ its `automation` environment, the permission union the called jobs declare, and
 
 Build selection is typed workflow input, so a consumer sets its closure per
 repository without editing a workflow — `pipeline.yml` passes `CANDIDATE_TARGETS`,
-`CANDIDATE_SYSTEMS`, `CANDIDATE_RUNNER_SYSTEM` and `CANDIDATE_BUILDER_ATTR` from
+`CANDIDATE_SYSTEMS`, `CANDIDATE_RUNNER_SYSTEM` and `CANDIDATE_PROFILE` from
 repository variables with fleet-compatible defaults.
 
 Environment secrets are not caller-supplied: the environment must exist in the
@@ -319,7 +319,7 @@ Configuration the consumer owns: the `automation` environment (secret
 `AUTOMATION_APP_PRIVATE_KEY`, deployment branch restricted to its default branch);
 variables `AUTOMATION_APP_ID`, `AUTOMATION_APP_SLUG`, `PROMOTION_POLICY` (use
 `label`), `CANDIDATE_TARGETS`, `CANDIDATE_SYSTEMS`, `CANDIDATE_RUNNER_SYSTEM`,
-`CANDIDATE_BUILDER_ATTR` and optionally `AUTOMATION_UPDATE_AUTHORS`; the
+`CANDIDATE_PROFILE` and optionally `AUTOMATION_UPDATE_AUTHORS`; the
 `accept-update`, `dependencies` and `automated` labels; a ruleset requiring
 `update-candidate`, pinned to its own App; and its own builder, cache and OIDC
 trust (`ci.md`).

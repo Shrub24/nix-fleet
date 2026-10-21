@@ -311,7 +311,9 @@ per system, whose closure covers every published package; that is `pin-cache.yml
 owned by the promotion path rather than by verification.
 
 Turning pins on (and what caching guarantees them) is an operator procedure:
-[docs/runbooks/cache-pins.md](docs/runbooks/cache-pins.md).
+[docs/runbooks/cache-pins.md](docs/runbooks/cache-pins.md). Bringing a repository
+onto fleet CI — build only, or with the update lifecycle — is
+[docs/runbooks/consumer-adoption.md](docs/runbooks/consumer-adoption.md).
 
 Using the cache without this flake:
 

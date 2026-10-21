@@ -223,8 +223,10 @@ consumer eval time — the workflow never stores addresses, keys, or profiles.
 
 ## The workflow
 
-`build-push-cache` is a **reusable workflow** — no copying. A consumer adds
-a stub:
+`build-push-cache` is a **reusable workflow** — no copying. The step-by-step
+procedure, including the pieces a consumer owns, is
+[docs/runbooks/consumer-adoption.md](../runbooks/consumer-adoption.md); this section
+is the interface. A consumer adds a stub:
 
 ```yaml
 jobs:
@@ -232,7 +234,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v1
+    uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@<sha>
     with:
       # cache_api_url: https://niks3.tailnet.example.com   (optional; the fleet
       #                                                     contract supplies it)
@@ -263,9 +265,26 @@ grants less than the workflow needs.
 | `ts_client_id`    | Public client ID override; empty resolves the fleet CI identity                                                                                                                                                                                                                                                                                                                    |
 | `ts_audience`     | Public audience override; empty resolves the fleet default, or derives the audience from an overridden client ID                                                                                                                                                                                                                                                                   |
 
-**Versioning:** pin to a tag (`@v1`), never `@main`. nix-fleet cuts tagged
-releases; renovate proposes tag bumps with changelogs and a PR acceptance
-gate, so consumers opt into changes deliberately.
+**Versioning:** pin a commit (`@<sha>`), never `@main`. `v1` predates the
+coordinator and the `profile` input, so it is not a usable reference for a new
+consumer; cut a tag at or after the coordinator commit when a tag is wanted.
+Renovate can manage the SHA pin with a comment. Because the coordinator resolves
+from the same revision, a pin bump moves the machinery and the builder and cache
+facts together — there is nothing else to keep in step.
+
+A consumer needs three things of its own, and nothing else:
+
+| owns                                                                        | why                                                                                   |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `secrets.FLEET_BUILDER_SSH_KEY`                                             | the builder identity; the workflow installs it                                        |
+| a cache rule for its repository                                             | nix-fleet's cache claims bind `repository` per caller (`docs/runbooks/cache-pins.md`) |
+| a tailnet identity that matches its repository, ref and the called workflow | `job_workflow_ref` names nix-fleet's workflow file, `repository` names the caller     |
+
+It does **not** need a fleet input, re-exported builder metadata, or a
+`flakeModules.fleet` import: it declares what to build and the workflow fetches
+its configuration from itself. Nixpkgs locality is separate — a consumer whose
+`nixpkgs` differs from the fleet's substitutes little of its own closure, so
+`nixpkgs.follows` on the fleet input is what makes the cache useful.
 
 Two jobs:
 
