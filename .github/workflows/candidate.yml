@@ -69,6 +69,17 @@ jobs:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
 
+      # The procedure comes from the revision that defines this workflow, so a
+      # consuming repository needs no copy of it.
+      - name: Check out the automation scripts from this workflow's revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: trusted
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - name: Install Nix
         uses: NixOS/nix-installer-action@v1
 
@@ -90,10 +101,10 @@ jobs:
           GIT_AUTHOR_EMAIL: automation@users.noreply.github.com
           GIT_COMMITTER_NAME: nix-fleet automation
           GIT_COMMITTER_EMAIL: automation@users.noreply.github.com
-        run: .github/scripts/prepare-candidate.sh
+        run: bash "$GITHUB_WORKSPACE/trusted/.github/scripts/prepare-candidate.sh"
 
       - name: Confirm the candidate is a fixed point
-        run: .github/scripts/prepare-candidate.sh --check
+        run: bash "$GITHUB_WORKSPACE/trusted/.github/scripts/prepare-candidate.sh" --check
 
       - name: Record the candidate commit
         id: commit

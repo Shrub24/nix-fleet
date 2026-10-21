@@ -27,6 +27,18 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      # This job holds the token that pushes main, so the procedure is taken from
+      # the revision that defines the workflow — default-branch code, never a pull
+      # request's — and a consuming repository needs no copy of it.
+      - name: Check out the automation scripts from this workflow's revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: trusted
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - name: Mint the automation token
         id: app
         uses: actions/create-github-app-token@v2
@@ -40,7 +52,7 @@ jobs:
           CANDIDATE: ${{ github.event.sha }}
           APP_LOGIN: ${{ vars.AUTOMATION_APP_SLUG }}[bot]
           POLICY: ${{ vars.PROMOTION_POLICY || 'auto' }}
-        run: .github/scripts/promote-candidate.sh
+        run: bash "$GITHUB_WORKSPACE/trusted/.github/scripts/promote-candidate.sh"
 
       - name: Move the cache pins to the promoted revision
         if: ${{ vars.CACHE_PIN_NAME != '' }}

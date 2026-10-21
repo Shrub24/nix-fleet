@@ -300,6 +300,16 @@ that ever resolves differently, the first run fails immediately with a
 missing-workflow error rather than doing something surprising, and the fix is a
 pin inside nix-fleet, not a second copy in the consumer.
 
+The automation scripts come with the workflows. `candidate.yml` and
+`promote-candidate.yml` check out `.github/scripts` from
+`github:<job.workflow_repository>@<job.workflow_sha>` — the revision that defines
+them — into `trusted/` and run the procedure from there, so a consumer needs no
+copy and a candidate revision cannot supply the script that promotes it. The one
+exception is `validate.yml`'s consistency guard, which takes the script from the
+fleet's **default branch** on purpose: it exists to run the trusted procedure even
+when the revision under test rewrote its own copy, and for a pull-request run the
+workflow's own ref is that pull request's merge commit.
+
 A called workflow cannot be granted more than its caller holds, and GitHub
 validates _every_ job in the called workflow against the caller's grant when the
 call starts — not only the jobs a given mode runs. So each thin trigger declares

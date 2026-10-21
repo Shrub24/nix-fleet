@@ -170,7 +170,9 @@ Everything in Path A, plus the pieces below. Add them in this order; each is
 verifiable on its own.
 
 1. **Validate.** A thin file calling `validate.yml@v2` with
-   `generated_files: check`, or nix-fleet's `ci.yml` copied verbatim. This is the
+   `generated_files: check`, or nix-fleet's `ci.yml` copied verbatim. Nothing
+   else needs copying: the automation scripts are checked out from the workflow's
+   own revision, so a consumer's tree needs no `.github/scripts`. This is the
    one definition of "valid", and both the contributor path and the pipeline call
    it — a second definition is how a human PR passes and a candidate does not.
 2. **The pipeline trigger.** `on: workflow_run: {workflows: [ci], types: [completed]}`
