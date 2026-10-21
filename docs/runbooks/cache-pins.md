@@ -136,15 +136,26 @@ is `gh workflow run pin-cache.yml -f pin_name=auto` (or an explicit prefix), whi
 also how a revision whose publication completed late is re-pinned. One pin per system
 is created.
 
-Verify:
+Verify, from the cache host when no write token is at hand:
 
 ```sh
-niks3 pins list --server-url "$API"                 # both names, one path each
-niks3 pins list --json --server-url "$API"          # narinfo key + updated-at
+ssh oci-melb-1 'sudo -u niks3 psql -d niks3 -At \
+  -c "select name, store_path, created_at from pins order by name"'
 ```
 
-A second run repoints rather than duplicating: the list length stays two, and the
-`updated at` moves.
+Expect one row per system, each naming a `cache-root` path. Cross-check the path
+against the flake rather than trusting the row:
+
+```sh
+nix eval --raw .#packages.x86_64-linux.cache-root.outPath
+nix path-info --store "$(nix eval --raw .#packages.x86_64-linux.cache-substituter-url)" \
+  /nix/store/<that>                                  # narinfo present ⇒ served, signed
+```
+
+A second run repoints rather than duplicating: the list length stays two, and
+`created_at` moves. A revision whose roots were never built fails `pins create` by
+name, so the previous pin keeps protecting its closure — run a fleet build for that
+revision and re-pin.
 
 ## 6. What a pin is for, and what it is not
 
