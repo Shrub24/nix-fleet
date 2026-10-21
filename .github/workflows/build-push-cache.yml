@@ -195,8 +195,10 @@ jobs:
           # job.workflow_sha is the commit that defines this reusable workflow, so the
           # machinery and its builder/cache facts cannot disagree. Substitution is the
           # normal path; a miss is an ordinary local build, not a failure.
+          # `github:owner/repo/<ref>`: the `@` form is git-URL syntax and resolves
+          # to a 404 here.
           coord=$(nix build --no-link --print-out-paths \
-            "github:${FLEET_REPO}@${FLEET_SHA}#packages.${RUNNER_SYSTEM}.ci-coordinator-${PROFILE}")
+            "github:${FLEET_REPO}/${FLEET_SHA}#packages.${RUNNER_SYSTEM}.ci-coordinator-${PROFILE}")
           echo "coordinator=$coord" >> "$GITHUB_OUTPUT"
           sudo "$coord/install.sh"
 
@@ -324,6 +326,10 @@ jobs:
             echo ""
             echo "- builder configuration: \`$(nix config show builders)\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ ! -s /etc/nix/machines ]; then
+            echo "- no builder configuration: the coordinator did not install" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           while read -r uri systems _rest; do
             [ -n "$uri" ] || continue
             host=${uri#ssh-ng://}

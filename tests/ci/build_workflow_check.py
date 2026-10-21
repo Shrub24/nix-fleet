@@ -51,7 +51,11 @@ coordinator = steps["Install the fleet coordinator from this workflow's revision
 env = coordinator["env"]
 assert env["FLEET_REPO"] == "${{ job.workflow_repository }}"
 assert env["FLEET_SHA"] == "${{ job.workflow_sha }}"
-assert "ci-coordinator-${PROFILE}" in coordinator["run"], coordinator["run"]
+assert "github:${FLEET_REPO}/${FLEET_SHA}#packages.${RUNNER_SYSTEM}.ci-coordinator-${PROFILE}" in coordinator["run"], (
+    "the flake reference must use the github: path form; `owner/repo@sha` is git-URL"
+    " syntax and resolves to 404"
+)
+assert "@${FLEET_SHA}" not in coordinator["run"]
 assert 'sudo "$coord/install.sh"' in coordinator["run"]
 
 resolver = steps["Resolve the tailnet identity"]
@@ -72,6 +76,9 @@ report = steps["Report builders and realisations"]
 assert report["if"] == "always()", "reporting must run even when the build failed"
 assert "GITHUB_STEP_SUMMARY" in report["run"]
 assert "exit 1" not in report["run"], "an unavailable builder is reported, never a veto"
+# Reporting runs after a failed build too, when the coordinator may never have
+# installed: an absent machines file must be reported, not fail the step.
+assert "-s /etc/nix/machines" in report["run"], report["run"]
 assert "_SUMMARY" in report["run"] and "ssh failed" in report["run"]
 
 build_step = steps["Build with the selected builder profile"]
