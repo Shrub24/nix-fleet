@@ -62,7 +62,7 @@ permissions:
   id-token: write # the cache token; a call with less fails at startup
 jobs:
   build:
-    uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@<sha>
+    uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v2
     with:
       targets: .#checks
       systems: x86_64-linux aarch64-linux
@@ -127,7 +127,7 @@ notices and never fails on a miss.
 ```yaml
 jobs:
   verify:
-    uses: Shrub24/nix-fleet/.github/workflows/verify-cache.yml@<sha>
+    uses: Shrub24/nix-fleet/.github/workflows/verify-cache.yml@v2
     with:
       systems: x86_64-linux aarch64-linux
 ```
@@ -142,7 +142,7 @@ jobs:
     permissions:
       contents: read
       id-token: write # the cache token; pin-cache joins the tailnet
-    uses: Shrub24/nix-fleet/.github/workflows/pin-cache.yml@<sha>
+    uses: Shrub24/nix-fleet/.github/workflows/pin-cache.yml@v2
     with:
       pin_name: auto # <repository>-main, one pin per system
       systems: x86_64-linux aarch64-linux
@@ -169,12 +169,12 @@ prefix.
 Everything in Path A, plus the pieces below. Add them in this order; each is
 verifiable on its own.
 
-1. **Validate.** A thin file calling `validate.yml@<sha>` with
+1. **Validate.** A thin file calling `validate.yml@v2` with
    `generated_files: check`, or nix-fleet's `ci.yml` copied verbatim. This is the
    one definition of "valid", and both the contributor path and the pipeline call
    it — a second definition is how a human PR passes and a candidate does not.
 2. **The pipeline trigger.** `on: workflow_run: {workflows: [ci], types: [completed]}`
-   → `uses: .../pipeline.yml@<sha>`, with `secrets: inherit` and the permission
+   → `uses: .../pipeline.yml@v2`, with `secrets: inherit` and the permission
    union its jobs need (`contents: write`, `statuses: write`,
    `pull-requests: write`, `id-token: write`). `on:` cannot be inherited, so this
    file is the consumer's; the orchestration is not.
@@ -205,8 +205,12 @@ labelling invalidates it and the revision must be re-validated.
 
 ## 4. What a consumer does not get, and why
 
-- **A tag to pin.** Cut one at or after the coordinator commit, or pin the SHA.
-  `v1` predates the coordinator and `profile`.
+- **A tag older than `v2`.** `v1` predates the coordinator and the `profile` input,
+  so it is not a reference for a new consumer. Pin `v2` (or a commit); a tag-shaped
+  `job_workflow_ref` (`…/workflows/build-push-cache.yml@refs/tags/v2`) is not yet
+  proven against the tailnet credential, which is documented at
+  `@refs/heads/main`. If a join fails with a claims error, that is the fleet's
+  credential to widen, not the consumer's change to make.
 - **Renovate-managed tagged flake inputs.** nix-fleet has none yet, and its
   Renovate config keeps only `github-actions`.
 - **A linear history on the default branch.** Preparation merges the base into

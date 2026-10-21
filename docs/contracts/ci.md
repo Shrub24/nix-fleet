@@ -234,7 +234,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@<sha>
+    uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v2
     with:
       # cache_api_url: https://niks3.tailnet.example.com   (optional; the fleet
       #                                                     contract supplies it)
@@ -265,12 +265,12 @@ grants less than the workflow needs.
 | `ts_client_id`    | Public client ID override; empty resolves the fleet CI identity                                                                                                                                                                                                                                                                                                                    |
 | `ts_audience`     | Public audience override; empty resolves the fleet default, or derives the audience from an overridden client ID                                                                                                                                                                                                                                                                   |
 
-**Versioning:** pin a commit (`@<sha>`), never `@main`. `v1` predates the
-coordinator and the `profile` input, so it is not a usable reference for a new
-consumer; cut a tag at or after the coordinator commit when a tag is wanted.
-Renovate can manage the SHA pin with a comment. Because the coordinator resolves
-from the same revision, a pin bump moves the machinery and the builder and cache
-facts together — there is nothing else to keep in step.
+**Versioning:** pin `v2`, or a commit; never `@main`. A tag marks a contract
+change — `v1` is `build-push-cache` with `builder_attr`, `v2` is the reusable set
+with `profile` and the coordinator — so a tag bump is the same act as a contract
+bump, and `main` carries no promise. Because the coordinator resolves from the
+same revision, a pin bump moves the machinery and the builder and cache facts
+together: there is nothing else to keep in step.
 
 A consumer needs three things of its own, and nothing else:
 
