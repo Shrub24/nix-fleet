@@ -159,6 +159,9 @@ jobs:
         uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ steps.app.outputs.token }}
+          # The base was checked out by commit, so the base branch is stated here;
+          # create-pull-request refuses a detached checkout without it.
+          base: ${{ github.ref_name }}
           branch: automation/package-updates
           commit-message: "chore(deps): refresh flake inputs and registered package pins"
           title: "chore(deps): refresh flake inputs and registered package pins"
