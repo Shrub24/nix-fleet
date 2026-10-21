@@ -581,3 +581,35 @@ promotion, which names the missing path and refuses to move the name.
 and release milestones — at which point a tighter niks3 GC policy against unpinned
 paths becomes the retention lever, and what belongs in the pinned closure is worth
 revisiting per consumer.
+
+## Cross-repository trust topology is arguably fleet policy; not built
+
+**Id:** 4a7e2d91-c3b8-4c6f-9a41-7e5d02b6f138
+**Type:** decision
+**Status:** active
+**Evidence:** inferred
+**Source:** `docs/runbooks/cache-pins.md`, `nix-homelab` `modules/cache/niks3-cache.nix`, 2026-10-21
+
+Who may publish to the cache, from which repository, and which namespace each one
+may pin is a fact about the _fleet_ — a trust topology across repositories, not a
+property of one consumer. It currently lives in the consumer (`ciRepositories` in
+nix-homelab), which also restates the mechanism half: which workflow file carries
+publishing authority and which carries pinning authority, both of which nix-fleet
+defines by writing those workflows.
+
+**Reason:** the parameters are consumer-side today because nix-fleet's rule is that
+publisher lists are policy data supplied by the consumer. The rule was written for
+endpoints and recipients, and a cross-repository trust graph is a different kind of
+fact: it is only expressible by looking at every repository at once, which is
+nix-fleet's vantage.
+
+**Rejected for now:** generating the rules from a fleet-side topology (deferred, not
+rejected — the seam is real, and the omission that broke pinning was a symptom of
+mirroring mechanism by hand); a fleet-side workflow→authority catalog (worth it only
+from a third cache-authenticating workflow); deriving scopes by parsing workflow YAML
+(derives policy from implementation, and misreads a workflow that gains a token for
+another reason).
+
+**Revisit when:** a third repository needs its own claims block instead of the shared
+list, a third workflow needs cache authority, or a second consumer has to know what
+the fleet trusts.
