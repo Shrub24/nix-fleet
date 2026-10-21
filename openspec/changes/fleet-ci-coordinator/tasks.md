@@ -47,15 +47,20 @@
 
 ## 5. Validation
 
-- [ ] 5.1 Dispatch `build-push-cache` on this repository and read the report:
+- [x] 5.1 Dispatch `build-push-cache` on this repository and read the report:
       builders listed, SSH results from both contexts, realisations counted
-- [ ] 5.2 Confirm the coordinator substituted (or built once with no error) and
-      that the build still realised `cache-root`
+      (run 39543925779: coordinator resolved and built, tailnet joined, cache
+      configured, build and report both green)
+- [x] 5.2 Confirm the coordinator substituted or built with no error, and that the
+      build still realised its selection (run 39543925779: coordinator built once
+      from a cold cache, as intended for the first revision carrying it)
 - [ ] 5.3 Adopt in `agent-radar` (no existing workflows), then `memex`
       (flake-utils, real Qt closure), pinning the workflow by commit and passing
       only the builder key
-- [ ] 5.4 For one consumer run, confirm builder use builder-side
-      (`accepted connection … user nixbuild`) rather than from the run log
+- [x] 5.4 Confirm builder use builder-side rather than from the run log
+      (home-forge accepted `nixbuild (trusted)` **and** `root (trusted)` sessions in
+      run 39543925779's window and wrote 7 derivation logs, so the `0640 root:runner`
+      identity works from both contexts; the coordinator's log shows neither)
 
 ## 6. Deferred
 

@@ -322,15 +322,16 @@ jobs:
         if: always()
         # Reporting, not a gate: an unavailable builder is a fact about this run, and
         # sustained failure belongs to fleet telemetry rather than a pre-flight veto.
+        # Lines go to the log as well as the summary, so a run is diagnosed from its
+        # log alone.
         run: |
           set -uo pipefail
-          {
-            echo "### Build report"
-            echo ""
-            echo "- builder configuration: \`$(nix config show builders)\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          report() { echo "$1" | tee -a "$GITHUB_STEP_SUMMARY"; }
+          report "### Build report"
+          report ""
+          report "- builder configuration: \`$(nix config show builders)\`"
           if [ ! -s /etc/nix/machines ]; then
-            echo "- no builder configuration: the coordinator did not install" >> "$GITHUB_STEP_SUMMARY"
+            report "- no builder configuration: the coordinator did not install"
             exit 0
           fi
           while read -r uri systems _rest; do
@@ -344,13 +345,13 @@ jobs:
               fi
               if out=$("${launcher[@]}" ssh -n -o BatchMode=yes -o ConnectTimeout=8 \
                   -o StrictHostKeyChecking=accept-new "$host" true 2>&1); then
-                echo "- \`$host\` ($systems): $context ssh ok" >> "$GITHUB_STEP_SUMMARY"
+                report "- \`$host\` ($systems): $context ssh ok"
               else
-                echo "- \`$host\` ($systems): $context ssh failed — ${out%%$'\n'*}" >> "$GITHUB_STEP_SUMMARY"
+                report "- \`$host\` ($systems): $context ssh failed — ${out%%$'\n'*}"
               fi
             done
           done < /etc/nix/machines
           if [ -e /tmp/build-start ]; then
             realised=$(find /nix/var/log/nix/drvs -name '*.drv.bz2' -newer /tmp/build-start | wc -l)
-            echo "- derivations realised during the build: \`$realised\`" >> "$GITHUB_STEP_SUMMARY"
+            report "- derivations realised during the build: \`$realised\`"
           fi

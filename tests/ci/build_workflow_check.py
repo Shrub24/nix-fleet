@@ -82,6 +82,10 @@ assert "exit 1" not in report["run"], "an unavailable builder is reported, never
 # Reporting runs after a failed build too, when the coordinator may never have
 # installed: an absent machines file must be reported, not fail the step.
 assert "-s /etc/nix/machines" in report["run"], report["run"]
+# Every line reaches the log too: the summary is not readable from the API, and a
+# run has to be diagnosable from its log.
+assert 'tee -a "$GITHUB_STEP_SUMMARY"' in report["run"], report["run"]
+assert report["run"].count(">> \"$GITHUB_STEP_SUMMARY\"") == 0, "write through report(), not directly"
 assert "_SUMMARY" in report["run"] and "ssh failed" in report["run"]
 
 build_step = steps["Build with the selected builder profile"]
