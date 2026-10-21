@@ -479,6 +479,31 @@ route removed the dependency instead of widening the trusted workflow list.
 **Rejected alternatives:** widening the tailnet trust credential to cover a read-only workflow, which would
 have made every cache question depend on an identity it did not need
 
+## Cache claims are per workflow, one rule per power
+
+**Id:** 9c41d0a2-6e57-4b3f-8f2a-3d5b0e7c1f84
+**Type:** constraint
+**Status:** active
+**Evidence:** confirmed
+**Source:** `nix-homelab` `modules/cache/niks3-cache.nix`, the deployed `niks3-oidc.json` on `oci-melb-1`, 2026-10-21
+
+`job_workflow_ref` is a bound claim, so a niks3 rule authorises exactly the workflow
+files it names. `pin-cache` failed `401` for two weeks of assumptions because the
+shared claims named `build-push-cache.yml` only: the pin namespace was reserved and
+deployed, and the authority to use it was not. Each repository now carries a
+publishing rule (`build-push-cache.yml`, `write`, no reserved pins) and a pinning
+rule (`pin-cache.yml`, `write`, `<repository>-main-*`). `write` is unavoidable on the
+pin rule because niks3 checks the scope before the pin name.
+
+**Reason:** the pin namespace was the visible half of the control, and reading the
+module's intent was not reading the server's configuration. The fix belongs in the
+rendered file, which is why the runbook says to `cat` what the unit points at.
+
+**Rejected alternatives:** widening one pattern to `workflows/*` (grants publishing to
+any workflow in the repository, including ones added later); a pins-only rule (not
+expressible in niks3); trusting the module text instead of the rendered JSON (the
+mistake that hid this).
+
 ## Cache pinning is owned by promotion, not by verification
 
 **Id:** 671962a5-673a-4386-9b98-40ec5e9ea4d7

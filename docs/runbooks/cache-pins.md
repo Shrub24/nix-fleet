@@ -56,13 +56,38 @@ from the repository name. Deletion stays admin-only, so CI cannot prune; retenti
 is an operator action.
 
 The cache's claims (`nix-homelab`, `modules/cache/niks3-cache.nix`) trust the owner,
-the repository and `refs/heads/main`, with one rule and one pin namespace per listed
-repository — not a particular workflow file. So a listed repository's workflow on
-`main` may publish, and adding a publisher there needs no edit to the cache config;
-adding a _repository_ does. A deployment that still binds `job_workflow_ref` refuses
-`pin-cache` with `401`, which is a claim mismatch, not a credential problem.
+the repository, `refs/heads/main`, and **one workflow file per power**, because
+`job_workflow_ref` is part of `boundClaims` and every rule carries it. Each listed
+repository therefore has two rules:
 
-Verify: a `write` token that is _not_ the CI identity gets `403` for that name.
+| rule       | `job_workflow_ref`       | scopes  | reserved pins         |
+| ---------- | ------------------------ | ------- | --------------------- |
+| publishing | `build-push-cache.yml@*` | `write` | none                  |
+| pinning    | `pin-cache.yml@*`        | `write` | `<repository>-main-*` |
+
+Publishing cannot move a reserved pin name, and the pin token can move only its own
+repository's. `write` is required on both: `niks3` checks the scope before the pin
+name, so a pins-only rule is not expressible. Adding a _repository_ needs the cache
+config; adding a publisher to a listed repository needs none.
+
+A deployment whose rules bind only `build-push-cache.yml` refuses `pin-cache` with
+`401` and the reason in its own log:
+
+```
+no rule matched: claim "job_workflow_ref" value [.../pin-cache.yml@refs/heads/main]
+  not in allowed patterns [.../build-push-cache.yml@*]
+```
+
+Verify what the server enforces rather than what the module says — read the rendered
+file its unit points at:
+
+```sh
+ssh oci-melb-1 'sudo systemctl cat niks3 | grep -- --oidc-config'
+ssh oci-melb-1 'sudo cat <that-path>' | tr ',' '\n' | grep -c pin-cache.yml
+```
+
+Two rules per listed repository is the expected count. Then a `write` token that is
+_not_ the CI identity gets `403` for a reserved name.
 
 ## 3. Trust the pin workflow on the tailnet
 
