@@ -5,17 +5,18 @@ builders, the cache, the coordinator configuration and the validation. Nothing
 here requires importing `flakeModules.fleet`, re-exporting builder metadata or
 copying workflow bodies.
 
-Two paths. Pick by whether the repository also wants the update-candidate
-lifecycle, not by how much Nix it contains.
+Three levels, cumulative. Pick by what the repository wants to know, not by how much
+Nix it contains.
 
-| path                              | for                                                                                     | adds                                                                       |
-| --------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| **A — build and publish**         | any repository that is built at all                                                     | one workflow file                                                          |
-| **B — plus the update lifecycle** | repositories whose dependency updates you want validated, built, evidenced and promoted | A, plus five thin trigger files, an App, an environment, labels, a ruleset |
+| level                                | for                                                                                     | adds                                                                        |
+| ------------------------------------ | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| **A — build and publish**            | any repository that is built at all                                                     | one workflow file                                                           |
+| **A+ — pin and verify your closure** | repositories that want their own last-known-good protected from GC                      | A, plus one module import and a pin prefix                                  |
+| **B — plus the update lifecycle**    | repositories whose dependency updates you want validated, built, evidenced and promoted | A+, plus five thin trigger files, an App, an environment, labels, a ruleset |
 
-State today: **A is proven** on nix-fleet itself (runs 39543925779 for the build,
-39593416105 for the pin). **B is unproven end to end** — the mechanism exists and
-every part has run in nix-fleet, but no consumer has completed a promotion, and
+State today: **A and A+ are proven** on nix-fleet itself (runs 39543925779 for the
+build, 39593416105 for the pin). **B is unproven end to end** — the mechanism exists
+and every part has run in nix-fleet, but no consumer has completed a promotion, and
 nix-fleet's own `PROMOTION_POLICY` is `label`. Adopt B expecting to debug it.
 
 ## 0. Prerequisites that are not in the consumer's hands
@@ -99,7 +100,71 @@ path is green. Routine CI evaluates and formats; this workflow is the only thing
 that builds and publishes, and two publishers for one closure is how a cache
 starts lying.
 
-## 2. Path B — the update lifecycle
+## 2. Path A+ — pin and verify your own closure
+
+Both workflows read the cache route, the tailnet identity and the API from the fleet
+revision that defines them (`job.workflow_repository` / `job.workflow_sha`), so no
+cache coordinate goes into your flake. What they need from you is one attribute per
+system: the aggregate whose closure is everything you publish.
+
+Import the published module — a package module, not the fleet schema:
+
+```nix
+imports = [ inputs.nix-fleet.flakeModules.cacheRoot ];
+```
+
+or define the same attribute yourself if you would rather not take the input:
+
+```nix
+packages.<system>.cache-root = pkgs.linkFarm "cache-root" (
+  mapAttrsToList (name: p: { inherit name; path = p; }) config.packages
+);
+```
+
+`verify-cache` is the one worth having on every push: it reports coverage with
+notices and never fails on a miss.
+
+```yaml
+jobs:
+  verify:
+    uses: Shrub24/nix-fleet/.github/workflows/verify-cache.yml@<sha>
+    with:
+      systems: x86_64-linux aarch64-linux
+```
+
+Pinning moves a name that means "our current main", so it belongs to the event that
+lands a revision, not to a diagnostic. Dispatch it from your promotion path, or by
+hand after a successful build:
+
+```yaml
+jobs:
+  pin:
+    permissions:
+      contents: read
+      id-token: write # the cache token; pin-cache joins the tailnet
+    uses: Shrub24/nix-fleet/.github/workflows/pin-cache.yml@<sha>
+    with:
+      pin_name: auto # <repository>-main, one pin per system
+      systems: x86_64-linux aarch64-linux
+```
+
+`subject` defaults to `cache-root`; set it if your aggregate has another name or you
+already have one (`hydraJobs`, a host toplevel). It is a name, not a safety property:
+point it at a subset and the pin protects only that subset's closure while the rest
+stays reclaimable, silently.
+
+Two things shape the aggregate, and both fail quietly:
+
+- **Artefacts only, never checks.** A check's output is rebuilt whenever its inputs
+  move, so a verdict in the set moves the pin on every commit.
+- **Everything you publish.** A missing package is reclaimed by GC while the pin
+  still looks correct.
+
+Pin names share one server-side registry, so keep them namespaced
+(`<repository>-main`); the cache's `pins` rule for your repository reserves that
+prefix.
+
+## 3. Path B — the update lifecycle
 
 Everything in Path A, plus the pieces below. Add them in this order; each is
 verifiable on its own.
@@ -138,13 +203,8 @@ With `PROMOTION_POLICY=label`, applying `accept-update` is what authorises
 promotion, and the marker is bound to the head it was applied to: a push after
 labelling invalidates it and the revision must be re-validated.
 
-## 3. What a consumer does not get, and why
+## 4. What a consumer does not get, and why
 
-- **Pinning and verification of its own closure.** `pin-cache.yml` and
-  `verify-cache.yml` resolve `<targets>.<system>.cache-root`, which is a
-  nix-fleet package module. A consumer without it can call neither. Publishing
-  that module is the small change that closes this; until then pinning stays
-  fleet-owned.
 - **A tag to pin.** Cut one at or after the coordinator commit, or pin the SHA.
   `v1` predates the coordinator and `profile`.
 - **Renovate-managed tagged flake inputs.** nix-fleet has none yet, and its
@@ -153,7 +213,7 @@ labelling invalidates it and the revision must be re-validated.
   the candidate, so a promoted revision is a merge commit whenever the source was
   behind.
 
-## 4. Order of adoption
+## 5. Order of adoption
 
 1. **`nix-homelab`** — already the closest, and the only repository that will
    carry stale copies until it moves. It pins an older nix-fleet SHA and passes

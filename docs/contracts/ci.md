@@ -357,11 +357,23 @@ local builds.
 Cache availability is an optimisation, not a prerequisite: a miss on the
 coordinator is an ordinary local build, not an error.
 
-Pinning and verification read the same promise: `packages.<system>.cache-root`,
-one root per system over the published packages, with `targets` defaulting to
-`.#packages` in both. That root is part of the checked closure (`checks.packages`
-asserts it), so a revision the pipeline builds is a revision whose pin subject
-exists.
+Pinning and verification read the same promise: the published packages of each
+system, selected by `targets` (default `.#packages` in both). They differ in
+granularity because they answer different questions: `verify-cache` asks `nix
+path-info` about **every** attribute of the selection so a miss is named, while
+`pin-cache` needs **one** root per system, because a pin holds a name against one
+store path — selecting `.<subject>`, `cache-root` by default, a linkFarm whose
+closure is exactly the selection. A named root is part of the checked closure
+(`checks.packages` asserts `cache-root`), so a revision the pipeline builds is a
+revision whose pin subject exists.
+
+Both resolve their **fleet coordinates from the revision that defines the
+workflow** (`job.workflow_repository` / `job.workflow_sha`), not from the caller's
+flake, for the same reason the coordinator does: which cache and which tailnet
+identity are fleet facts. A caller supplies the selection and, if its aggregate is
+named something else, `subject` — nothing else. `flakeModules.cacheRoot` publishes
+the default aggregate so a repository can adopt the name in one import, or hand-roll
+the same attribute, or point `subject` at an aggregate it already has.
 
 After the build — including after a failed one — the job reports what happened:
 the effective `builders` value, per-builder `runner` and `root` SSH results, and
@@ -486,13 +498,18 @@ claim. The claims worth binding:
   unmerged branches out.
 - `job_workflow_ref` — this entry point and its ref, e.g.
   `Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@refs/heads/main`,
-  or `@refs/tags/v1` for a consumer pinned to a tag. The cache does **not**
-  bind it: its rule trusts the owner, the repository and `refs/heads/main`, so
-  any workflow in a listed repository may publish. The reasoning is that code on
-  `main` is merged code and the repository is what the fleet controls, while
-  naming files would mean editing the cache's server config whenever any
-  repository adds a publisher. A missing bound claim is rejected, so inlining
-  these steps instead of calling the workflow still denies a cache token.
+  `…/pin-cache.yml@refs/heads/main`, or `…@refs/tags/v2` for a consumer pinned to
+  a tag. **The cache binds it, one rule per workflow**: publishing is
+  `build-push-cache.yml`, pinning is `pin-cache.yml`, each with its own pin
+  authority (`docs/runbooks/cache-pins.md`). A missing bound claim is rejected, so
+  inlining these steps instead of calling the workflow still denies a cache token.
+
+  The ref shape matters and is easy to miss: a consumer that pins the call by
+  **tag or commit** presents `…@refs/tags/v2` or `…@<sha>`, not
+  `…@refs/heads/main`. Every rule that matches `job_workflow_ref` must therefore
+  cover the shape consumers actually pin — which is why both the cache claims and
+  the tailnet credential use `…/workflows/*@*`, and why the containment is the
+  repository allowlist and the `tag:ci` ACL rather than the ref pattern.
 
 ## First-live-run caveats (honest state)
 

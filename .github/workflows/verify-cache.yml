@@ -26,7 +26,7 @@ on:
         required: false
         default: "x86_64-linux aarch64-linux"
       cache_url:
-        description: "Substituter URL; empty resolves .#packages.<runner_system>.cache-substituter-url"
+        description: "Substituter URL; empty resolves it from the fleet revision that defines this workflow"
         type: string
         required: false
         default: ""
@@ -52,15 +52,31 @@ jobs:
       - name: Install Nix
         uses: NixOS/nix-installer-action@v1
 
+      # The fleet revision that defines this workflow supplies the cache route, so a
+      # caller needs no fleet input and no fleet artifact in its own flake.
+      - name: Resolve the fleet revision
+        id: fleet
+        env:
+          FLEET_REPO: ${{ job.workflow_repository }}
+          FLEET_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$FLEET_REPO" ] || [ -z "$FLEET_SHA" ]; then
+            echo "::error::verify-cache: cannot resolve the fleet revision (job.workflow_repository / job.workflow_sha are empty)"
+            exit 1
+          fi
+          echo "ref=github:$FLEET_REPO/$FLEET_SHA" >> "$GITHUB_OUTPUT"
+
       - name: Resolve the substituter URL
         id: cache
         env:
           CACHE_URL: ${{ inputs.cache_url }}
           RUNNER_SYSTEM: ${{ inputs.runner_system || 'x86_64-linux' }}
+          FLEET: ${{ steps.fleet.outputs.ref }}
         run: |
           url=$CACHE_URL
           if [ -z "$url" ]; then
-            url=$(nix build --no-link --print-out-paths ".#packages.$RUNNER_SYSTEM.cache-substituter-url")
+            url=$(nix build --no-link --print-out-paths "$FLEET#packages.$RUNNER_SYSTEM.cache-substituter-url")
             url=$(cat "$url")
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"

@@ -21,10 +21,15 @@ on:
         required: false
         default: "x86_64-linux aarch64-linux"
       targets:
-        description: "Flake selection whose <targets>.<system>.cache-root is pinned"
+        description: "Flake selection whose <targets>.<system>.<subject> is pinned"
         type: string
         required: false
         default: ".#packages"
+      subject:
+        description: "Attribute of each system that names the aggregate to pin"
+        type: string
+        required: false
+        default: "cache-root"
       cache_api_url:
         description: "Private API URL; empty resolves .#packages.<runner_system>.cache-api-url"
         type: string
@@ -53,10 +58,15 @@ on:
         required: false
         default: "x86_64-linux aarch64-linux"
       targets:
-        description: "Flake selection whose <targets>.<system>.cache-root is pinned"
+        description: "Flake selection whose <targets>.<system>.<subject> is pinned"
         type: string
         required: false
         default: ".#packages"
+      subject:
+        description: "Attribute of each system that names the aggregate to pin"
+        type: string
+        required: false
+        default: "cache-root"
       cache_api_url:
         description: "Private API URL; empty resolves .#packages.<runner_system>.cache-api-url"
         type: string
@@ -85,15 +95,38 @@ jobs:
         with:
           ref: ${{ inputs.revision || github.sha }}
 
+      # No substituters from the caller's environment: the pinned path must be a
+      # function of the checked-out tree, not of what a workflow file decided.
       - name: Install Nix
         uses: NixOS/nix-installer-action@v1
+        with:
+          extra-conf: |
+            substituters =
+            trusted-public-keys =
+
+      # The coordinator pattern: the fleet revision is the one that defines this
+      # workflow, so coordinates come from nix-fleet and only the subject comes from
+      # the caller's flake.
+      - name: Resolve the fleet revision
+        id: fleet
+        env:
+          FLEET_REPO: ${{ job.workflow_repository }}
+          FLEET_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$FLEET_REPO" ] || [ -z "$FLEET_SHA" ]; then
+            echo "::error::pin-cache: cannot resolve the fleet revision (job.workflow_repository / job.workflow_sha are empty)"
+            exit 1
+          fi
+          echo "ref=github:$FLEET_REPO/$FLEET_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Resolve public Tailscale identity
         id: ts
         env:
           RUNNER_SYSTEM: ${{ inputs.runner_system || 'x86_64-linux' }}
+          FLEET: ${{ steps.fleet.outputs.ref }}
         run: |
-          metadata=$(nix build --no-link --print-out-paths ".#packages.$RUNNER_SYSTEM.ci-tailscale")
+          metadata=$(nix build --no-link --print-out-paths "$FLEET#packages.$RUNNER_SYSTEM.ci-tailscale")
           echo "client-id=$(jq -er '.clientId' "$metadata")" >> "$GITHUB_OUTPUT"
           echo "audience=$(jq -er '.audience' "$metadata")" >> "$GITHUB_OUTPUT"
 
@@ -109,10 +142,11 @@ jobs:
         env:
           API_URL: ${{ inputs.cache_api_url }}
           RUNNER_SYSTEM: ${{ inputs.runner_system || 'x86_64-linux' }}
+          FLEET: ${{ steps.fleet.outputs.ref }}
         run: |
           url=$API_URL
           if [ -z "$url" ]; then
-            url=$(nix build --no-link --print-out-paths ".#packages.$RUNNER_SYSTEM.cache-api-url")
+            url=$(nix build --no-link --print-out-paths "$FLEET#packages.$RUNNER_SYSTEM.cache-api-url")
             url=$(cat "$url")
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
@@ -128,6 +162,7 @@ jobs:
         env:
           SYSTEMS: ${{ inputs.systems || 'x86_64-linux aarch64-linux' }}
           TARGETS: ${{ inputs.targets || '.#packages' }}
+          SUBJECT: ${{ inputs.subject || 'cache-root' }}
           PIN: ${{ inputs.pin_name || vars.CACHE_PIN_NAME }}
           API: ${{ steps.api.outputs.url }}
           BINARY_DIR: ${{ steps.niks3.outputs.binary-dir }}
@@ -141,7 +176,7 @@ jobs:
           # keep the cache's `pins` rule narrow.
           if [ "$PIN" = auto ]; then PIN="${GITHUB_REPOSITORY#*/}-main"; fi
           for system in $SYSTEMS; do
-            root=$(nix eval --raw "$TARGETS.$system.cache-root.outPath")
+            root=$(nix eval --raw "$TARGETS.$system.$SUBJECT.outPath")
             # Flags precede the positional arguments: niks3 parses with Go's flag
             # package, which stops at the first non-flag word.
             "$BINARY_DIR/niks3" pins create \

@@ -25,6 +25,19 @@ assert "tailscale" not in str(verify), "the verify job joins the tailnet for a p
 assert "niks3-action" not in str(verify), "the verify job needs no cache client to ask about a path"
 assert verify["outputs"]["cache"] == "${{ steps.cache.outputs.url }}"
 
+# The substituter route comes from the fleet revision that defines this workflow, so
+# verifying a consumer repository needs no fleet input and no fleet artifact there.
+vsteps = {step.get("name"): step for step in verify["steps"]}
+vfleet = vsteps["Resolve the fleet revision"]
+assert vfleet["env"]["FLEET_REPO"] == "${{ job.workflow_repository }}"
+assert vfleet["env"]["FLEET_SHA"] == "${{ job.workflow_sha }}"
+cache_step = vsteps["Resolve the substituter URL"]
+assert cache_step["env"]["FLEET"] == "${{ steps.fleet.outputs.ref }}"
+assert '"$FLEET#packages.$RUNNER_SYSTEM.cache-substituter-url"' in cache_step["run"]
+assert ".#packages.$RUNNER_SYSTEM.cache-substituter-url" not in cache_step["run"].replace(
+    '"$FLEET#packages.$RUNNER_SYSTEM.cache-substituter-url"', ""
+), "the substituter URL still comes from the caller's flake"
+
 # Verification owns measurement only. Pinning moves a name that means "main's
 # current build", so it belongs to promotion (pin-cache.yml); keeping it here would
 # make a pin's correctness depend on the colour of a diagnostic.

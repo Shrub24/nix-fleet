@@ -641,3 +641,33 @@ orchestration); documenting a tag pin (`v1` predates the coordinator and the
 
 **Revisit when:** a consumer completes a Path B promotion, or `flakeModules.cacheRoot`
 is published so a consumer can pin and verify its own closure.
+
+## Fleet coordinates come from the workflow's own revision
+
+**Id:** 5c1e7a48-2f36-4d90-9b57-03e6f1c9a24d
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `.github/workflows/pin-cache.yml`, `.github/workflows/verify-cache.yml`, 2026-10-21
+
+`pin-cache` and `verify-cache` resolve the cache API URL, the substituter URL and the
+tailnet identity from `github:<job.workflow_repository>@<job.workflow_sha>` — the
+revision that defines them — and read only the subject from the caller's flake. This
+is the coordinator's rule applied to the cache workflows, which had kept the older
+shape of reading fleet coordinates out of the calling repository's `packages`.
+
+**Reason:** a consumer repository cannot produce `ci-tailscale`, `cache-api-url` or
+`cache-substituter-url` without importing fleet policy, so the old shape made pinning
+and verification fleet-only in practice while appearing reusable. Which cache and
+which tailnet identity are fleet facts; which artefacts are published is the
+caller's.
+
+**Rejected alternatives:** publishing a module that carries the coordinates (it
+would restate fleet endpoints in every consumer and drift from the service
+projections); deriving the aggregate inside the workflow (the pinned path would
+then move when the _workflow_ revision moves, and a consumer could not reproduce it
+locally to ask whether its root is served).
+
+**Consequences:** `subject` (default `cache-root`) is the one naming knob, so an
+aggregate under another name needs no rename; `flakeModules.cacheRoot` publishes the
+default aggregate for consumers that want it.

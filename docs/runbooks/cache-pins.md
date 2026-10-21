@@ -15,7 +15,11 @@ gates a promotion). Values: `fleet.services."niks3-write"`.
   supersession works.
 - A pin protects the **entire dependency tree** of the pinned path. One pin per
   system is therefore enough — nix-fleet pins `packages.<system>.cache-root`, whose
-  closure covers every published package.
+  closure covers every published package. A consuming repository pins its own
+  aggregate: `flakeModules.cacheRoot` defines the same attribute, and `pin-cache`'s
+  `subject` input points at an aggregate under another name. What the subject must
+  contain is every package the repository publishes and no checks — a subset looks
+  healthy while the rest is reclaimed.
 - Pinning does not delete anything. Repointing releases the old closure to the
   cache's own `niks3 gc`; when space is actually reclaimed is the cache owner's
   policy.

@@ -20,10 +20,33 @@ for event in ("workflow_dispatch", "workflow_call"):
     assert inputs["systems"]["default"] == "x86_64-linux aarch64-linux"
     # The pin subject is the artefact aggregate, not the check set.
     assert inputs["targets"]["default"] == ".#packages"
+    # The name is a contract between the workflow and the module, and overriding it
+    # is how a repository with an existing aggregate avoids adopting the name.
+    assert inputs["subject"]["default"] == "cache-root"
 
 # A pin needs the private API, so this is the workflow that joins the tailnet and
 # mints the OIDC token; verification deliberately does neither.
 assert workflow["permissions"] == {"contents": "read", "id-token": "write"}
+
+# Fleet coordinates belong to the fleet: read them from the revision that defines
+# this workflow, so a caller supplies the subject and nothing else.
+steps = {step.get("name"): step for step in workflow["jobs"]["pin"]["steps"]}
+fleet = steps["Resolve the fleet revision"]
+assert fleet["env"]["FLEET_REPO"] == "${{ job.workflow_repository }}"
+assert fleet["env"]["FLEET_SHA"] == "${{ job.workflow_sha }}"
+assert 'echo "ref=github:$FLEET_REPO/$FLEET_SHA"' in fleet["run"]
+for coordinate in ("ci-tailscale", "cache-api-url"):
+    owners = [n for n, step in steps.items() if coordinate in step.get("run", "")]
+    assert owners, f"nothing resolves {coordinate}"
+    for name in owners:
+        run = steps[name]["run"]
+        assert "$FLEET#" in run, f"{name} resolves {coordinate} from the caller's flake"
+        assert '.#packages' not in run, f"{name} still reads the coordinate from the caller"
+        assert steps[name]["env"]["FLEET"] == "${{ steps.fleet.outputs.ref }}"
+
+pin_step = steps["Pin one aggregate root per system"]
+assert pin_step["env"]["SUBJECT"] == "${{ inputs.subject || 'cache-root' }}"
+assert '"$TARGETS.$system.$SUBJECT.outPath"' in pin_step["run"]
 pin = workflow["jobs"]["pin"]
 join = next(s for s in pin["steps"] if s.get("uses", "").startswith("tailscale/github-action@"))
 assert join["with"]["oauth-client-id"] == "${{ steps.ts.outputs.client-id }}"
@@ -71,7 +94,7 @@ with tempfile.TemporaryDirectory() as directory:
     token_script.write_text(f'#!{shutil.which("bash")}\necho token\n')
     token_script.chmod(0o755)
 
-    def run(pin_name):
+    def run(pin_name, subject="cache-root"):
         calls.write_text("")
         summary.write_text("")
         return subprocess.run(
@@ -81,6 +104,7 @@ with tempfile.TemporaryDirectory() as directory:
                 "PATH": f"{root}:{os.environ['PATH']}",
                 "SYSTEMS": "x86_64-linux aarch64-linux",
                 "TARGETS": ".#packages",
+                "SUBJECT": subject,
                 "PIN": pin_name,
                 "API": "https://api.invalid",
                 "BINARY_DIR": str(binary),
@@ -116,6 +140,13 @@ with tempfile.TemporaryDirectory() as directory:
     assert "nix-fleet-main-x86_64-linux" in created[0], created
     assert "nix-fleet-main-aarch64-linux" in created[1], created
     assert "nix-fleet-main-<system>" in summary.read_text(), summary.read_text()
+
+    # The subject is overridable, not decoration: a repository whose aggregate has
+    # another name must pin that attribute.
+    result = run("nix-fleet-main", subject="release-root")
+    assert result.returncode == 0, result.stderr
+    evaluated = [line for line in calls.read_text().splitlines() if line.startswith("eval")]
+    assert evaluated and all("release-root.outPath" in line for line in evaluated), evaluated
 
     # Without a name the shell would otherwise create pins called "-<system>".
     result = run("")
