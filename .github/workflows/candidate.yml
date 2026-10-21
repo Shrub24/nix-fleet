@@ -38,8 +38,8 @@ on:
         type: string
         required: false
         default: "aarch64-linux"
-      builder_attr:
-        description: "Builder profile package; empty builds locally only"
+      profile:
+        description: "Fleet builder profile the coordinator renders"
         type: string
         required: false
         default: "ci"
@@ -189,7 +189,7 @@ jobs:
       targets: ${{ inputs.targets }}
       systems: ${{ inputs.systems }}
       runner_system: ${{ inputs.runner_system }}
-      builder_attr: ${{ inputs.builder_attr }}
+      profile: ${{ inputs.profile }}
     secrets:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}
 

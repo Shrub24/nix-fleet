@@ -5,8 +5,12 @@
   perSystem =
     { config, pkgs, ... }:
     {
-      checks.packages = pkgs.linkFarm "packages" (
-        pkgs.lib.mapAttrsToList (name: path: { inherit name path; }) config.packages
-      );
+      # cache-root is the subject pin-cache and verify-cache resolve, so it has to be
+      # inside the closure this check realises or a promotion has nothing to pin.
+      checks.packages =
+        assert config.packages ? cache-root;
+        pkgs.linkFarm "packages" (
+          pkgs.lib.mapAttrsToList (name: path: { inherit name path; }) config.packages
+        );
     };
 }

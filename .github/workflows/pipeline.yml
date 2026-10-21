@@ -145,7 +145,7 @@ jobs:
       targets: ${{ vars.CANDIDATE_TARGETS || '.#checks' }}
       systems: ${{ vars.CANDIDATE_SYSTEMS || 'x86_64-linux aarch64-linux' }}
       runner_system: ${{ vars.CANDIDATE_RUNNER_SYSTEM || 'aarch64-linux' }}
-      builder_attr: ${{ vars.CANDIDATE_BUILDER_ATTR || 'ci' }}
+      profile: ${{ vars.CANDIDATE_PROFILE || 'ci' }}
     secrets: inherit
 
   human:
@@ -192,5 +192,5 @@ jobs:
       targets: ${{ vars.CANDIDATE_TARGETS || '.#checks' }}
       systems: ${{ vars.CANDIDATE_SYSTEMS || 'x86_64-linux aarch64-linux' }}
       runner_system: ${{ vars.CANDIDATE_RUNNER_SYSTEM || 'aarch64-linux' }}
-      builder_attr: ${{ vars.CANDIDATE_BUILDER_ATTR || 'ci' }}
+      profile: ${{ vars.CANDIDATE_PROFILE || 'ci' }}
     secrets: inherit

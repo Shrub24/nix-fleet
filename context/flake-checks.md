@@ -66,3 +66,82 @@ When a module rejects invalid input, the error names its owning aspect and the s
 **Reason:** an attribute that merely throws is not enough to provide actionable diagnosis, and callers may rely on the named failure when validating their configuration. The fixture compares diagnostic content with the contract documentation; changing the message is therefore an observable contract change.
 
 **Rejected alternative:** accept any evaluation failure as proof of rejection. It can pass because of an unrelated typo, missing option, or another earlier assertion, obscuring which contract is actually being tested.
+
+## The CI coordinator is resolved from the workflow's own revision
+
+**Id:** 7d1f0a44-6a3c-4f3b-9d2e-1c5b8a90e6f2
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `.github/workflows/build-push-cache.yml`, `modules/fleet/feature.nix`, 2026-10-11
+
+The build job resolves its builder and cache configuration with
+`nix build github:<job.workflow_repository>@<job.workflow_sha>#packages.<runner_system>.ci-coordinator-<profile>`.
+`job.workflow_sha` is the commit that defines the reusable workflow file, so a
+consumer pins one reference and obtains machinery and fleet facts from one exact
+revision. The artifact is a projection of the existing builder-profile and cache
+projections and is published through `checks.packages` with no extra plumbing.
+
+**Reason:** a `fleet_ref` input or re-exported builder metadata would be a second
+version to keep in step with the workflow that consumes it, and the two could
+disagree. Deriving the revision makes disagreement unrepresentable.
+
+**Rejected alternatives:** a `fleet_ref` workflow input; consumers re-exporting
+fleet outputs; a published metadata artifact with its own compatibility contract;
+checking the fleet out beside the consumer's tree (the build needs the consumer
+checkout, and a second checkout would shadow it).
+
+**Revisit when:** a caller must build with fleet facts from a revision other than
+the one defining the workflow — for example a staged fleet rollout.
+
+## The coordinator owns builder and cache configuration, nothing else
+
+**Id:** 3f2a6c18-9b47-4e51-8c0a-5d9e7b41c283
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `modules/fleet/feature.nix` (`ciCoordinator`), `docs/contracts/ci.md`, 2026-10-11
+
+The coordinator writes `builders`, `builders-use-substitutes`,
+`extra-substituters` and `extra-trusted-public-keys`, and its build fails if
+`trusted-users`, `post-build-hook`, `sandbox` or `experimental-features` appear,
+or if `substituters` is written in its non-additive form. `trusted-users` belongs
+to the installer; `niks3-action` installs the post-build hook in its own
+user-level configuration, which overrides `/etc/nix/nix.conf`.
+
+**Reason:** `niks3-action` needs a trusted user for the hook and prepends its own
+config, so a coordinator that also set `trusted-users` would silently stop
+publication — a failure that looks like an empty cache, not an error.
+
+**Rejected alternatives:** letting the coordinator render a complete `nix.conf`
+(one authority per setting is the property that keeps publication working);
+keeping `builders` in the workflow's `NIX_CONFIG` (two authorities for one
+setting drift).
+
+**Revisit when:** the publishing action stops writing user-level Nix configuration.
+
+## An unavailable builder is reported, not vetoed
+
+**Id:** 0c6b8e57-2f19-4a83-b7d5-6f2c1e934a08
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `.github/workflows/build-push-cache.yml` (step `Report builders and realisations`), 2026-10-11
+
+The job reports the effective `builders` value, per-builder `runner` and `root`
+SSH results, and the number of derivations realised during the run. It does not
+refuse to schedule when a builder is unreachable. A previous pre-flight dialled
+every builder and failed the job when a requested system had nowhere to build.
+
+**Reason:** a transient builder outage would become a blocked pipeline, and
+per-run gates duplicate what fleet telemetry does better over time. The reporting
+step also answers, every run, which context opens the builder session — the
+question a pre-flight could only assume.
+
+**Rejected alternatives:** the reachability gate (turned an outage into a
+failure); a build-forcing probe with `max-jobs = 0` (a correctness gate for
+something the build itself reveals); custom failure watchers and notifications
+(owned by the fleet's metrics and notify aspects).
+
+**Revisit when:** builds silently fall back to local execution often enough that
+the cache stops warming — then the signal needs to be a metric, not a refusal.

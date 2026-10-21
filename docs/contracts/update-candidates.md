@@ -163,17 +163,17 @@ repository at the pinned ref, so a consumer needs no copy of `candidate.yml` or
 its `automation` environment, the permission union the called jobs declare, and
 `secrets: inherit`.
 
-| Workflow                      | Called with                                                                                          | Consumer supplies                                                                |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `build-push-cache.yml`        | `targets`, `builder_attr`, `runner_system`, `systems`, `revision`, `cache_api_url`, tailnet identity | `BUILDER_SSH_KEY` secret                                                         |
-| `verify-cache.yml`            | `revision`, `targets`, `systems`, `runner_system`, `cache_url`                                       | nothing (no secret, no identity); a caller grants `contents: read`               |
-| `pin-cache.yml`               | `revision`, `pin_name`, `targets`, `systems`, `cache_api_url`, `runner_system`                       | `CACHE_PIN_NAME`; a caller grants `contents: read` + `id-token: write` (tailnet) |
-| `validate.yml`                | `revision`, `generated_files`                                                                        | nothing (no secret)                                                              |
-| `candidate.yml`               | `source_sha`, `source_pr`, `mode`, `precheck`, `targets`, `systems`, `runner_system`, `builder_attr` | environment `automation`                                                         |
-| `pipeline.yml`                | `source_pr` (only when the caller's event is a dispatch)                                             | the variables and permission grant below                                         |
-| `package-updates-refresh.yml` | —                                                                                                    | environment `automation`, in the publishing job only                             |
-| `promote-candidate.yml`       | — (call it from a thin `on: status` file)                                                            | environment `automation`                                                         |
-| `candidate-sweep.yml`         | — (call it from a thin `on: schedule` file)                                                          | environment `automation`                                                         |
+| Workflow                      | Called with                                                                                     | Consumer supplies                                                                |
+| ----------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `build-push-cache.yml`        | `targets`, `profile`, `runner_system`, `systems`, `revision`, `cache_api_url`, tailnet identity | `BUILDER_SSH_KEY` secret                                                         |
+| `verify-cache.yml`            | `revision`, `targets`, `systems`, `runner_system`, `cache_url`                                  | nothing (no secret, no identity); a caller grants `contents: read`               |
+| `pin-cache.yml`               | `revision`, `pin_name`, `targets`, `systems`, `cache_api_url`, `runner_system`                  | `CACHE_PIN_NAME`; a caller grants `contents: read` + `id-token: write` (tailnet) |
+| `validate.yml`                | `revision`, `generated_files`                                                                   | nothing (no secret)                                                              |
+| `candidate.yml`               | `source_sha`, `source_pr`, `mode`, `precheck`, `targets`, `systems`, `runner_system`, `profile` | environment `automation`                                                         |
+| `pipeline.yml`                | `source_pr` (only when the caller's event is a dispatch)                                        | the variables and permission grant below                                         |
+| `package-updates-refresh.yml` | —                                                                                               | environment `automation`, in the publishing job only                             |
+| `promote-candidate.yml`       | — (call it from a thin `on: status` file)                                                       | environment `automation`                                                         |
+| `candidate-sweep.yml`         | — (call it from a thin `on: schedule` file)                                                     | environment `automation`                                                         |
 
 Build selection is typed workflow input, so a consumer sets its closure per
 repository without editing a workflow — `pipeline.yml` passes `CANDIDATE_TARGETS`,

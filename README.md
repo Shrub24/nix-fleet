@@ -238,8 +238,9 @@ repository. The full interface lives in [docs/contracts/ci.md](docs/contracts/ci
 
 One coordinator runs `nix-fast-build` against `.#checks`. `runner_system`
 selects its architecture (ARM by default); `systems` selects the workload
-architectures (x86_64 and ARM by default). `builder_attr` selects a rendered
-remote-builder profile (`ci` by default); explicitly empty means local-only.
+architectures (x86_64 and ARM by default). `profile` selects the fleet builder
+profile (`ci` by default); the workflow resolves the matching coordinator
+configuration from its own revision, so a consumer declares only what to build.
 An x86-only consumer sets both `runner_system` and `systems` to `x86_64-linux`.
 
 Remote builders publish through their native niks3 post-build-hooks. The GHA

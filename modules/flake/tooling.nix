@@ -51,10 +51,13 @@ let
             nixfmt.priority = 3;
             actionlint = {
               command = "${pkgs.actionlint}/bin/actionlint";
-              # actionlint lacks the `queue` key; drop with rhysd/actionlint#654.
+              # actionlint's context table lacks `queue` and the `job.workflow_*`
+              # properties; both are valid. Drop each ignore when upstream catches up.
               options = [
                 "-ignore"
                 "unexpected key \"queue\" for \"concurrency\" section"
+                "-ignore"
+                "property \"workflow_(repository|sha|ref|file_path)\" is not defined"
               ];
               includes = [ ".github/workflows/*.yml" ];
             };

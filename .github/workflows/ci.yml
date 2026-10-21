@@ -35,6 +35,6 @@ jobs:
       id-token: write
     uses: ./.github/workflows/build-push-cache.yml
     with:
-      builder_attr: ci
+      profile: ci
     secrets:
       BUILDER_SSH_KEY: ${{ secrets.FLEET_BUILDER_SSH_KEY }}

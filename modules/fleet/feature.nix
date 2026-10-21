@@ -285,6 +285,86 @@ let
           "$knownHostsPath" > $out/known_hosts
       '';
 
+  # The coordinator projection: the configuration an ephemeral CI client installs,
+  # rendered from the artifacts above so there is no second authority for builder
+  # or cache facts. Conventional install paths, never this derivation's own path,
+  # so the file can name where it will live without referencing itself.
+  ciCoordinator =
+    { pkgs }:
+    profileName:
+    let
+      bundle = ciArtifacts { inherit pkgs; } profileName;
+      substituterUrl = serviceEndpoints.cacheSubstituterUrl config.fleet;
+      publicKeys = serviceEndpoints.cachePublicKeys config.fleet;
+      apiUrl = serviceEndpoints.cacheApiUrl config.fleet;
+      tailscale = config.fleet.ci.tailscale;
+      nixConf = ''
+        # Written by the nix-fleet CI coordinator; owned by the fleet, not by a caller.
+        # Additive on purpose: the runner's installer and the publishing action also
+        # configure Nix, and a scalar here would shadow them.
+        extra-substituters = ${substituterUrl}
+        extra-trusted-public-keys = ${lib.concatStringsSep " " publicKeys}
+        builders = @/etc/nix/machines
+        builders-use-substitutes = true
+      '';
+    in
+    pkgs.runCommand "ci-coordinator-${profileName}"
+      {
+        passAsFile = [ "nixConf" ];
+        inherit nixConf;
+      }
+      ''
+        mkdir -p $out
+        cp ${bundle}/machines $out/machines
+        cp ${bundle}/known_hosts $out/known_hosts
+        cp "$nixConfPath" $out/nix.conf
+        cat > $out/ssh_config <<'EOF'
+        Host *
+          IdentityFile /etc/nix/builder_ed25519
+          IdentitiesOnly yes
+        EOF
+        cat ${bundle}/ssh_config >> $out/ssh_config
+        printf '%s\n' '${substituterUrl}' > $out/cache-substituter-url
+        printf '%s\n' ${lib.escapeShellArg apiUrl} > $out/cache-api-url
+        printf '{"clientId":"%s","audience":"%s"}\n' ${lib.escapeShellArg tailscale.clientId} ${lib.escapeShellArg tailscale.audience} > $out/tailscale.json
+
+        # One writer per setting: these belong to the installer and the publishing
+        # action, and overriding either silently breaks substitution or uploads.
+        for forbidden in trusted-users post-build-hook sandbox experimental-features; do
+          if grep -qE "^[[:space:]]*($forbidden|extra-$forbidden)[[:space:]]*=" $out/nix.conf; then
+            echo "fleet: coordinator nix.conf must not set $forbidden" >&2
+            exit 1
+          fi
+        done
+        if grep -qE '^[[:space:]]*substituters[[:space:]]*=' $out/nix.conf; then
+          echo "fleet: coordinator nix.conf must use extra-substituters, not substituters" >&2
+          exit 1
+        fi
+        grep -qx 'builders = @/etc/nix/machines' $out/nix.conf \
+          || { echo "fleet: coordinator nix.conf lost its builders line" >&2; exit 1; }
+        grep -q 'IdentityFile /etc/nix/builder_ed25519' $out/ssh_config \
+          || { echo "fleet: coordinator ssh_config lacks the key reference" >&2; exit 1; }
+
+        cat > $out/install.sh <<'EOF'
+        #!/bin/sh
+        # Install the coordinator as this machine's Nix client configuration. Run as
+        # root; the SSH identity is written by the caller, not by this artifact.
+        set -eu
+        src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+        install -d /etc/nix /etc/ssh/ssh_config.d
+        install -m 0644 "$src/nix.conf" /etc/nix/coordinator.conf
+        install -m 0644 "$src/machines" /etc/nix/machines
+        install -m 0644 "$src/ssh_config" /etc/ssh/ssh_config.d/00-coordinator.conf
+        install -m 0644 "$src/known_hosts" /etc/ssh/ssh_known_hosts
+        grep -qxF 'include /etc/nix/coordinator.conf' /etc/nix/nix.conf 2>/dev/null \
+          || echo 'include /etc/nix/coordinator.conf' >> /etc/nix/nix.conf
+        # Client settings are read per invocation, so no daemon restart is needed;
+        # confirmed by the run report rather than assumed.
+        NIX_CONF_DIR=/etc/nix nix config show builders > /dev/null
+        EOF
+        chmod 0755 $out/install.sh
+      '';
+
   ciMetadataCheck =
     let
       evaluate =
@@ -336,10 +416,14 @@ let
                 ];
                 coordinatorPublicKey = config.fleet.ci.sshPublicKey;
                 passAsFile = [ "coordinatorPublicKey" ];
+                # The workflow's bootstrap cache must be the fleet's, not a second
+                # source: the check compares the two rather than trusting both.
+                BOOTSTRAP_SUBSTITUTER = serviceEndpoints.cacheSubstituterUrl config.fleet;
+                BOOTSTRAP_PUBLIC_KEY = lib.concatStringsSep " " (serviceEndpoints.cachePublicKeys config.fleet);
               }
               ''
                 ssh-keygen -lf "$coordinatorPublicKeyPath"
-                python ${../../tests/ci/tailscale_check.py} ${../../.github/workflows/build-push-cache.yml} ${ciTailscale}
+                python ${../../tests/ci/build_workflow_check.py} ${../../.github/workflows/build-push-cache.yml} ${ciTailscale}
                 touch "$out"
               '';
 
@@ -435,7 +519,12 @@ let
                 lib.concatStringsSep "\n" (serviceEndpoints.cachePublicKeys config.fleet)
               );
               ci-tailscale = ciTailscale;
-            };
+            }
+            # Named ci-coordinator-<profile>: the bare profile name stays the builder
+            # bundle callers already install; this wraps it rather than replacing it.
+            // lib.mapAttrs' (
+              name: _: lib.nameValuePair "ci-coordinator-${name}" (ciCoordinator { inherit pkgs; } name)
+            ) config.fleet.buildProfiles;
         };
     };
   };

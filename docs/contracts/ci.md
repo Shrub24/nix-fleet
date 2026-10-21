@@ -124,10 +124,11 @@ builder key and cache write, which cannot post a status or push `main`.
 
 ```
 fleet inventory (nix-fleet, canonical)   GHA runner
-├─ fleet.buildProfiles.ci ────────────►  .#packages.ci
-│    rendered at consumer eval            ├─ machines       ─► builders = @/tmp/nix-builders
-│                                         ├─ known_hosts    ─► /etc/ssh/ssh_known_hosts
-│                                         └─ ssh_config     ─► ~/.ssh/config
+├─ packages.<system>.ci-coordinator-ci ► .#packages.<system>.ci-coordinator-ci
+│    resolved from job.workflow_sha       ├─ machines    ─► /etc/nix/machines
+│                                         ├─ nix.conf    ─► /etc/nix/coordinator.conf
+│                                         ├─ known_hosts ─► /etc/ssh/ssh_known_hosts
+│                                         └─ ssh_config  ─► /etc/ssh/ssh_config.d/
 └─ join tailnet (fleet-host builders) ─►  MagicDNS resolves hostnames
 
 nix-fast-build: evaluates locally, fans out across inventory builders AND the
@@ -207,11 +208,15 @@ packages.<profile>            # every other declared profile (consumer-local too
 
 Each bundle is a directory:
 
-| File          | Content                                                                    | Installed to                            |
-| ------------- | -------------------------------------------------------------------------- | --------------------------------------- |
-| `machines`    | nix machines-file lines (7 fields, comma-joined systems, `-` placeholders) | `/tmp/nix-builders` → `builders = @...` |
-| `known_hosts` | ssh_known_hosts lines for the profile's builders                           | `/etc/ssh/ssh_known_hosts`              |
-| `ssh_config`  | Host blocks with long-build tuning                                         | appended to `~/.ssh/config`             |
+| File          | Content                                                                    | Installed to                                |
+| ------------- | -------------------------------------------------------------------------- | ------------------------------------------- |
+| `machines`    | nix machines-file lines (7 fields, comma-joined systems, `-` placeholders) | `/etc/nix/machines`                         |
+| `known_hosts` | ssh_known_hosts lines for the profile's builders                           | `/etc/ssh/ssh_known_hosts`                  |
+| `ssh_config`  | Host blocks with long-build tuning plus the builder key path               | `/etc/ssh/ssh_config.d/00-coordinator.conf` |
+
+The bundle is an input to the coordinator, which adds the Nix client settings and
+the installer script; `docs/contracts/ci.md`'s coordinator section is the
+authority on what reaches `/etc`.
 
 Rendered from the merged fleet inventory (canonical + consumer additions) at
 consumer eval time — the workflow never stores addresses, keys, or profiles.
@@ -233,7 +238,7 @@ jobs:
       #                                                     contract supplies it)
       targets: .#nixosConfigurations.myhost.config.system.build.toplevel
       # optional:
-      # builder_attr: ci           (any fleet.buildProfiles entry; empty = local-only)
+      # profile: ci                (any fleet.buildProfiles entry)
       # runner_system: x86_64-linux (ARM coordinator default)
       # systems: x86_64-linux       (both target architectures default)
       # tailnet: false             (disable the default tailnet join)
@@ -252,7 +257,7 @@ grants less than the workflow needs.
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `cache_api_url`   | niks3 **API** base URL — serves `/api/cache-config`, requires auth/tailnet. Optional: empty resolves `packages.<system>.cache-api-url`, i.e. the canonical `fleet.services."niks3-write"` tailnet origin, so the coordinate is not restated per repository. Distinct from the public read domain (which the API returns as `substituter_url`); never point this at the read domain |
 | `targets`         | single flake selection for nix-fast-build; default `.#checks`, scoped to `systems`                                                                                                                                                                                                                                                                                                 |
-| `builder_attr`    | which `packages.<attr>` bundle to schedule against (`ci` by default); explicitly empty means local-only, with no builder bundle or SSH key setup                                                                                                                                                                                                                                   |
+| `profile`         | fleet builder profile the coordinator renders (`ci` by default). The coordinator owns builder and cache configuration; a consumer never restates it                                                                                                                                                                                                                                |
 | `tailnet`         | Join the tailnet before building (boolean, default true); set false for public-only deployments                                                                                                                                                                                                                                                                                    |
 | `BUILDER_SSH_KEY` | secret: the coordinator's builder SSH key                                                                                                                                                                                                                                                                                                                                          |
 | `ts_client_id`    | Public client ID override; empty resolves the fleet CI identity                                                                                                                                                                                                                                                                                                                    |
@@ -264,17 +269,87 @@ gate, so consumers opt into changes deliberately.
 
 Two jobs:
 
-- **prepare** — resolves the public Tailscale identity once.
+- **prepare** — selects the runner and target systems. No checkout, no Nix:
+  a caller's flake is not touched here.
 - **build** — one coordinator, selected by `runner_system` (default
   `aarch64-linux` on `ubuntu-24.04-arm`; `x86_64-linux` uses `ubuntu-latest`).
-  It installs the selected builder profile when nonempty, configures
-  `Mic92/niks3-action`, and runs `nix-fast-build` once with `--systems`.
-  Empty `builder_attr` clears remote builders; otherwise Nix distributes work
-  according to that profile. Local builds publish through the action; remote
-  builds through builder hooks. No separate local-build job or custom refresher.
-  Before scheduling, the job dials every builder in the rendered profile and
-  fails when a requested system would have nowhere to build — a silent builder
-  otherwise surfaces deep inside the build as a bare `platform mismatch`.
+  It installs the fleet coordinator (below), joins the tailnet, configures
+  `Mic92/niks3-action`, and runs `nix-fast-build` once with `--systems`. Nix
+  distributes work according to the coordinator's builder profile. Local builds
+  publish through the action; remote builds through builder hooks. No separate
+  local-build job or custom refresher.
+
+### The coordinator
+
+The build job resolves its configuration from **the revision that defines this
+workflow**, not from the caller's flake:
+
+```
+nix build github:<job.workflow_repository>@<job.workflow_sha>#packages.<runner_system>.ci-coordinator-<profile>
+```
+
+`job.workflow_sha` is the commit of the reusable workflow file, so a consumer
+pins one reference and gets machinery and fleet facts from one exact revision;
+its own flake stays independent and needs no `fleet_ref`, no re-exported builder
+metadata and no `flakeModules.fleet` import. The artifact is a projection of the
+existing builder-profile and cache projections (`modules/fleet/feature.nix`),
+carried in `checks.packages`, so the ordinary build publishes it and it needs no
+separate distribution path.
+
+| file                    | installed to                                          |
+| ----------------------- | ----------------------------------------------------- |
+| `nix.conf`              | `/etc/nix/coordinator.conf`, `include`d from nix.conf |
+| `machines`              | `/etc/nix/machines`                                   |
+| `ssh_config`            | `/etc/ssh/ssh_config.d/00-coordinator.conf`           |
+| `known_hosts`           | `/etc/ssh/ssh_known_hosts`                            |
+| `cache-api-url`         | read by the workflow, not installed                   |
+| `cache-substituter-url` | read by the bootstrap check, not installed            |
+| `tailscale.json`        | read by the workflow, not installed                   |
+| `install.sh`            | run as root by the workflow                           |
+
+**One writer per setting.** The coordinator owns `builders`,
+`builders-use-substitutes`, `extra-substituters` and
+`extra-trusted-public-keys`. It must never set `trusted-users`,
+`post-build-hook`, `sandbox` or `experimental-features`: the installer grants
+`trusted-users`, and `niks3-action` installs the post-build hook in its own
+user-level configuration, which overrides `/etc/nix/nix.conf`. The artifact's
+build fails if a forbidden setting appears. `substituters` must be written in
+its additive `extra-` form for the same reason.
+
+The SSH identity is _not_ in the artifact: the workflow writes it to
+`/etc/nix/builder_ed25519`, mode `0640` owned by `root:runner`, and the rendered
+`ssh_config` names that path. Both contexts can then open the session, and each
+run's report states which one did.
+
+Client settings are read per invocation, so applying the configuration needs no
+`nix-daemon` restart. `install.sh` asserts this by reading `builders` back
+through the installed config.
+
+### Bootstrap and reporting
+
+`nix-installer-action` seeds the public cache (`extra-substituters` and
+`extra-trusted-public-keys`) before the coordinator is retrieved. Those two
+values are the only fleet facts stated in the workflow, because the bootstrap
+cannot come from the artifact it is fetching. A check asserts they equal
+`packages.<system>.cache-substituter-url` and `cache-public-key` rendered from
+the fleet, so a cache move fails the build rather than silently falling back to
+local builds.
+
+Cache availability is an optimisation, not a prerequisite: a miss on the
+coordinator is an ordinary local build, not an error.
+
+Pinning and verification read the same promise: `packages.<system>.cache-root`,
+one root per system over the published packages, with `targets` defaulting to
+`.#packages` in both. That root is part of the checked closure (`checks.packages`
+asserts it), so a revision the pipeline builds is a revision whose pin subject
+exists.
+
+After the build — including after a failed one — the job reports what happened:
+the effective `builders` value, per-builder `runner` and `root` SSH results, and
+the number of derivations realised in the run. An unavailable builder is
+**reported, not vetoed**: a pre-flight that refused to schedule would turn a
+transient builder outage into a blocked pipeline, and sustained builder health
+belongs to fleet telemetry rather than a per-run gate.
 
 The workflow declares `contents: read` and `id-token: write` for direct dispatch.
 Reusable callers must grant the same permissions. Direct dispatch reads the
@@ -288,7 +363,7 @@ These inputs answer separate questions:
 | --------------- | ---------------------------- | ----------------------------------------------- |
 | `runner_system` | `aarch64-linux`              | The GHA coordinator architecture                |
 | `systems`       | `x86_64-linux aarch64-linux` | Target architectures evaluated under `.#checks` |
-| `builder_attr`  | `ci`                         | Remote builder capacity; empty means local-only |
+| `profile`       | `ci`                         | Remote builder capacity from that fleet profile |
 
 The coordinator architecture does not constrain remote execution. One ARM
 coordinator can build ARM locally and delegate x86 work to compatible fleet
@@ -303,7 +378,7 @@ For an x86-only consumer such as dotfiles:
 with:
   runner_system: x86_64-linux
   systems: x86_64-linux
-  builder_attr: ci # use "" for local-only
+  profile: ci
 ```
 
 `targets` is one flake selection, defaulting to `.#checks`, not a list of

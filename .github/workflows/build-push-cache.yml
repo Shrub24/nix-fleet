@@ -2,13 +2,16 @@
 # remote builders rendered from the fleet inventory. Interface and prerequisites:
 # docs/contracts/ci.md.
 #
-#   uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v1
-#   with: { targets: .#checks }
+#   uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@<sha>
+#   with: { targets: .#checks, profile: ci }
 #   secrets: { BUILDER_SSH_KEY: "${{ secrets.FLEET_BUILDER_SSH_KEY }}" }
 #
-# The calling job must grant `contents: read` and `id-token: write`; a narrower grant
-# fails the call at startup. Outputs: `build` (success only when the build
-# completed), `systems`, `runner`, `runner_system` (a label and a Nix system).
+# The coordinator's builder and cache configuration is resolved from this workflow
+# file's own revision (`job.workflow_sha`), so a caller pins one reference and gets
+# matching machinery; its own flake stays independent. The calling job must grant
+# `contents: read` and `id-token: write`; a narrower grant fails the call at
+# startup. Outputs: `build` (success only when the build completed), `systems`,
+# `runner`, `runner_system` (a label and a Nix system).
 name: build-push-cache
 permissions:
   contents: read
@@ -26,8 +29,8 @@ on:
         description: "Target systems (space-separated); independent of coordinator architecture"
         required: false
         default: "x86_64-linux aarch64-linux"
-      builder_attr:
-        description: "Builder profile package; empty disables remote builders"
+      profile:
+        description: "Fleet builder profile the coordinator renders"
         required: false
         default: "ci"
       targets:
@@ -77,8 +80,8 @@ on:
         type: string
         required: false
         default: ""
-      builder_attr:
-        description: "Builder profile package; empty disables remote builders"
+      profile:
+        description: "Fleet builder profile the coordinator renders"
         type: string
         required: false
         default: "ci"
@@ -126,45 +129,13 @@ on:
 
 jobs:
   prepare:
+    # Selection only: no checkout and no Nix, so a caller's flake is untouched here.
     runs-on: ubuntu-latest
     outputs:
       systems: ${{ steps.systems.outputs.systems }}
       runner: ${{ steps.systems.outputs.runner }}
       runner_system: ${{ inputs.runner_system }}
-      ts-client-id: ${{ steps.tailscale.outputs.client-id }}
-      ts-audience: ${{ steps.tailscale.outputs.audience }}
     steps:
-      - name: Check out repository
-        if: ${{ inputs.tailnet && inputs.ts_client_id == '' }}
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.revision }}
-
-      - name: Install Nix
-        if: ${{ inputs.tailnet && inputs.ts_client_id == '' }}
-        uses: NixOS/nix-installer-action@v1
-
-      - name: Resolve public Tailscale identity
-        if: ${{ inputs.tailnet }}
-        id: tailscale
-        env:
-          CLIENT_ID: ${{ inputs.ts_client_id }}
-          AUDIENCE: ${{ inputs.ts_audience }}
-        run: |
-          if [ -z "$CLIENT_ID" ]; then
-            metadata=$(nix build --no-link --print-out-paths .#packages.x86_64-linux.ci-tailscale)
-            CLIENT_ID=$(jq -er '.clientId' "$metadata")
-            if [ -z "$AUDIENCE" ]; then
-              AUDIENCE=$(jq -er '.audience' "$metadata")
-            fi
-          elif [ -z "$AUDIENCE" ]; then
-            AUDIENCE="api.tailscale.com/$CLIENT_ID"
-          fi
-          [[ "$CLIENT_ID" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::ci: invalid Tailscale client ID"; exit 1; }
-          [[ -n "$AUDIENCE" && "$AUDIENCE" != *[[:space:]]* ]] || { echo "::error::ci: invalid Tailscale audience"; exit 1; }
-          echo "client-id=$CLIENT_ID" >> "$GITHUB_OUTPUT"
-          echo "audience=$AUDIENCE" >> "$GITHUB_OUTPUT"
-
       - name: Select coordinator and target systems
         id: systems
         env:
@@ -201,86 +172,87 @@ jobs:
         with:
           ref: ${{ inputs.revision }}
 
+      - name: Install Nix
+        uses: NixOS/nix-installer-action@v1
+        with:
+          # The bootstrap cache: it must exist before the coordinator can be
+          # resolved, so these two values are the only fleet facts stated here.
+          # docs/contracts/ci.md names the check that keeps them honest.
+          extra-conf: |
+            extra-substituters = https://cache.shrublab.xyz
+            extra-trusted-public-keys = nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A=
+
+      - name: Install the fleet coordinator from this workflow's revision
+        id: coordinator
+        env:
+          FLEET_REPO: ${{ job.workflow_repository }}
+          FLEET_SHA: ${{ job.workflow_sha }}
+          RUNNER_SYSTEM: ${{ inputs.runner_system }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          [ -n "$PROFILE" ] || { echo "::error::ci: a profile is required"; exit 1; }
+          # job.workflow_sha is the commit that defines this reusable workflow, so the
+          # machinery and its builder/cache facts cannot disagree. Substitution is the
+          # normal path; a miss is an ordinary local build, not a failure.
+          coord=$(nix build --no-link --print-out-paths \
+            "github:${FLEET_REPO}@${FLEET_SHA}#packages.${RUNNER_SYSTEM}.ci-coordinator-${PROFILE}")
+          echo "coordinator=$coord" >> "$GITHUB_OUTPUT"
+          sudo "$coord/install.sh"
+
+      - name: Resolve the tailnet identity
+        id: tailscale
+        if: ${{ inputs.tailnet }}
+        env:
+          COORDINATOR: ${{ steps.coordinator.outputs.coordinator }}
+          OVERRIDE_ID: ${{ inputs.ts_client_id }}
+          OVERRIDE_AUDIENCE: ${{ inputs.ts_audience }}
+        run: |
+          set -euo pipefail
+          client_id=$OVERRIDE_ID
+          audience=$OVERRIDE_AUDIENCE
+          if [ -z "$client_id" ]; then
+            client_id=$(jq -er '.clientId' "$COORDINATOR/tailscale.json")
+            if [ -z "$audience" ]; then
+              audience=$(jq -er '.audience' "$COORDINATOR/tailscale.json")
+            fi
+          elif [ -z "$audience" ]; then
+            audience="api.tailscale.com/$client_id"
+          fi
+          [[ "$client_id" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::ci: invalid Tailscale client ID"; exit 1; }
+          [[ -n "$audience" && "$audience" != *[[:space:]]* ]] || { echo "::error::ci: invalid Tailscale audience"; exit 1; }
+          echo "client-id=$client_id" >> "$GITHUB_OUTPUT"
+          echo "audience=$audience" >> "$GITHUB_OUTPUT"
+
       - name: Join tailnet (fleet-host builders)
-        # Registry MagicDNS names need the tailnet; the OIDC exchange means no
-        # long-lived OAuth secret.
         if: ${{ inputs.tailnet }}
         uses: tailscale/github-action@v4
         with:
-          oauth-client-id: ${{ needs.prepare.outputs.ts-client-id }}
-          audience: ${{ needs.prepare.outputs.ts-audience }}
+          oauth-client-id: ${{ steps.tailscale.outputs.client-id }}
+          audience: ${{ steps.tailscale.outputs.audience }}
           tags: tag:ci
 
-      - name: Install Nix
-        uses: NixOS/nix-installer-action@v1
-
-      - name: Install fleet builder artifacts from the registry
-        if: ${{ inputs.builder_attr != '' }}
-        # Installs the rendered profile bundle; the registry holds the coordinates.
-        run: |
-          BUNDLE=$(nix build --no-link --print-out-paths \
-            ".#packages.${{ inputs.runner_system }}.${{ inputs.builder_attr }}")
-          mkdir -p ~/.ssh
-          sudo cp "$BUNDLE/known_hosts" /etc/ssh/ssh_known_hosts
-          cat "$BUNDLE/ssh_config" >> ~/.ssh/config
-          cp "$BUNDLE/machines" /tmp/nix-builders
-
-      - name: Set up coordinator SSH key
-        if: ${{ inputs.builder_attr != '' }}
+      - name: Install the builder SSH identity
         env:
           BUILDER_KEY: ${{ secrets.BUILDER_SSH_KEY || secrets.FLEET_BUILDER_SSH_KEY }}
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$BUILDER_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-
-      - name: Verify the selected builders answer before scheduling
-        if: ${{ inputs.builder_attr != '' }}
-        # Prove dial-in here: unreachable builders surface as "platform mismatch".
-        env:
-          SYSTEMS: ${{ needs.prepare.outputs.systems }}
-          COORDINATOR: ${{ inputs.runner_system }}
-        run: |
           set -euo pipefail
-          # machines line: <uri> <systems> <key> <maxjobs> <speedfactor> <features> <mandatory>
-          reachable=""
-          while read -r uri systems _rest; do
-            if [ -z "$uri" ]; then
-              continue
-            fi
-            host=${uri#ssh-ng://}
-            host=${host#ssh://}
-            if ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$host" true; then
-              echo "builder ok: $host ($systems)"
-              reachable="$reachable ${systems//,/ }"
-            else
-              echo "::warning::ci: builder '$host' did not answer ssh (serves $systems)"
-            fi
-          done < /tmp/nix-builders
-
-          uncovered=""
-          for system in $SYSTEMS; do
-            if [ "$system" = "$COORDINATOR" ]; then
-              continue
-            fi
-            case " $reachable " in
-              *" $system "*) ;;
-              *) uncovered="$uncovered $system" ;;
-            esac
-          done
-          if [ -n "$uncovered" ]; then
-            echo "::error::ci: no reachable builder serves:$uncovered (coordinator is $COORDINATOR)"
-            exit 1
-          fi
+          [ -n "$BUILDER_KEY" ] || { echo "::error::ci: no builder key; pass secrets.BUILDER_SSH_KEY"; exit 1; }
+          # 0640 root:runner rather than 0600: the identity then works whichever
+          # context opens the session, and every later run reports which one did.
+          (umask 0027; printf '%s\n' "$BUILDER_KEY" | sudo tee /etc/nix/builder_ed25519 > /dev/null)
+          sudo chown root:runner /etc/nix/builder_ed25519
+          sudo chmod 0640 /etc/nix/builder_ed25519
 
       - name: Resolve cache API URL
-        # An override: the fleet contract already carries this coordinate.
         id: cache-url
+        env:
+          COORDINATOR: ${{ steps.coordinator.outputs.coordinator }}
         run: |
+          set -euo pipefail
           url='${{ inputs.cache_api_url }}'
           if [ -z "$url" ]; then
-            bundle=$(nix build --no-link --print-out-paths ".#packages.${{ inputs.runner_system }}.cache-api-url")
-            url=$(cat "$bundle")
+            url=$(cat "$COORDINATOR/cache-api-url")
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
@@ -292,17 +264,13 @@ jobs:
       - name: Build with the selected builder profile
         id: build
         env:
-          BUILDER_ATTR: ${{ inputs.builder_attr }}
           SYSTEMS: ${{ needs.prepare.outputs.systems }}
           TARGETS: ${{ inputs.targets }}
         run: |
-          builders=""
-          if [ -n "$BUILDER_ATTR" ]; then
-            builders="@/tmp/nix-builders"
-          fi
+          # Builders come from the coordinator (/etc/nix/machines); only runner policy
+          # stays here.
+          date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/build-start
           export NIX_CONFIG="${NIX_CONFIG:-}
-          builders = $builders
-          builders-use-substitutes = true
           max-jobs = 1"
           # Stream diagnostics: a runner shutdown may prevent artifact upload.
           python3 -u - <<'PY' &
@@ -344,3 +312,36 @@ jobs:
             --eval-workers 2 --eval-max-memory-size 3072 --max-jobs 4 \
             --skip-cached --systems "$SYSTEMS" --flake "${TARGETS:-.#checks}"
           echo "outcome=success" >> "$GITHUB_OUTPUT"
+
+      - name: Report builders and realisations
+        if: always()
+        # Reporting, not a gate: an unavailable builder is a fact about this run, and
+        # sustained failure belongs to fleet telemetry rather than a pre-flight veto.
+        run: |
+          set -uo pipefail
+          {
+            echo "### Build report"
+            echo ""
+            echo "- builder configuration: \`$(nix config show builders)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while read -r uri systems _rest; do
+            [ -n "$uri" ] || continue
+            host=${uri#ssh-ng://}
+            for context in runner root; do
+              if [ "$context" = root ]; then
+                launcher=(sudo)
+              else
+                launcher=()
+              fi
+              if out=$("${launcher[@]}" ssh -n -o BatchMode=yes -o ConnectTimeout=8 \
+                  -o StrictHostKeyChecking=accept-new "$host" true 2>&1); then
+                echo "- \`$host\` ($systems): $context ssh ok" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "- \`$host\` ($systems): $context ssh failed — ${out%%$'\n'*}" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            done
+          done < /etc/nix/machines
+          if [ -e /tmp/build-start ]; then
+            realised=$(find /nix/var/log/nix/drvs -name '*.drv.bz2' -newer /tmp/build-start | wc -l)
+            echo "- derivations realised during the build: \`$realised\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
