@@ -64,13 +64,13 @@ jobs:
       closure: ${{ steps.scope.outputs.closure }}
     steps:
       - name: Check out the source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
 
       - name: Install Nix
-        uses: NixOS/nix-installer-action@v1
+        uses: NixOS/nix-installer-action@b3dedba4be0390a6e4c9d1c8e1a0494bf955947c # v1
 
       - name: Carry the current main
         # Merging keeps the source head reachable and makes the candidate landable.
@@ -124,7 +124,7 @@ jobs:
           git bundle create "$RUNNER_TEMP/candidate.bundle" $range
 
       - name: Upload the candidate bundle
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: candidate-bundle
           path: ${{ runner.temp }}/candidate.bundle
@@ -139,14 +139,14 @@ jobs:
       contents: write
     steps:
       - name: Check out the default branch
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Download the candidate bundle
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: candidate-bundle
           path: ${{ runner.temp }}
@@ -208,7 +208,7 @@ jobs:
     steps:
       - name: Mint the automation token
         id: app
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ vars.AUTOMATION_APP_ID }}
           private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}

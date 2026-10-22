@@ -91,12 +91,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the revision to pin
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.revision || github.sha }}
 
       - name: Install Nix
-        uses: NixOS/nix-installer-action@v1
+        uses: NixOS/nix-installer-action@b3dedba4be0390a6e4c9d1c8e1a0494bf955947c # v1
 
       # The coordinator pattern: the fleet revision is the one that defines this
       # workflow, so coordinates come from nix-fleet and only the subject comes from
@@ -125,7 +125,7 @@ jobs:
           echo "audience=$(jq -er '.audience' "$metadata")" >> "$GITHUB_OUTPUT"
 
       - name: Join tailnet (cache write API)
-        uses: tailscale/github-action@v4
+        uses: tailscale/github-action@99a8333667fff04fdd6cffb46dfd409f8329a7bf # v4
         with:
           oauth-client-id: ${{ steps.ts.outputs.client-id }}
           audience: ${{ steps.ts.outputs.audience }}
@@ -147,7 +147,7 @@ jobs:
 
       - name: Configure the cache client
         id: niks3
-        uses: Mic92/niks3-action@v1
+        uses: Mic92/niks3-action@6d24bc1d87acdfac8e5dc3266f7b28ae99051adf # v1
         with:
           server-url: ${{ steps.api.outputs.url }}
           skip-push: true

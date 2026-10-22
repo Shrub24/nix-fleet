@@ -169,12 +169,12 @@ jobs:
       outcome: ${{ steps.build.outputs.outcome }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.revision }}
 
       - name: Install Nix
-        uses: NixOS/nix-installer-action@v1
+        uses: NixOS/nix-installer-action@b3dedba4be0390a6e4c9d1c8e1a0494bf955947c # v1
         with:
           # The bootstrap cache: it must exist before the coordinator can be
           # resolved, so these two values are the only fleet facts stated here.
@@ -232,7 +232,7 @@ jobs:
 
       - name: Join tailnet (fleet-host builders)
         if: ${{ inputs.tailnet }}
-        uses: tailscale/github-action@v4
+        uses: tailscale/github-action@99a8333667fff04fdd6cffb46dfd409f8329a7bf # v4
         with:
           oauth-client-id: ${{ steps.tailscale.outputs.client-id }}
           audience: ${{ steps.tailscale.outputs.audience }}
@@ -264,7 +264,7 @@ jobs:
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Configure cache (substituter + OIDC post-build-hook)
-        uses: Mic92/niks3-action@v1
+        uses: Mic92/niks3-action@6d24bc1d87acdfac8e5dc3266f7b28ae99051adf # v1
         with:
           server-url: ${{ steps.cache-url.outputs.url }}
 

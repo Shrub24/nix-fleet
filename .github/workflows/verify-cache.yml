@@ -50,12 +50,12 @@ jobs:
       cache: ${{ steps.cache.outputs.url }}
     steps:
       - name: Check out the revision under test
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.revision || github.sha }}
 
       - name: Install Nix
-        uses: NixOS/nix-installer-action@v1
+        uses: NixOS/nix-installer-action@b3dedba4be0390a6e4c9d1c8e1a0494bf955947c # v1
 
       # The fleet revision that defines this workflow supplies the cache route, so a
       # caller needs no fleet input and no fleet artifact in its own flake.
