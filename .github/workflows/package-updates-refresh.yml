@@ -87,13 +87,13 @@ jobs:
           echo "patch=true" >> "$GITHUB_OUTPUT"
 
       - name: Evaluate the refreshed tree
-        id: evaluate
-        # The App key's job publishes whatever this step approves, so a skipped or
-        # failed evaluation publishes nothing.
         if: ${{ steps.propose.outputs.patch == 'true' }}
-        run: |
-          nix flake check --no-build --no-write-lock-file
-          echo "publish=true" >> "$GITHUB_OUTPUT"
+        uses: $/.github/actions/validate-flake
+
+      - name: Approve the evaluated proposal
+        id: evaluate
+        if: ${{ success() && steps.propose.outputs.patch == 'true' }}
+        run: echo "publish=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload the proposal
         if: always()

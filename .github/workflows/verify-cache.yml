@@ -16,10 +16,15 @@ on:
         required: false
         default: ""
       targets:
-        description: "Flake selection to verify; one root per attribute (defaults to .#packages)"
+        description: "Flake selection whose <targets>.<system>.<subject> is verified"
         type: string
         required: false
         default: ".#packages"
+      subject:
+        description: "Attribute of each system that names the aggregate to verify; the one pin-cache pins"
+        type: string
+        required: false
+        default: "cache-root"
       systems:
         description: "Target systems, space-separated"
         type: string
@@ -81,26 +86,32 @@ jobs:
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
-      - name: Report whether the cache serves every realised root
+      - name: Report whether the cache serves the pinned root
         env:
           SYSTEMS: ${{ inputs.systems || 'x86_64-linux aarch64-linux' }}
           TARGETS: ${{ inputs.targets || '.#packages' }}
+          SUBJECT: ${{ inputs.subject || 'cache-root' }}
           CACHE: ${{ steps.cache.outputs.url }}
         run: |
           set -euo pipefail
           missing=0
           checked=0
           for system in $SYSTEMS; do
-            roots=$(nix eval --raw "$TARGETS.$system" \
-              --apply 'cs: builtins.concatStringsSep "\n" (builtins.map (n: (builtins.getAttr n cs).outPath) (builtins.attrNames cs))')
-            while IFS= read -r path; do
-              [ -n "$path" ] || continue
-              checked=$((checked + 1))
-              if ! nix path-info --store "$CACHE" "$path" >/dev/null 2>&1; then
-                echo "::notice::verify-cache: $CACHE does not serve $path ($system)"
-                missing=$((missing + 1))
-              fi
-            done <<< "$roots"
+            path=$(nix eval --raw "$TARGETS.$system.$SUBJECT.outPath")
+            checked=$((checked + 1))
+            # Only "not valid" is a miss; any other failure is this job's own.
+            if ! err=$(nix path-info --store "$CACHE" "$path" 2>&1 >/dev/null); then
+              case "$err" in
+                *"is not valid"*)
+                  echo "::notice::verify-cache: $CACHE does not serve $path ($system)"
+                  missing=$((missing + 1))
+                  ;;
+                *)
+                  echo "::error::verify-cache: store query failed for $path ($system): $err"
+                  exit 1
+                  ;;
+              esac
+            fi
           done
           {
             echo "### Cache status of \`${GITHUB_SHA}\` in $CACHE"
@@ -111,7 +122,7 @@ jobs:
           # Coverage is reported, never enforced: presence is asserted fail-closed by
           # pin-cache.yml at promotion. Only a failure of this job's own work is red.
           if [ "$missing" -gt 0 ]; then
-            echo "::notice::verify-cache: $missing of $checked store path(s) missing from $CACHE; pin-cache asserts presence at promotion"
+            echo "::notice::verify-cache: $missing of $checked pinned root(s) missing from $CACHE; pin-cache asserts presence at promotion"
             exit 0
           fi
-          echo "verify-cache: $CACHE serves every root of $TARGETS for $SYSTEMS ($checked roots)"
+          echo "verify-cache: $CACHE serves $TARGETS.<system>.$SUBJECT for $SYSTEMS ($checked roots)"

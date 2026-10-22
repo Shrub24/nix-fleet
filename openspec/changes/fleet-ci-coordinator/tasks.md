@@ -19,7 +19,7 @@
 - [x] 2.1 Resolve the coordinator from `job.workflow_repository` /
       `job.workflow_sha` and run its installer
 - [x] 2.2 Install Nix with the public cache preconfigured
-- [x] 2.3 Write the builder identity to `/etc/nix/builder_ed25519` (`0640`)
+- [x] 2.3 Write the builder identity to `/etc/nix/builder_ed25519` (`0600`, runner-owned)
 - [x] 2.4 Resolve the tailnet identity and cache API URL from the coordinator,
       keeping the input overrides
 - [x] 2.5 Remove `builders` from the workflow's `NIX_CONFIG`; keep `max-jobs = 1`
@@ -59,8 +59,8 @@
       only the builder key
 - [x] 5.4 Confirm builder use builder-side rather than from the run log
       (home-forge accepted `nixbuild (trusted)` **and** `root (trusted)` sessions in
-      run 39543925779's window and wrote 7 derivation logs, so the `0640 root:runner`
-      identity works from both contexts; the coordinator's log shows neither)
+      run 39543925779's window and wrote 7 derivation logs, which does not show which
+      Unix user supplied the key (the earlier `0640 root:runner` mode was replaced); the coordinator's log shows neither)
 
 ## 6. Deferred
 

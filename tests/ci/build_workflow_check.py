@@ -71,7 +71,10 @@ assert join["with"]["tags"] == "tag:ci"
 
 key = steps["Install the builder SSH identity"]
 assert "/etc/nix/builder_ed25519" in key["run"]
-assert "chmod 0640" in key["run"], "the identity must not depend on the calling context"
+assert "chmod 0600" in key["run"] and "0640" not in key["run"].replace("# ", ""), (
+    "OpenSSH rejects a group-readable key owned by its loader"
+)
+assert 'chown "$(id -un):$(id -gn)"' in key["run"], "the runner owns the identity"
 
 assert steps["Resolve cache API URL"]["env"]["COORDINATOR"] == "${{ steps.coordinator.outputs.coordinator }}"
 
@@ -178,6 +181,9 @@ with tempfile.TemporaryDirectory() as directory:
                 "PATH": f"{root}:{os.environ['PATH']}",
                 "SYSTEMS": systems,
                 "TARGETS": targets,
+                "FLEET_REPO": "Shrub24/nix-fleet",
+                "FLEET_SHA": "f" * 40,
+                "RUNNER_SYSTEM": "aarch64-linux",
                 "NIX_CONFIG": "post-build-hook = /action/hook",
                 "CAPTURE_CONFIG": str(config_file),
                 "CAPTURE_ARGS": str(args_file),
@@ -198,7 +204,7 @@ with tempfile.TemporaryDirectory() as directory:
             "max-jobs = 1",
         ], config_file.read_text()
         assert args_file.read_text().splitlines() == [
-            "run", "nixpkgs#nix-fast-build", "--", "--eval-workers", "2",
+            "run", "github:Shrub24/nix-fleet/" + "f" * 40 + "#packages.aarch64-linux.nix-fast-build", "--", "--eval-workers", "2",
             "--eval-max-memory-size", "3072", "--max-jobs", "4", "--skip-cached",
             "--systems", systems, "--flake", targets or ".#checks",
         ]

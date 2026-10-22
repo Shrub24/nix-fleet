@@ -21,8 +21,9 @@ assert not any(step.get("with", {}).get("path") == "trusted" for step in candida
 
 consistency = workflows["validate"]["jobs"]["consistency"]["steps"]
 trusted = next(step["with"] for step in consistency if step.get("with", {}).get("path") == "trusted")
-assert trusted["repository"] == "${{ job.workflow_repository }}" and trusted["ref"] == "main", (
-    "the consistency guard must remain independent of the revision under test"
+assert trusted["repository"] == "${{ job.workflow_repository }}"
+assert trusted["ref"] == "${{ github.repository == job.workflow_repository && 'main' || job.workflow_sha }}", (
+    "the fleet's own revisions use the default branch; external callers use their pinned revision"
 )
 assert trusted["persist-credentials"] == "false"
 guard = next(step for step in consistency if step.get("uses") == "./trusted/.github/actions/prepare-candidate")

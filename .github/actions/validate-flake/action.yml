@@ -1,0 +1,14 @@
+name: Validate flake
+description: Evaluate a flake's outputs on all systems without building its checks.
+inputs:
+  flake:
+    description: Flake directory or reference to evaluate
+    default: .
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GITHUB_ACTION_PATH: ${{ github.action_path }}
+        FLAKE: ${{ inputs.flake }}
+      run: bash "$GITHUB_ACTION_PATH/validate-flake.sh" "${FLAKE:-.}"

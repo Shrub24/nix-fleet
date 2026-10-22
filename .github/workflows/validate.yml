@@ -50,8 +50,9 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Evaluate all systems
-        working-directory: target
-        run: nix flake check --no-build --no-write-lock-file --all-systems
+        uses: $/.github/actions/validate-flake
+        with:
+          flake: target
 
   consistency:
     if: ${{ inputs.generated_files == 'check' }}
@@ -63,12 +64,13 @@ jobs:
           ref: ${{ inputs.revision }}
           path: target
 
-      - name: Check out the preparation action from the fleet's default branch
-        # The consistency guard is independent of the revision under test.
+      - name: Check out the preparation action
+        # The fleet's own revisions are guarded by its default branch; any other caller
+        # runs the action bundled with the workflow revision it pinned.
         uses: actions/checkout@v7
         with:
           repository: ${{ job.workflow_repository }}
-          ref: main
+          ref: ${{ github.repository == job.workflow_repository && 'main' || job.workflow_sha }}
           path: trusted
           sparse-checkout: .github/actions/prepare-candidate
           persist-credentials: false

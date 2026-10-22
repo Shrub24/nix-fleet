@@ -1,6 +1,6 @@
 # nvfetcher source-metadata refresh: scheduled regeneration, flake validation,
 # PR when the generated files change. Copy into the consumer's
-# .github/workflows/ and adjust the nvfetcher working directory if needed.
+# .github/workflows/, set <full-sha> to the fleet revision, and adjust paths if needed.
 name: nvfetcher-refresh
 on:
   schedule:
@@ -29,11 +29,9 @@ jobs:
         run: nix run nixpkgs#nvfetcher -- -o pkgs/_sources
 
       - name: Validate flake after regeneration
-        # path: is deliberate: regenerated sources may be untracked, and the
-        # Git-tree form (.#) would omit them. Nix reads through the index in
-        # jj-colocated repos, so `jj st` would also fix this — a runner has
-        # neither; path: is the portable form.
-        run: nix flake check --no-build --no-write-lock-file path:.
+        uses: Shrub24/nix-fleet/.github/actions/validate-flake@<full-sha>
+        with:
+          flake: path:.
 
       - name: Check for generated-file changes
         id: diff

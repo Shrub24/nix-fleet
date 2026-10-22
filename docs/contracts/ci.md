@@ -5,10 +5,20 @@ hosts use. No builder coordinates live in workflow files or repo variables.
 
 ## Validation gates
 
-On every push and pull request, `ci.yml` checks formatting and runs
-`nix flake check --no-build --no-write-lock-file --all-systems`. This evaluates
-the declared checks for both supported systems without building their outputs;
-the formatter check is built separately. Closure coverage for the fleet's own packages
+On every push and pull request, `ci.yml` checks formatting and runs the
+`validate-flake` action, which evaluates the declared outputs for both supported
+systems without building them; the formatter check is built separately. The
+action runs two stages against one store: a writable `nix eval` that forces every
+derivation the check will evaluate, then stock
+`nix flake check --no-build --no-write-lock-file --all-systems`, which owns the
+verdict. The first stage exists because `--no-build` puts `nix flake check` in
+read-only mode, where coercing a path to a store path computes the name and
+writes nothing — so a dependency that reads such a path during evaluation (a
+wrapper's `${pkgs.path}`, a filtered lockfile) fails on a cold store and passes on
+a warm one. Import from derivation is disabled in both stages; priming writes
+source paths and derivation descriptions, never check outputs, host closures or VM tests. The action is
+self-referenced, so a consumer calling `validate.yml` runs this command at the
+revision it pinned. Closure coverage for the fleet's own packages
 is the `checks.packages` aggregate: its entries are `config.packages` verbatim, so a
 build of the checks realises every published package. Platform-independent policy leaves
 are registered once under `checks.x86_64-linux`; checks whose result can depend
@@ -17,6 +27,42 @@ applies: a check requiring `kvm` is registered only where builders provide it,
 so the disposable Podman VM check is x86_64-only. The fixture toplevel is
 evaluated for both architectures. Adding a check adds evaluation coverage
 without editing the workflow.
+
+The package refresh producer and local pre-push hook use the same evaluator.
+Run it locally from a nix-fleet checkout (requires Nix, Bash and jq):
+
+```sh
+bash .github/actions/validate-flake/validate-flake.sh .
+```
+
+For a consumer without a fleet checkout, resolve the pinned source and run that
+same script against its flake:
+
+```sh
+fleet=$(nix flake prefetch --json github:Shrub24/nix-fleet/<full-sha> | jq -r .storePath)
+bash "$fleet/.github/actions/validate-flake/validate-flake.sh" .
+```
+
+The nvfetcher workflow template pins the `validate-flake` action at that same
+fleet SHA and passes `flake: path:.` so untracked generated sources are included.
+Replace its `<full-sha>` placeholder when adopting the template. Validation failure
+prevents proposal publication; changing the evaluation entry point grants no new
+credentials.
+
+**What `validate.yml` requires of a caller.** The build coordinator is usable by any
+flake; the validation and update suite is opinionated and expects:
+
+- `checks.x86_64-linux.treefmt` (the formatter check, built separately);
+- a flake that evaluates with `nix flake check --no-build --all-systems`;
+- with `generated_files: check` (and in candidate preparation), a `write-flake` app
+  that regenerates only `flake.nix` and `flake.lock`.
+
+These are the fleet's standard, not parameters: a caller that cannot meet them does not
+adopt this suite and uses `build-push-cache.yml` alone.
+
+An externally pinned `validate.yml` runs the preparation action bundled with its own
+revision; only the fleet's own revisions are checked by the default-branch action, so
+a pull request cannot supply the procedure that judges it.
 
 Building checks against the fleet's configured builders and cache is a separate
 path: the manually dispatched fleet-build job uses `nix-fast-build` and the
@@ -81,8 +127,8 @@ whether a revision is correct, so promotion rests on validation and the build.
 status of a commit is a fact rather than something to remember to ask for, and it
 reads only the public substituter route: substitution is public even
 though the write API is not, so it needs no tailnet identity, no OIDC and no
-secret. It asks `nix path-info` about each realised closure root rather than
-substituting the closure, because uploads are atomic per closure — a served root
+secret. It asks `nix path-info` about the pinned root (`<targets>.<system>.<subject>`)
+rather than substituting the closure, because uploads are atomic per closure — a served root
 means its closure was committed — and because a plain store on a fresh runner is
 already empty. It names every missing path and **exits 0 regardless** — misses are
 `::notice` lines and counts, never a failed job. The job fails only when its own work
@@ -90,8 +136,8 @@ fails (evaluation, the store query), so a broken cache client is not reported as
 cache that serves nothing. Presence is enforced fail-closed elsewhere: `pins create`
 refuses a path the cache does not hold.
 
-The selection is the **artefact set**, `.#packages` per system — what anything would
-actually substitute — not `.#checks`. A check answers a question about a revision and
+The selection is the **artefact set** under `.#packages`, reduced to the pinned
+root `cache-root` per system — not `.#checks`. A check answers a question about a revision and
 is rebuilt whenever its inputs move, so a selection containing checks changes on
 every commit: measured on the first live run, a docs-and-dependency push reported
 three unserved roots (`cache-root`, the `packages` aggregate, `treefmt-check`) while
@@ -265,7 +311,8 @@ grants less than the workflow needs.
 | `ts_client_id`    | Public client ID override; empty resolves the fleet CI identity                                                                                                                                                                                                                                                                                                                    |
 | `ts_audience`     | Public audience override; empty resolves the fleet default, or derives the audience from an overridden client ID                                                                                                                                                                                                                                                                   |
 
-**Versioning:** pin `v2`, or a commit; never `@main`. A tag marks a contract
+**Versioning:** pin a full commit SHA; never `@main`. Major tags are retained for
+legacy callers only (`v2` predates bundled actions and nested retention). A tag marks a contract
 change — `v1` is `build-push-cache` with `builder_attr`, `v2` is the reusable set
 with `profile` and the coordinator — so a tag bump is the same act as a contract
 bump, and `main` carries no promise. Because the coordinator resolves from the
@@ -304,7 +351,7 @@ The build job resolves its configuration from **the revision that defines this
 workflow**, not from the caller's flake:
 
 ```
-nix build github:<job.workflow_repository>@<job.workflow_sha>#packages.<runner_system>.ci-coordinator-<profile>
+nix build github:<job.workflow_repository>/<job.workflow_sha>#packages.<runner_system>.ci-coordinator-<profile>
 ```
 
 `job.workflow_sha` is the commit of the reusable workflow file, so a consumer
@@ -336,9 +383,11 @@ build fails if a forbidden setting appears. `substituters` must be written in
 its additive `extra-` form for the same reason.
 
 The SSH identity is _not_ in the artifact: the workflow writes it to
-`/etc/nix/builder_ed25519`, mode `0640` owned by `root:runner`, and the rendered
-`ssh_config` names that path. Both contexts can then open the session, and each
-run's report states which one did.
+`/etc/nix/builder_ed25519`, mode `0600` owned by the runner, and the rendered
+`ssh_config` names that path. The workflow writes it owned by the runner at mode
+`0600`: OpenSSH rejects a group-readable key owned by the user loading it, and root
+can read the file regardless of owner. Which context opens a builder session is not
+established by the report; see the observability note below.
 
 Client settings are read per invocation, so applying the configuration needs no
 `nix-daemon` restart. `install.sh` asserts this by reading `builders` back
@@ -357,13 +406,11 @@ local builds.
 Cache availability is an optimisation, not a prerequisite: a miss on the
 coordinator is an ordinary local build, not an error.
 
-Pinning and verification read the same promise: the published packages of each
-system, selected by `targets` (default `.#packages` in both). They differ in
-granularity because they answer different questions: `verify-cache` asks `nix
-path-info` about **every** attribute of the selection so a miss is named, while
-`pin-cache` needs **one** root per system, because a pin holds a name against one
-store path — selecting `.<subject>`, `cache-root` by default, a linkFarm whose
-closure is exactly the selection. A named root is part of the checked closure
+Pinning and verification read the same root: `<targets>.<system>.<subject>`
+(default `.#packages` and `cache-root`, in both workflows). `verify-cache` asks `nix
+path-info` whether the cache serves that root and `pin-cache` holds a name against
+it, so retention and its diagnostic cannot measure different promises. The root is
+a linkFarm whose closure is exactly the published packages. A named root is part of the checked closure
 (`checks.packages` asserts `cache-root`), so a revision the pipeline builds is a
 revision whose pin subject exists.
 
@@ -377,10 +424,22 @@ the same attribute, or point `subject` at an aggregate it already has.
 
 After the build — including after a failed one — the job reports what happened:
 the effective `builders` value, per-builder `runner` and `root` SSH results, and
-the number of derivations realised in the run. An unavailable builder is
+the number of build logs written on the runner. These are three different facts:
+what is _configured_ (the coordinator), what was _reachable_ when probed (SSH), and
+where derivations _ran_ (not established here — a run that built everything locally
+also reports reachable builders). An unavailable builder is
 **reported, not vetoed**: a pre-flight that refused to schedule would turn a
 transient builder outage into a blocked pipeline, and sustained builder health
 belongs to fleet telemetry rather than a per-run gate.
+
+The build job's `fleet-build-stage` concurrency group serialises builds **per calling
+repository**: GitHub scopes a group to the repository, so two repositories building at
+once share the builders without coordinating. Fleet-wide scheduling is deliberately
+not provided.
+
+The build engine (`nix-fast-build`) is resolved from the same fleet revision as the
+coordinator (`packages.<runner_system>.nix-fast-build`) rather than from the runner's
+registry, and is published in `cache-root` like any package.
 
 The workflow declares `contents: read` and `id-token: write` for direct dispatch.
 Reusable callers must grant the same permissions. Direct dispatch reads the
@@ -457,7 +516,7 @@ read-only cache verifier failed its join with `token exchange failed with status
 403` pointing at the credential, while the build job joined in the same run.
 Tailscale's claim rules hold one pattern per claim, so covering several workflows
 means one pattern with a wildcard rather than several entries — the credential
-matches `Shrub24/nix-fleet/.github/workflows/*@refs/heads/main`, with `subject`
+matches `Shrub24/nix-fleet/.github/workflows/*@*`, with `subject`
 left at the repository-and-branch form so the wildcard cannot reach another
 repository, another ref, or a pull request.
 
@@ -606,7 +665,7 @@ the affected GitHub secrets.
 Create one GitHub Actions OIDC trust credential in Tailscale with writable
 `auth_keys` scope and permission to issue `tag:ci` nodes. Restrict its claims
 to the intended repositories and workflows, for example
-`job_workflow_ref = Shrub24/nix-fleet/.github/workflows/*@refs/heads/main` with
+`job_workflow_ref = Shrub24/nix-fleet/.github/workflows/*@*` with
 `subject` at the repository-and-branch form. The claim rules hold one pattern per
 claim, so a second workflow is covered by widening that one value, not by adding
 an entry. Avoid assuming all repositories have the same name-shaped `sub` (see

@@ -158,7 +158,8 @@ jobs:
   build:
     needs: prepare
     runs-on: ${{ needs.prepare.outputs.runner }}
-    # One build at a time; `queue: max` keeps pending runs. This group is declared
+    # One build at a time per calling repository (concurrency is repository-scoped);
+    # `queue: max` keeps pending runs. This group is declared
     # here and nowhere else: a job cannot acquire a group its own run holds.
     concurrency:
       group: fleet-build-stage
@@ -243,11 +244,11 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "$BUILDER_KEY" ] || { echo "::error::ci: no builder key; pass secrets.BUILDER_SSH_KEY"; exit 1; }
-          # 0640 root:runner rather than 0600: the identity then works whichever
-          # context opens the session, and every later run reports which one did.
-          (umask 0027; printf '%s\n' "$BUILDER_KEY" | sudo tee /etc/nix/builder_ed25519 > /dev/null)
-          sudo chown root:runner /etc/nix/builder_ed25519
-          sudo chmod 0640 /etc/nix/builder_ed25519
+          # Owned by the runner at 0600: OpenSSH rejects a group-readable key owned by
+          # the user loading it, and root reads any file regardless of owner.
+          (umask 0077; printf '%s\n' "$BUILDER_KEY" | sudo tee /etc/nix/builder_ed25519 > /dev/null)
+          sudo chown "$(id -un):$(id -gn)" /etc/nix/builder_ed25519
+          sudo chmod 0600 /etc/nix/builder_ed25519
 
       - name: Resolve cache API URL
         id: cache-url
@@ -271,6 +272,9 @@ jobs:
         env:
           SYSTEMS: ${{ needs.prepare.outputs.systems }}
           TARGETS: ${{ inputs.targets }}
+          FLEET_REPO: ${{ job.workflow_repository }}
+          FLEET_SHA: ${{ job.workflow_sha }}
+          RUNNER_SYSTEM: ${{ inputs.runner_system }}
         run: |
           # Builders come from the coordinator (/etc/nix/machines); only runner policy
           # stays here.
@@ -313,7 +317,8 @@ jobs:
           }
           trap stop_resources EXIT
 
-          nix run nixpkgs#nix-fast-build -- \
+          # The build engine comes from the fleet revision, not the runner's registry.
+          nix run "github:${FLEET_REPO}/${FLEET_SHA}#packages.${RUNNER_SYSTEM}.nix-fast-build" -- \
             --eval-workers 2 --eval-max-memory-size 3072 --max-jobs 4 \
             --skip-cached --systems "$SYSTEMS" --flake "${TARGETS:-.#checks}"
           echo "outcome=success" >> "$GITHUB_OUTPUT"
@@ -329,7 +334,7 @@ jobs:
           report() { echo "$1" | tee -a "$GITHUB_STEP_SUMMARY"; }
           report "### Build report"
           report ""
-          report "- builder configuration: \`$(nix config show builders)\`"
+          report "- builder configuration: \`$(nix config show builders)\` (configured, not proof of use)"
           if [ ! -s /etc/nix/machines ]; then
             report "- no builder configuration: the coordinator did not install"
             exit 0
@@ -352,6 +357,6 @@ jobs:
             done
           done < /etc/nix/machines
           if [ -e /tmp/build-start ]; then
-            realised=$(find /nix/var/log/nix/drvs -name '*.drv.bz2' -newer /tmp/build-start | wc -l)
-            report "- derivations realised during the build: \`$realised\`"
+            logs=$(find /nix/var/log/nix/drvs -name '*.drv.bz2' -newer /tmp/build-start | wc -l)
+            report "- build logs written on this runner: \`$logs\` (where derivations ran is not established by this report)"
           fi

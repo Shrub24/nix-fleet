@@ -233,7 +233,7 @@ same types.
 
 `.github/workflows/build-push-cache.yml` is a reusable workflow
 (`workflow_call`) with a direct-dispatch entry point. Consumers call it with
-`uses:` and pin a version tag; `.github/workflows/ci.yml` calls it for this
+`uses:` and pin a full commit SHA; `.github/workflows/ci.yml` calls it for this
 repository. The full interface lives in [docs/contracts/ci.md](docs/contracts/ci.md).
 
 One coordinator runs `nix-fast-build` against `.#checks`. `runner_system`
@@ -301,11 +301,11 @@ adds the substituter and its key to a host's `nix.conf` from that record, and th
 workflows read the rendered `packages.<system>.cache-*` artifacts, so nothing
 restates a hostname.
 
-`verify-cache` runs on every push to `main`: it asks `nix path-info` about each
-realised root of the artefact set (`.#packages` per system, not `.#checks` — a verdict
+`verify-cache` runs on every push to `main`: it asks `nix path-info` about the
+pinned root of each system (`.#packages.<system>.cache-root`, not `.#checks` — a verdict
 changes whenever its inputs do) and publishes the counts. It reports and never fails
 on a miss; presence is enforced by the pin. A promoted revision was built, so an
-unserved package root there is a publication that did not complete. A
+unserved pinned root there is a publication that did not complete. A
 revision that was built and then promoted also moves a rolling `last-known-good` pin
 per system, whose closure covers every published package; that is `pin-cache.yml`,
 owned by the promotion path rather than by verification.

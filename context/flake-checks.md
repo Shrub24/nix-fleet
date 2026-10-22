@@ -45,7 +45,7 @@ Platform-independent policy checks are registered once under `checks.x86_64-linu
 **Evidence:** confirmed
 **Source:** maintainer decision and `.github/workflows/ci.yml`, 2026-10-11
 
-Routine push and pull-request CI checks formatting and evaluates declared checks on all supported systems with `nix flake check --no-build`; it does not build every check output. Actual check builds use the manually dispatched fleet-build path, which exercises the selected builders and cache.
+Routine push and pull-request CI checks formatting and evaluates declared checks on all supported systems with the `validate-flake` action, which runs `nix flake check --no-build` and does not build every check output. Actual check builds use the manually dispatched fleet-build path, which exercises the selected builders and cache.
 
 **Reason:** building the entire check surface natively on the GitHub runner can spend over an hour compiling dependencies such as Vector while exercising neither the fleet's builder configuration nor its cache. Evaluation is the inexpensive routine gate; the fleet build path owns distribution and build acceptance.
 
@@ -129,14 +129,15 @@ setting drift).
 **Source:** `.github/workflows/build-push-cache.yml` (step `Report builders and realisations`), 2026-10-11
 
 The job reports the effective `builders` value, per-builder `runner` and `root`
-SSH results, and the number of derivations realised during the run. It does not
+SSH results, and the number of build logs written on the runner. It does not
 refuse to schedule when a builder is unreachable. A previous pre-flight dialled
 every builder and failed the job when a requested system had nowhere to build.
 
 **Reason:** a transient builder outage would become a blocked pipeline, and
-per-run gates duplicate what fleet telemetry does better over time. The reporting
-step also answers, every run, which context opens the builder session — the
-question a pre-flight could only assume.
+per-run gates duplicate what fleet telemetry does better over time. The report
+separates configured, reachable and used builders; only the first two are
+established, because a run that built everything locally also reports reachable
+builders.
 
 **Rejected alternatives:** the reachability gate (turned an outage into a
 failure); a build-forcing probe with `max-jobs = 0` (a correctness gate for
@@ -145,3 +146,65 @@ something the build itself reveals); custom failure watchers and notifications
 
 **Revisit when:** builds silently fall back to local execution often enough that
 the cache stops warming — then the signal needs to be a metric, not a refusal.
+
+## Evaluation writes source paths; the check still decides
+
+**Id:** b9097fc6-67c6-4751-9616-b7b48ca380b3
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** cold-store reproduction against `Shrub24/nix-dotfiles` at `3b8d99f8`, 2026-10-22
+
+`validate-flake` primes with a writable `nix eval` that forces the derivations an
+all-systems check evaluates, then runs stock `nix flake check --no-build` and
+takes its verdict. Priming writes source paths into the store and builds nothing;
+its own failure is a warning, never the verdict. Import from derivation is
+disabled in both stages. Local validation, PR validation and refresh producers
+use this same command; keeping the bare check in a producer would preserve the
+cold-store dependency precisely where newly updated dependencies first enter.
+
+**Reason:** `--no-build` puts `nix flake check` in read-only mode, where coercing a
+path to a store path computes the name and writes nothing. A dependency that read
+such a path during evaluation — nix-wrapper-modules' `${pkgs.path}` gemdir,
+uv2nix's filtered lockfile — failed with `path '…' is not valid` on a cold store and
+passed on a warm one, so the gate depended on runner history rather than on the
+revision. Writable evaluation is what `nix eval` does by default and is documented
+as instantiating the `.drv` closure of everything it references
+(`NixOS/nix#6323`); `nix flake check` forces the read-only mode instead, which
+dates to `a9d3524e1f` and is still open as a defect (`NixOS/nix#15448`, where a
+maintainer confirms read-only mode leaves the referenced store objects unwritten). Measured on that reproduction: the bare command fails in 11 s on a fresh
+store; priming (2m11s) then the same check passes (34 s) on that store; a
+malformed `packages` entry and a failing configuration assertion still fail.
+
+**Rejected alternatives:** plain `nix flake check` (builds every check, VM tests
+included, which is why `--no-build` exists); `nix build --dry-run` over a
+consumer's own targets (writable, but validates a selection rather than the whole
+flake output set); decoupling `--no-build` from read-only mode in Nix (the right
+long-term fix, and not available in a released Nix); allowing import from
+derivation in the gate (it would run builds in a job with no builder credentials
+and no platform for the other system).
+
+**Revisit when:** a released Nix decouples `--no-build` from read-only mode, or an
+output kind the prime does not force starts failing cold.
+
+## The builder key is runner-owned at 0600
+
+**Id:** 3d9a41c2-7b58-4e06-a1f3-92c8d05e6b17
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `.github/workflows/build-push-cache.yml` (step `Install the builder SSH identity`)
+
+The key at `/etc/nix/builder_ed25519` is owned by the runner, mode `0600`.
+
+**Reason:** OpenSSH rejects a private key with group or other bits only when the file
+is owned by the user loading it (`sshkey_perm_ok`, `st_uid == getuid()`). The earlier
+`0640 root:runner` key was therefore refused for root while loading for the runner.
+Root reads any file regardless of owner, so the runner-owned key serves both.
+
+**Rejected alternatives:** two `0600` copies (a second secret on disk for no gain);
+retaining `0640` on the belief that the builder-side `root` sessions proved it worked
+(they do not show which local user supplied the key).
+
+**Revisit when:** a builder session is shown to originate from a context that cannot
+read a runner-owned file.

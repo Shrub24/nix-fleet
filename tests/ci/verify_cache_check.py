@@ -47,39 +47,41 @@ assert "pin_name" not in str(workflow["on"]), "pinning inputs belong to pin-cach
 script = next(
     s
     for s in verify["steps"]
-    if s.get("name") == "Report whether the cache serves every realised root"
+    if s.get("name") == "Report whether the cache serves the pinned root"
 )["run"]
 
 with tempfile.TemporaryDirectory() as directory:
-    root = Path(directory)
-    stub = root / "nix"
+    root_dir = Path(directory)
+    stub = root_dir / "nix"
     stub.write_text(
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$CALLS"\n'
         'case "$1" in\n'
-        "  eval) if [ -n \"${CHAOS:-}\" ]; then exit 1; fi; printf '%s\\n' \"$ROOTS\" ;;\n"
-        '  path-info) case "$4" in *missing*) exit 1 ;; esac ;;\n'
+        "  eval) if [ -n \"${CHAOS:-}\" ]; then exit 1; fi; printf '%s' \"$ROOT\" ;;\n"
+        '  path-info) case "$4" in\n'
+        "    *missing*) echo \"error: path '$4' is not valid\" >&2; exit 1 ;;\n"
+        "    *unreachable*) echo 'error: unable to download https://cache.invalid' >&2; exit 1 ;;\n"
+        "  esac ;;\n"
         "esac\n"
     )
     stub.chmod(0o755)
-    calls = root / "calls"
-    summary = root / "summary"
+    calls = root_dir / "calls"
+    summary = root_dir / "summary"
 
-    def run(roots):
+    def run(root, systems="x86_64-linux aarch64-linux"):
         calls.write_text("")
         summary.write_text("")
         result = subprocess.run(
             ["bash", "-euo", "pipefail", "-c", script],
             env={
                 **os.environ,
-                "PATH": f"{root}:{os.environ['PATH']}",
-                "SYSTEMS": "x86_64-linux aarch64-linux",
+                "PATH": f"{root_dir}:{os.environ['PATH']}",
+                "SYSTEMS": systems,
                 "TARGETS": ".#packages",
+                "SUBJECT": "cache-root",
                 "CACHE": "https://cache.invalid",
-                "ROOTS": roots,
+                "ROOT": root,
                 "CALLS": str(calls),
-                # The step records its counts here, so a harness that omits this
-                # fails rather than silently skipping the report.
                 "GITHUB_STEP_SUMMARY": str(summary),
                 "GITHUB_SHA": "0" * 40,
             },
@@ -89,40 +91,38 @@ with tempfile.TemporaryDirectory() as directory:
         )
         return result, calls.read_text()
 
-    served = "/nix/store/aaaa-served\n/nix/store/bbbb-served"
-    result, log = run(served)
+    result, log = run("/nix/store/aaaa-served")
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "serves every root" in result.stdout, result.stdout
-    # The counts are what the run publishes.
-    assert "roots checked: 4" in summary.read_text(), summary.read_text()
+    assert "serves .#packages.<system>.cache-root" in result.stdout, result.stdout
+    assert "roots checked: 2" in summary.read_text(), summary.read_text()
     assert "unserved: 0" in summary.read_text(), summary.read_text()
-    assert "::error::" not in result.stdout, result.stdout
-    # One system checked would pass while proving half the claim.
-    assert ".#packages.x86_64-linux" in log and ".#packages.aarch64-linux" in log, log
+    # The subject is the one pin-cache pins, one per system.
+    assert ".#packages.x86_64-linux.cache-root.outPath" in log, log
+    assert ".#packages.aarch64-linux.cache-root.outPath" in log, log
     assert "https://cache.invalid" in log, log
 
-    # Coverage is a report, not a gate: a miss is named and the job stays green.
-    # The stub answers both systems alike, so one miss is reported twice.
-    result, _ = run(served + "\n/nix/store/cccc-missing")
+    # A miss is reported, never a failure.
+    result, _ = run("/nix/store/cccc-missing")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.count("/nix/store/cccc-missing") == 2, result.stdout
-    assert "::error::" not in result.stdout, result.stdout
-    assert "::notice::" in result.stdout, result.stdout
-    assert "2 of 6 store path(s) missing" in result.stdout, result.stdout
+    assert "::error::" not in result.stdout and "::notice::" in result.stdout, result.stdout
+    assert "2 of 2 pinned root(s) missing" in result.stdout, result.stdout
     assert "unserved: 2" in summary.read_text(), summary.read_text()
 
-    # The job fails only when its own work fails, so a broken cache client is not
-    # mistaken for a cache that serves nothing.
-    calls.write_text("")
+    # A store-query failure is this job's own, not a cache that serves nothing.
+    result, _ = run("/nix/store/dddd-unreachable")
+    assert result.returncode != 0, "an unreachable cache was reported as a miss"
+    assert "store query failed" in result.stdout, result.stdout
+
     broken = subprocess.run(
         ["bash", "-euo", "pipefail", "-c", script],
         env={
             **os.environ,
-            "PATH": f"{root}:{os.environ['PATH']}",
+            "PATH": f"{root_dir}:{os.environ['PATH']}",
             "SYSTEMS": "x86_64-linux",
             "TARGETS": ".#packages",
+            "SUBJECT": "cache-root",
             "CACHE": "https://cache.invalid",
-            "ROOTS": served,
+            "ROOT": "/nix/store/aaaa-served",
             "CALLS": str(calls),
             "CHAOS": "1",
             "GITHUB_STEP_SUMMARY": str(summary),
@@ -132,9 +132,9 @@ with tempfile.TemporaryDirectory() as directory:
         capture_output=True,
         timeout=30,
     )
-    assert broken.returncode != 0, "a failing tool reported itself as a clean run"
+    assert broken.returncode != 0, "a failing evaluation reported itself as a clean run"
 
 print(
-    "cache verification reports a served root, names a missing root without failing, "
-    "fails on its own errors, asks every system, and holds no cache credential"
+    "cache verification reads the pinned root of each system, reports a miss without failing, "
+    "fails on its own errors, and holds no cache credential"
 )

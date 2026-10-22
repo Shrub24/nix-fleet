@@ -29,7 +29,9 @@ the bundled `prepare-candidate` and `promote-candidate` composite actions.
    regeneration is refused rather than committed. The result is published with the workflow
    token as `refs/candidates/<pr>/<source>-<candidate>`; publishing a ref
    authorises nothing, because the token cannot post the required status.
-3. **Evaluate** (job `evaluate`). `nix flake check --no-build --no-write-lock-file --all-systems` on the candidate.
+3. **Evaluate** (job `evaluate`). The `validate-flake` action
+   ([ci.md](ci.md#validation-gates)) on the candidate: writable priming, then
+   stock `nix flake check --no-build --all-systems` for the verdict.
 4. **Build** (job `build`). `build-push-cache.yml` builds `.#checks` at the
    candidate revision on the fleet builders. Skipped when the source changes only
    `.github/workflows/**`.
@@ -166,7 +168,7 @@ its `automation` environment, the permission union the called jobs declare, and
 | Workflow                      | Called with                                                                                     | Consumer supplies                                                                |
 | ----------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | `build-push-cache.yml`        | `targets`, `profile`, `runner_system`, `systems`, `revision`, `cache_api_url`, tailnet identity | `BUILDER_SSH_KEY` secret                                                         |
-| `verify-cache.yml`            | `revision`, `targets`, `systems`, `runner_system`, `cache_url`                                  | nothing (no secret, no identity); a caller grants `contents: read`               |
+| `verify-cache.yml`            | `revision`, `targets`, `subject`, `systems`, `runner_system`, `cache_url`                       | nothing (no secret, no identity); a caller grants `contents: read`               |
 | `pin-cache.yml`               | `revision`, `pin_name`, `targets`, `systems`, `cache_api_url`, `runner_system`                  | `CACHE_PIN_NAME`; a caller grants `contents: read` + `id-token: write` (tailnet) |
 | `validate.yml`                | `revision`, `generated_files`                                                                   | nothing (no secret)                                                              |
 | `candidate.yml`               | `source_sha`, `source_pr`, `mode`, `precheck`, `targets`, `systems`, `runner_system`, `profile` | environment `automation`                                                         |
@@ -216,8 +218,8 @@ unserved roots are the derivations that commit changed, and the report names the
 alongside the counts. It reads the **public**
 substituter route only — substitution is public even though the write API is not —
 so it needs no tailnet identity, no OIDC and no secret, and it holds no cache
-client. It asks `nix path-info` about each realised closure root, naming every
-missing path; uploads are atomic per closure, so a served root means its closure
+client. It asks `nix path-info` about the pinned root of each system, naming
+every missing path; uploads are atomic per closure, so a served root means its closure
 was committed.
 
 Pinning is a separate reusable workflow: `promote-candidate.yml` calls

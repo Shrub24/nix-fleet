@@ -41,11 +41,12 @@ conventional paths; the installer may use `dirname "$0"`.
 ## Decision 4 — the SSH identity is written by the workflow, not the artifact
 
 The identity is a secret and the artifact is a published, world-readable
-derivation. The workflow writes it to `/etc/nix/builder_ed25519`, `0640`
-`root:runner`, and the rendered `ssh_config` names that path. `0640` rather than
-`0600` means the identity works whichever context opens the builder session, and
-each run's report states which one did — replacing an inference with a
-measurement on every run.
+derivation. The workflow writes it to `/etc/nix/builder_ed25519`, `0600` owned by
+the runner, and the rendered `ssh_config` names that path. A group-readable key is
+not used: OpenSSH rejects one owned by the user loading it, so `0640 root:runner`
+would have failed for root; a runner-owned `0600` key loads for the runner and is
+readable by root. The report states which contexts can reach a builder, not which
+one opened a session.
 
 Measured while establishing this: fleet CI reaches builders over plain SSH
 (`sshd` on port 22) authenticated by the key, not Tailscale SSH, and the

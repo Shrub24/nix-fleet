@@ -26,9 +26,10 @@ gates a promotion). Values: `fleet.services."niks3-write"`.
 - `pins create` for a path the cache does not hold fails by name — a second
   assertion that the revision really was published.
 
-The shape that follows: **one rolling name per system, moved only after a green
-verification.** A revision that fails verification never moves it, so the pin is a
-last-known-good pointer by construction.
+The shape that follows: **one rolling name per system, moved by promotion.** A
+revision that was not built never moves it, because `pins create` refuses a path the
+cache does not hold, so the pin is a last-known-good pointer by construction.
+`verify-cache` reads the same root as a diagnostic and never gates the move.
 
 ## 1. Prerequisites
 
@@ -101,7 +102,7 @@ map of claim to one pattern, not a list — so the pattern covers the workflows 
 join rather than naming one file:
 
 ```
-job_workflow_ref = Shrub24/nix-fleet/.github/workflows/*@refs/heads/main
+job_workflow_ref = Shrub24/nix-fleet/.github/workflows/*@*
 ```
 
 Keep `subject` at the repository-and-branch form
