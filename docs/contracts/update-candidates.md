@@ -13,7 +13,7 @@ point), `validate.yml` (the repository's validation, in one definition),
 `promote-candidate.yml` (promotion),
 `accept.yml` (acceptance marker), `candidate-sweep.yml` (retention),
 `package-updates-refresh.yml` (the producer), and
-`.github/scripts/prepare-candidate.sh` and `promote-candidate.sh`.
+the bundled `prepare-candidate` and `promote-candidate` composite actions.
 
 ## Lifecycle
 
@@ -172,13 +172,24 @@ its `automation` environment, the permission union the called jobs declare, and
 | `candidate.yml`               | `source_sha`, `source_pr`, `mode`, `precheck`, `targets`, `systems`, `runner_system`, `profile` | environment `automation`                                                         |
 | `pipeline.yml`                | `source_pr` (only when the caller's event is a dispatch)                                        | the variables and permission grant below                                         |
 | `package-updates-refresh.yml` | —                                                                                               | environment `automation`, in the publishing job only                             |
-| `promote-candidate.yml`       | — (call it from a thin `on: status` file)                                                       | environment `automation`                                                         |
+| `promote-candidate.yml`       | `systems`, `targets`, `subject` (call from a thin `on: status` file)                            | `automation` environment; caller grants contents and OIDC write                  |
 | `candidate-sweep.yml`         | — (call it from a thin `on: schedule` file)                                                     | environment `automation`                                                         |
 
-Build selection is typed workflow input, so a consumer sets its closure per
-repository without editing a workflow — `pipeline.yml` passes `CANDIDATE_TARGETS`,
-`CANDIDATE_SYSTEMS`, `CANDIDATE_RUNNER_SYSTEM` and `CANDIDATE_PROFILE` from
-repository variables with fleet-compatible defaults.
+Build selection is typed workflow input: `pipeline.yml` passes `CANDIDATE_TARGETS`,
+`CANDIDATE_SYSTEMS`, `CANDIDATE_RUNNER_SYSTEM` and `CANDIDATE_PROFILE` from repository
+variables. Retention may select a subset of that build:
+
+| Promotion input | Fallback                                     | Meaning                                         |
+| --------------- | -------------------------------------------- | ----------------------------------------------- |
+| `systems`       | `CANDIDATE_SYSTEMS`, then both Linux systems | Systems whose retention roots were built        |
+| `targets`       | `CACHE_PIN_TARGETS`, then `.#packages`       | Per-system retention selection                  |
+| `subject`       | `CACHE_PIN_SUBJECT`, then `cache-root`       | Aggregate derivation under each selected system |
+
+Set `CACHE_PIN_NAME=auto` to retain `<repository>-main-<system>`; empty disables
+pinning. Every retention root must be included in the approved build, even when
+build and retention selections differ. A consumer with only `x86_64-linux` must
+set that system explicitly; a host aggregate can retain toplevels without checks.
+`pin-cache` still accepts the same inputs directly.
 
 Environment secrets are not caller-supplied: the environment must exist in the
 consumer's repository, so `package-updates-refresh.yml` declares no secret and a
@@ -209,9 +220,13 @@ client. It asks `nix path-info` about each realised closure root, naming every
 missing path; uploads are atomic per closure, so a served root means its closure
 was committed.
 
-Pinning is a separate workflow with its own owner: `pin-cache.yml`, dispatched by
-`promote-candidate.yml` after a successful fast-forward and dispatchable by hand to
-re-pin a revision whose publication completed late. A pin name means "the fleet's
+Pinning is a separate reusable workflow: `promote-candidate.yml` calls
+`pin-cache.yml` as a dependent job after a successful fast-forward. The promotion
+action emits `promoted_sha` only after the push succeeds; human-status no-ops emit
+nothing and cannot start pinning. Pinning receives that SHA, not `github.sha` from
+the status event. It can also be dispatched by hand when publication completes late.
+A failed pin job makes the run red; the promotion job stays green and main is not
+rolled back. A pin name means "the fleet's
 current main", so promotion — the event that lands a revision the pipeline built —
 is what may move it; a push-triggered measurement's colour moves nothing. One pin
 per system covers the whole tree: `packages.<system>.cache-root` is a linkFarm whose
@@ -285,45 +300,43 @@ A consumer repository reuses this pipeline instead of copying it. The `on:` bloc
 is the one thing GitHub cannot inherit, so the consumer owns a thin trigger per
 event and no orchestration:
 
-| Consumer file              | Content                                                                                       |
-| -------------------------- | --------------------------------------------------------------------------------------------- |
-| `.github/workflows/ci.yml` | copies nix-fleet's, or a thin file calling `validate.yml@<ref>` with `generated_files: check` |
-| a thin `pipeline` trigger  | `on: workflow_run: {workflows: [ci], types: [completed]}` + `uses: .../pipeline.yml@<ref>`    |
-| a thin `promote` trigger   | `on: status` + `uses: .../promote-candidate.yml@<ref>`                                        |
-| a thin `sweep` trigger     | `on: schedule` + `uses: .../candidate-sweep.yml@<ref>`                                        |
-| a thin `accept` trigger    | `on: pull_request_target: {types: [labeled, unlabeled]}` + `uses: .../accept.yml@<ref>`       |
+| Consumer file              | Content                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------ |
+| `.github/workflows/ci.yml` | a workflow named `ci` calling `validate.yml@<sha>` with `generated_files: check`           |
+| a thin `pipeline` trigger  | `on: workflow_run: {workflows: [ci], types: [completed]}` + `uses: .../pipeline.yml@<ref>` |
+| a thin `promote` trigger   | `on: status` + `uses: .../promote-candidate.yml@<ref>`                                     |
+| a thin `sweep` trigger     | `on: schedule` + `uses: .../candidate-sweep.yml@<ref>`                                     |
+| a thin `accept` trigger    | `on: pull_request_target: {types: [labeled, unlabeled]}` + `uses: .../accept.yml@<ref>`    |
 
-`candidate.yml` calls `validate.yml` and `build-push-cache.yml`
-by path, and a called workflow's local paths resolve from the caller's commit —
-for these the caller is the pinned ref, so a consumer needs no copy of them. If
-that ever resolves differently, the first run fails immediately with a
-missing-workflow error rather than doing something surprising, and the fix is a
-pin inside nix-fleet, not a second copy in the consumer.
+Internal workflow and composite-action calls use `$/`: they resolve inside
+nix-fleet at the exact commit defining the invoking file. Consumers pin one
+external entry point by full SHA, not copies of the workflow bodies, scripts or
+an additional action ref. The actions execute their bundled scripts through
+`GITHUB_ACTION_PATH`; no secondary checkout is added to the candidate tree.
 
-The automation scripts come with the workflows. `candidate.yml` and
-`promote-candidate.yml` check out `.github/scripts` from
-`github:<job.workflow_repository>@<job.workflow_sha>` — the revision that defines
-them — into `trusted/` and run the procedure from there, so a consumer needs no
-copy and a candidate revision cannot supply the script that promotes it. The one
-exception is `validate.yml`'s consistency guard, which takes the script from the
-fleet's **default branch** on purpose: it exists to run the trusted procedure even
-when the revision under test rewrote its own copy, and for a pull-request run the
-workflow's own ref is that pull request's merge commit.
+The intentional exception is `validate.yml`'s consistency guard: it checks out the
+preparation action from fleet `main` beside the target checkout. This prevents a
+fleet PR from replacing the procedure that checks itself. It also means external
+consistency validation follows fleet `main`, even when the external entry point
+is SHA-pinned; the rest of the procedure remains pinned. This trust boundary is
+not changed by the composition migration.
 
 A called workflow cannot be granted more than its caller holds, and GitHub
 validates _every_ job in the called workflow against the caller's grant when the
 call starts — not only the jobs a given mode runs. So each thin trigger declares
 the union of the permissions its jobs need — `pipeline.yml`'s
 calls need `contents: write`, `statuses: write`, `pull-requests: write` and
-`id-token: write`; `promote-candidate.yml` needs `contents: write`; `accept.yml`
-needs `statuses: write` — and passes `secrets: inherit`, because `candidate.yml`
-and `build-push-cache.yml` read repository secrets (builder SSH key, tailnet
-identity).
+`id-token: write`; `promote-candidate.yml` needs `contents: write` and
+`id-token: write` (including when pinning is disabled); `accept.yml` needs
+`statuses: write`. Pass `secrets: inherit` to workflows that use the automation
+App or the builder key. Promotion and pinning are separate jobs: only promotion
+gets the App environment, and only pinning gets `id-token: write`.
 
-The pinned ref must contain these files. `v1`, the tag consumers use for
-`build-push-cache.yml`, predates them, so a later tag is required. nix-fleet is
-public, so the call itself needs no access grant; a consumer that mirrors it
-privately must allow access to its reusable workflows.
+Use a full SHA containing the composition fixes; Renovate can update it. The
+existing `v2` tag predates bundled actions and nested pinning and is not moved by
+this fix. Release tags remain contract milestones; legacy consumers may stay on
+their existing version while transitioning. nix-fleet is public, so the call
+itself needs no access grant.
 
 Configuration the consumer owns: the `automation` environment (secret
 `AUTOMATION_APP_PRIVATE_KEY`, deployment branch restricted to its default branch);

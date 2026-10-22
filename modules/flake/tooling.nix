@@ -1,17 +1,5 @@
-# Published tooling flakeModule — the base formatting layer for every
-# repository that selects it (`imports = [ inputs.nix-fleet.flakeModules.tooling ];`).
-#
-# Fixed by the base: projectRootFile, the Nix trio (nixfmt + statix + deadnix,
-# priorities pinned — all three claim `*.nix`; unpinned, `nix fmt` does not
-# converge), baseline excludes, prettier for markdown/YAML/JSON, and actionlint
-# validation for GitHub Actions workflows.
-# Consumer extension: treefmt settings merge — consumers add languages
-# (programs.*) and extra excludes via the same `perSystem.treefmt` options;
-# list options concatenate. A repo whose languages are exactly the base set
-# needs no extension.
-#
-# The module is bound in a `let` and used twice: flake.flakeModules entries
-# are published only, never auto-applied to the defining flake.
+# Shared treefmt base: Nix, markdown, YAML, JSON, TOML and GitHub Actions.
+# Import flakeModules.tooling; extend perSystem.treefmt for consumer languages.
 _:
 let
   toolingModule =
@@ -49,17 +37,16 @@ let
             deadnix.priority = 1;
             statix.priority = 2;
             nixfmt.priority = 3;
-            actionlint = {
-              command = "${pkgs.actionlint}/bin/actionlint";
-              # actionlint's context table lacks `queue` and the `job.workflow_*`
-              # properties; both are valid. Drop each ignore when upstream catches up.
+            jactionlint = {
+              command = "${pkgs.callPackage ../../pkgs/jactionlint { }}/bin/jactionlint";
               options = [
-                "-ignore"
-                "unexpected key \"queue\" for \"concurrency\" section"
-                "-ignore"
-                "property \"workflow_(repository|sha|ref|file_path)\" is not defined"
+                "--profile"
+                "correctness"
               ];
-              includes = [ ".github/workflows/*.yml" ];
+              includes = [
+                ".github/workflows/*.yml"
+                ".github/actions/**/action.yml"
+              ];
             };
           };
         };

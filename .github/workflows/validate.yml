@@ -63,16 +63,14 @@ jobs:
           ref: ${{ inputs.revision }}
           path: target
 
-      - name: Check out the preparation script from the fleet's default branch
-        # The trusted copy of the procedure runs even if the revision rewrote its own:
-        # it comes from the fleet's default branch, not from this run's ref, which for
-        # a pull request is that pull request's merge commit.
+      - name: Check out the preparation action from the fleet's default branch
+        # The consistency guard is independent of the revision under test.
         uses: actions/checkout@v7
         with:
           repository: ${{ job.workflow_repository }}
           ref: main
           path: trusted
-          sparse-checkout: .github/scripts
+          sparse-checkout: .github/actions/prepare-candidate
           persist-credentials: false
 
       - name: Install Nix
@@ -81,5 +79,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Generated flake and lock are current
-        working-directory: target
-        run: bash "$GITHUB_WORKSPACE/trusted/.github/scripts/prepare-candidate.sh" --check
+        uses: ./trusted/.github/actions/prepare-candidate
+        with:
+          mode: check
+          directory: target

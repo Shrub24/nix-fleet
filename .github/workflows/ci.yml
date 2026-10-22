@@ -22,7 +22,7 @@ jobs:
   validate:
     permissions:
       contents: read
-    uses: ./.github/workflows/validate.yml
+    uses: $/.github/workflows/validate.yml
     with:
       revision: ${{ github.sha }}
       generated_files: ${{ (startsWith(github.head_ref, 'automation/') || startsWith(github.head_ref, 'renovate/')) && 'skip' || 'check' }}
@@ -33,7 +33,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/build-push-cache.yml
+    uses: $/.github/workflows/build-push-cache.yml
     with:
       profile: ci
     secrets:

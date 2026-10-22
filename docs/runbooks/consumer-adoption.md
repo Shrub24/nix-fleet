@@ -1,5 +1,10 @@
 # Adopting fleet CI in a repository
 
+Pin external workflow calls to a full nix-fleet SHA containing the composition
+fixes; let Renovate update that pin. Release tags mark contract milestones. `v2`
+is retained for legacy callers but predates bundled actions and nested retention.
+In the examples below, replace `<sha>` with the selected full commit.
+
 A consumer repository declares **what** to build. nix-fleet owns **how**: the
 builders, the cache, the coordinator configuration and the validation. Nothing
 here requires importing `flakeModules.fleet`, re-exporting builder metadata or
@@ -62,7 +67,7 @@ permissions:
   id-token: write # the cache token; a call with less fails at startup
 jobs:
   build:
-    uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v2
+    uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@<sha>
     with:
       targets: .#checks
       systems: x86_64-linux aarch64-linux
@@ -117,7 +122,9 @@ or define the same attribute yourself if you would rather not take the input:
 
 ```nix
 packages.<system>.cache-root = pkgs.linkFarm "cache-root" (
-  mapAttrsToList (name: p: { inherit name; path = p; }) config.packages
+  lib.mapAttrsToList (name: path: { inherit name path; }) (
+    lib.filterAttrs (name: _: name != "cache-root") config.packages
+  )
 );
 ```
 
@@ -127,14 +134,15 @@ notices and never fails on a miss.
 ```yaml
 jobs:
   verify:
-    uses: Shrub24/nix-fleet/.github/workflows/verify-cache.yml@v2
+    uses: Shrub24/nix-fleet/.github/workflows/verify-cache.yml@<sha>
     with:
       systems: x86_64-linux aarch64-linux
 ```
 
 Pinning moves a name that means "our current main", so it belongs to the event that
-lands a revision, not to a diagnostic. Dispatch it from your promotion path, or by
-hand after a successful build:
+lands a revision, not to a diagnostic. Path B calls it automatically after
+promotion. A build-only consumer may call it in a dependent job after a successful
+build, or expose its own manual trigger:
 
 ```yaml
 jobs:
@@ -142,16 +150,16 @@ jobs:
     permissions:
       contents: read
       id-token: write # the cache token; pin-cache joins the tailnet
-    uses: Shrub24/nix-fleet/.github/workflows/pin-cache.yml@v2
+    uses: Shrub24/nix-fleet/.github/workflows/pin-cache.yml@<sha>
     with:
       pin_name: auto # <repository>-main, one pin per system
       systems: x86_64-linux aarch64-linux
 ```
 
-`subject` defaults to `cache-root`; set it if your aggregate has another name or you
-already have one (`hydraJobs`, a host toplevel). It is a name, not a safety property:
-point it at a subset and the pin protects only that subset's closure while the rest
-stays reclaimable, silently.
+`subject` defaults to `cache-root`; set it if your aggregate derivation has another
+name. A jobset such as `hydraJobs` is an attrset, not a pin root: aggregate the
+selected outputs with a `linkFarm` first. The pin protects only the chosen root's
+closure; everything outside it remains reclaimable.
 
 Two things shape the aggregate, and both fail quietly:
 
@@ -169,14 +177,14 @@ prefix.
 Everything in Path A, plus the pieces below. Add them in this order; each is
 verifiable on its own.
 
-1. **Validate.** A thin file calling `validate.yml@v2` with
-   `generated_files: check`, or nix-fleet's `ci.yml` copied verbatim. Nothing
-   else needs copying: the automation scripts are checked out from the workflow's
-   own revision, so a consumer's tree needs no `.github/scripts`. This is the
-   one definition of "valid", and both the contributor path and the pipeline call
-   it — a second definition is how a human PR passes and a candidate does not.
+1. **Validate.** A workflow named `ci` calling `validate.yml@<sha>` with
+   `generated_files: check`. Its `pull_request` types include `labeled`, so
+   acceptance revalidates. Do not copy nix-fleet's `ci.yml`: its `$/` references
+   are for internal composition. No scripts or actions need copying either.
+   The consistency guard deliberately reads the preparation action from fleet
+   `main`; this is the exception to pinned validation, preserving fleet PR trust.
 2. **The pipeline trigger.** `on: workflow_run: {workflows: [ci], types: [completed]}`
-   → `uses: .../pipeline.yml@v2`, with `secrets: inherit` and the permission
+   → `uses: .../pipeline.yml@<sha>`, with `secrets: inherit` and the permission
    union its jobs need (`contents: write`, `statuses: write`,
    `pull-requests: write`, `id-token: write`). `on:` cannot be inherited, so this
    file is the consumer's; the orchestration is not.
@@ -186,14 +194,20 @@ verifiable on its own.
    branch. Variables: `AUTOMATION_APP_ID`, `AUTOMATION_APP_SLUG`,
    `PROMOTION_POLICY=label`, and optionally `CANDIDATE_TARGETS`,
    `CANDIDATE_SYSTEMS`, `CANDIDATE_RUNNER_SYSTEM`, `CANDIDATE_PROFILE`,
-   `AUTOMATION_UPDATE_AUTHORS`, `CACHE_PIN_NAME`.
+   `AUTOMATION_UPDATE_AUTHORS`, `CACHE_PIN_NAME`. Set `CANDIDATE_SYSTEMS` to the
+   systems the repository actually exposes. Retention defaults to
+   `.#packages.<system>.cache-root`; `CACHE_PIN_TARGETS` and `CACHE_PIN_SUBJECT`
+   override it independently of the build selection.
 4. **Labels.** `accept-update`, `dependencies`, `automated`. Creating a label the
    repository does not have fails the producer at its pull-request step with a
    `404`.
-5. **Promotion and acceptance.** Thin triggers for `promote-candidate.yml`
-   (`on: status`) and `accept.yml`
-   (`on: pull_request_target: {types: [labeled, unlabeled]}`, needs
-   `statuses: write`), plus `candidate-sweep.yml` on a schedule.
+5. **Promotion and acceptance.** A thin `on: status` caller of
+   `promote-candidate.yml` grants **both** `contents: write` and `id-token: write`,
+   and passes `secrets: inherit`. The dependent pin job receives the revision
+   actually pushed; a human-status no-op starts no pin job. A failed pin turns
+   the run red without undoing the successful promotion. `accept.yml` uses
+   `pull_request_target: {types: [labeled, unlabeled]}` and `statuses: write`;
+   `candidate-sweep.yml` needs `contents: write` and a scheduled caller.
 6. **The ruleset.** Require `update-candidate` on the default branch, pinned to
    the App's integration id, with **no** bypass and **no** pull-request rule.
    Do not require `update-accepted`: revoking the label posts it as `failure`
@@ -205,14 +219,40 @@ With `PROMOTION_POLICY=label`, applying `accept-update` is what authorises
 promotion, and the marker is bound to the head it was applied to: a push after
 labelling invalidates it and the revision must be re-validated.
 
+A promotion caller for an x86-only consumer:
+
+```yaml
+name: promote
+on:
+  status:
+permissions:
+  contents: read
+jobs:
+  promote:
+    uses: Shrub24/nix-fleet/.github/workflows/promote-candidate.yml@<sha>
+    permissions:
+      contents: write
+      id-token: write
+    with:
+      systems: x86_64-linux
+      targets: .#packages
+      subject: cache-root
+    secrets: inherit
+```
+
+Before enabling `CACHE_PIN_NAME`, include the retention root in the approved build.
+For example, dotfiles may keep building `.#ciRoot`, add
+`packages.x86_64-linux.cache-root` over its deployable outputs, and include that
+root in `ciRoot`. Its formatting checks still build but need not be retained.
+Homelab can select its desired host toplevels the same way; importing the default
+package aggregate does not automatically include `nixosConfigurations`.
+
 ## 4. What a consumer does not get, and why
 
-- **A tag older than `v2`.** `v1` predates the coordinator and the `profile` input,
-  so it is not a reference for a new consumer. Pin `v2` (or a commit); a tag-shaped
-  `job_workflow_ref` (`…/workflows/build-push-cache.yml@refs/tags/v2`) is not yet
-  proven against the tailnet credential, which is documented at
-  `@refs/heads/main`. If a join fails with a claims error, that is the fleet's
-  credential to widen, not the consumer's change to make.
+- **Old entry points with new behaviour.** A SHA pin only receives these fixes
+  when updated. Existing `v1` and `v2` tags remain unchanged. A Tailscale claims
+  failure on a SHA-pinned call is a fleet credential issue, not a reason to
+  duplicate its configuration in the consumer.
 - **Renovate-managed tagged flake inputs.** nix-fleet has none yet, and its
   Renovate config keeps only `github-actions`.
 - **A linear history on the default branch.** Preparation merges the base into

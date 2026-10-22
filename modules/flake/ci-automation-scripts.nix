@@ -1,5 +1,4 @@
-# Exercises where candidate.yml, promote-candidate.yml and validate.yml take the
-# automation scripts from: the defining revision, never the caller's workspace.
+# Bundled preparation and promotion-to-retention handoff.
 {
   perSystem =
     { pkgs, ... }:
@@ -9,6 +8,9 @@
           {
             nativeBuildInputs = [
               (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
+              pkgs.bash
+              pkgs.gitMinimal
+              pkgs.jq
             ];
           }
           ''

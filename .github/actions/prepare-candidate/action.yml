@@ -1,0 +1,23 @@
+name: Prepare candidate
+description: Regenerate the consumer flake and lock, or check that they are current.
+inputs:
+  mode:
+    description: "commit records regeneration; check refuses a changed tree"
+    default: commit
+  directory:
+    description: Working directory of the consumer checkout
+    default: .
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      working-directory: ${{ inputs.directory }}
+      env:
+        MODE: ${{ inputs.mode }}
+        GITHUB_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        case "$MODE" in
+          commit) bash "$GITHUB_ACTION_PATH/prepare-candidate.sh" ;;
+          check) bash "$GITHUB_ACTION_PATH/prepare-candidate.sh" --check ;;
+          *) echo "::error::prepare-candidate: unknown mode '$MODE'"; exit 2 ;;
+        esac

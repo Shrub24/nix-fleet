@@ -89,7 +89,10 @@ Superseded or rejected candidates may still contain useful compiled dependencies
 
 ### 10. Cache verification
 
-After the build, a fetch-only check evaluates the candidate against the substituters with builders disabled and requires no derivation to be built. It is the only mechanism that distinguishes "built" from "available to consumers".
+The post-merge diagnostic queries the public cache for each selected artefact root
+on main pushes and dispatch. Misses are notices, not a merge gate. Promotion calls
+retention separately; pins create refuses an absent root without rolling back the
+completed promotion.
 
 ### 11. Closure scope
 
@@ -156,6 +159,29 @@ run whose markdown write failed would leave a report saying `complete` beside a
 non-zero status: the report is the evidence, and evidence about a run that did not
 finish must not propose a tree. The producer check executes the decision for the
 consistent pairs, the contradictory pairs and the missing-artifact cases.
+
+### 16. Procedures compose at their defining revision
+
+Internal workflows and composite actions use `$/`, so one external SHA pin selects
+both routing and bundled procedures. Preparation and promotion run their scripts
+through `GITHUB_ACTION_PATH`; no consumer copies or nested script checkout are
+needed. The consistency guard intentionally checks out fleet main's preparation
+action beside the target, keeping fleet PR validation independent of the PR.
+External consistency therefore retains that documented main drift.
+
+### 17. Retention consumes a successful promotion output
+
+The promoter emits `promoted_sha` only after the push succeeds. A dependent
+reusable pin job receives it and the selected retention systems, targets and
+subject. Human-status no-ops do not pin. Caller permissions grant both contents
+and OIDC write, while the App environment belongs only to promotion. A red pin
+job makes retention failure visible without undoing main. This replaces a dispatch
+that assumed a consumer-local workflow and hid missing App Actions authority.
+
+Shared tooling uses native jactionlint correctness checks for `$/`, composites,
+queue settings and workflow identity contexts, without syntax translation or
+ignored diagnostics. External references use full SHA pins; existing release tags
+are not moved by these fixes.
 
 ## Risks / Trade-offs
 
@@ -252,7 +278,7 @@ Settled while applying the change; the rationale is in `context/update-candidate
   its own.** Pinning turns a point-in-time observation into a guarantee, because the
   cache's GC excludes pinned closures. Rolling names (`CACHE_PIN_NAME-<system>`)
   mean supersession is a repoint — no delete, which would need admin. The pin lives
-  in `pin-cache.yml`, dispatched by `promote-candidate.yml`, because a pin name
+  in `pin-cache.yml`, called by `promote-candidate.yml` after a successful push, because a pin name
   means "the fleet's current main": promotion is the event that lands a revision the
   pipeline built, whereas `verify-cache.yml` on a push is a measurement whose colour
   nothing may depend on. `pins create` fails by name when a path is absent, so the

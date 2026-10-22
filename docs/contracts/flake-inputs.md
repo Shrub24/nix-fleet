@@ -110,7 +110,7 @@ restores the declarative path:
 
 ## Preparation depends on this policy
 
-`.github/scripts/prepare-candidate.sh` regenerates `flake.nix` with `write-flake`
+The bundled `prepare-candidate` action regenerates `flake.nix` with `write-flake`
 and then runs `nix flake lock` without an update. A second run must change
 nothing: that is the fixed-point check the update-candidate pipeline and the
 human-pull-request check both enforce. Because auto-follow is disabled, the

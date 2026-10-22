@@ -250,20 +250,6 @@ revision by an `update-accepted` marker instead of a commit timestamp.
 
 ## Deferred / future waves
 
-- [ ] **jactionlint packaging (low priority)**: package
-      [jdx/jactionlint](https://github.com/jdx/jactionlint) (`buildGoModule`, one
-      `vendorHash`, follow its releases) and use it as the workflow linter. It is
-      a maintained fork of actionlint that covers the same checks _and_ knows the
-      `concurrency.queue` key — including the `queue: max` +
-      `cancel-in-progress: true` conflict GitHub rejects — so adopting it retires
-      the formatter's one ignored diagnostic (`modules/flake/tooling.nix`,
-      `rhysd/actionlint#654`). It additionally carries zizmor-style security
-      rules (untrusted input in `run:` scripts, excessive token permissions,
-      credential persistence in checkout) and policy rules (missing
-      `permissions:`, timeout or concurrency group), which are directly
-      interesting for the workflows this repo now ships. Cost: nix-fleet owns a
-      derivation and its bump cadence; it is not in nixpkgs. Worth revisiting on
-      its own merits — not as a way to remove one `-ignore`.
 - [ ] **Userborn user-management backend (medium-high priority)**: evaluate
       the normal, switchable `services.userborn` mode as a replacement for
       nixpkgs' legacy Perl account-management activation script. Preserve UID/GID

@@ -1,90 +1,113 @@
-"""Exercise the rule that the automation scripts are never taken from the workspace.
+"""Bundled procedures, successful-promotion handoff, and self-repository composition."""
 
-A consuming repository calls these workflows; its own tree has no `.github/scripts`
-and must not need one. The copy that runs the procedure therefore has to come from
-the revision that defines the workflow — except where the procedure is a guard
-against the revision rewriting itself, which must come from the fleet's default
-branch.
-"""
-
+import datetime
+import os
 from pathlib import Path
-import sys
+import shutil
+import subprocess
+import tempfile
 
 import yaml
 
 
-def steps_of(path):
-    workflow = yaml.load(Path(path).read_text(), Loader=yaml.BaseLoader)
-    found = {}
-    for job_name, job in workflow["jobs"].items():
-        for step in job.get("steps", []):
-            found.setdefault(job_name, []).append(step)
-    return workflow, found
+root = Path.cwd()
+load = lambda path: yaml.load(Path(path).read_text(), Loader=yaml.BaseLoader)
+workflows = {path.stem: load(path) for path in Path(".github/workflows").glob("*.yml")}
 
+candidate = workflows["candidate"]["jobs"]["prepare"]
+assert not any(step.get("with", {}).get("path") == "trusted" for step in candidate["steps"]), (
+    "a script checkout inside the candidate is rejected by its write-set guard"
+)
 
-def script_steps(steps):
-    return [
-        step
-        for step in steps
-        if ".github/scripts/" in step.get("run", "")
-    ]
+consistency = workflows["validate"]["jobs"]["consistency"]["steps"]
+trusted = next(step["with"] for step in consistency if step.get("with", {}).get("path") == "trusted")
+assert trusted["repository"] == "${{ job.workflow_repository }}" and trusted["ref"] == "main", (
+    "the consistency guard must remain independent of the revision under test"
+)
+assert trusted["persist-credentials"] == "false"
+guard = next(step for step in consistency if step.get("uses") == "./trusted/.github/actions/prepare-candidate")
+assert guard["with"] == {"mode": "check", "directory": "target"}
 
+promotion = workflows["promote-candidate"]["jobs"]
+assert "gh workflow run" not in str(promotion), "pinning must not assume a workflow exists in the consumer"
+promote_step = next(step for step in promotion["promote"]["steps"] if step.get("id") == "promote")
+assert promote_step["uses"] == "$/.github/actions/promote-candidate"
+assert promote_step["env"]["CANDIDATE"] == "${{ github.event.sha }}"
+assert promotion["promote"]["outputs"]["promoted_sha"] == "${{ steps.promote.outputs.promoted_sha }}"
+pin = promotion["pin"]
+assert pin["needs"] == "promote" and "needs.promote.outputs.promoted_sha != ''" in pin["if"]
+assert pin["uses"] == "$/.github/workflows/pin-cache.yml"
+assert pin["with"]["revision"] == "${{ needs.promote.outputs.promoted_sha }}"
+assert pin["permissions"] == {"contents": "read", "id-token": "write"}
+assert "inputs.systems" in pin["with"]["systems"] and "vars.CANDIDATE_SYSTEMS" in pin["with"]["systems"]
+for name in ("targets", "subject"):
+    assert f"inputs.{name}" in pin["with"][name], f"retention {name} is not forwarded"
 
-def checkout_for(steps, path_name):
-    for step in steps:
-        if step.get("uses", "").startswith("actions/checkout@") and step.get("with", {}).get("path") == path_name:
-            return step
-    raise AssertionError(f"no checkout with path: {path_name}")
+with tempfile.TemporaryDirectory() as directory:
+    temporary = Path(directory)
+    target = temporary / "target"
+    binary = temporary / "bin"
+    target.mkdir()
+    binary.mkdir()
+    bash = shutil.which("bash")
+    base = {**os.environ, "PATH": f"{binary}:{os.environ['PATH']}"}
+    def stub(name, body):
+        path = binary / name
+        path.write_text(f"#!{bash}\nset -eu\n{body}\n")
+        path.chmod(0o755)
 
+    # Run the actual preparation action outside its package directory. Its files
+    # must not dirty the target checkout, and unexpected edits must still fail.
+    subprocess.run(["git", "init", "-q", str(target)], check=True)
+    (target / "flake.nix").write_text("{}\n")
+    subprocess.run(["git", "-C", str(target), "add", "flake.nix"], check=True)
+    subprocess.run(["git", "-C", str(target), "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], check=True)
+    prepare = load(".github/actions/prepare-candidate/action.yml")
+    stub("nix", "exit 0")
+    env = {**base, "MODE": "check", "GITHUB_ACTION_PATH": str(root / ".github/actions/prepare-candidate")}
+    command = [bash, "-euo", "pipefail", "-c", prepare["runs"]["steps"][0]["run"]]
+    result = subprocess.run(command, cwd=target, env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr + result.stdout
+    (target / "unexpected").write_text("not owned by preparation\n")
+    result = subprocess.run(command, cwd=target, env=env, text=True, capture_output=True)
+    assert result.returncode != 0 and "unexpected" in result.stdout, result
 
-def assert_fleet_checkout(step, *, ref, hint):
-    with_block = step["with"]
-    assert with_block.get("repository") == "${{ job.workflow_repository }}", (
-        f"{hint}: the scripts come from {with_block.get('repository')!r}, not the defining repository"
-    )
-    assert with_block.get("ref") == ref, f"{hint}: expected ref {ref!r}, got {with_block.get('ref')!r}"
-    assert with_block.get("sparse-checkout") == ".github/scripts", hint
-    assert with_block.get("persist-credentials") == "false", f"{hint}: the script checkout keeps credentials"
+    # External APIs and push are stubbed; the actual promotion procedure must
+    # publish its output only after the push, never on no-op, refusal or failure.
+    candidate_sha = "a" * 40
+    source_sha = "b" * 40
+    stub("gh", '''
+case "$2" in
+  */git/matching-refs/candidates)
+    if [ "$CASE" != human ]; then printf 'refs/candidates/7/%s-%s\\n' "$SOURCE" "$CANDIDATE"; fi ;;
+  */statuses) printf '{"creator":{"login":"fixture[bot]"},"state":"success","created_at":"%s"}\\n' "$CREATED" ;;
+  */pulls/7) printf '{"state":"open","base":"main","head":"%s","labels":[]}\\n' "$SOURCE" ;;
+  *) echo "unexpected API: $*" >&2; exit 2 ;;
+esac''')
+    stub("git", '''
+case "$1" in
+  fetch|merge-base) exit 0 ;;
+  rev-parse) echo "$CANDIDATE" ;;
+  push) echo push >> "$PUSHES"; [ "$CASE" != failed-push ] ;;
+  *) echo "unexpected git: $*" >&2; exit 2 ;;
+esac''')
+    action = load(".github/actions/promote-candidate/action.yml")
+    assert action["outputs"]["promoted_sha"]["value"] == "${{ steps.promote.outputs.promoted_sha }}"
+    output = temporary / "output"
+    pushes = temporary / "pushes"
+    for case, success, emitted in (("human", True, False), ("failed-push", False, False), ("promoted", True, True)):
+        output.write_text("")
+        pushes.write_text("")
+        env = {
+            **base, "CASE": case, "CANDIDATE": candidate_sha, "SOURCE": source_sha,
+            "APP_LOGIN": "fixture[bot]", "POLICY": "auto", "GH_TOKEN": "fixture",
+            "GITHUB_REPOSITORY": "fixture/consumer", "GITHUB_OUTPUT": str(output), "PUSHES": str(pushes),
+            "CREATED": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "GITHUB_ACTION_PATH": str(root / ".github/actions/promote-candidate"),
+        }
+        result = subprocess.run([bash, "-euo", "pipefail", "-c", action["runs"]["steps"][0]["run"]], env=env, text=True, capture_output=True)
+        assert (result.returncode == 0) == success, (case, result.stdout, result.stderr)
+        assert output.read_text() == (f"promoted_sha={candidate_sha}\n" if emitted else ""), case
+        assert bool(pushes.read_text()) == (case != "human"), case
 
-
-# --- the jobs that run the procedure on a candidate tree or on main --------------
-for name, expected_ref in (
-    ("candidate", "${{ job.workflow_sha }}"),
-    ("promote-candidate", "${{ job.workflow_sha }}"),
-):
-    workflow, by_job = steps_of(f".github/workflows/{name}.yml")
-    ran = False
-    for job_name, steps in by_job.items():
-        found = script_steps(steps)
-        if not found:
-            continue
-        ran = True
-        trusted = checkout_for(steps, "trusted")
-        assert_fleet_checkout(trusted, ref=expected_ref, hint=f"{name}/{job_name}")
-        for step in found:
-            run = step["run"]
-            assert "$GITHUB_WORKSPACE/trusted/.github/scripts/" in run, (
-                f"{name}/{job_name} runs a script from the workspace: {run.strip()}"
-            )
-    assert ran, f"{name}: no step runs an automation script; the check would be vacuous"
-
-# --- the consistency guard must not trust the revision it is checking ------------
-_, by_job = steps_of(".github/workflows/validate.yml")
-consistency = by_job["consistency"]
-trusted = checkout_for(consistency, "trusted")
-assert_fleet_checkout(trusted, ref="main", hint="validate/consistency")
-assert any(
-    "$GITHUB_WORKSPACE/trusted/.github/scripts/prepare-candidate.sh" in step.get("run", "")
-    for step in consistency
-), "validate/consistency does not run the trusted copy"
-
-# The revision under test is checked out separately, so a rewrite of the script in
-# that revision cannot change what runs.
-targets = [
-    step
-    for step in consistency
-    if step.get("uses", "").startswith("actions/checkout@") and step.get("with", {}).get("path") == "target"
-]
-assert targets, "validate/consistency no longer checks out the revision under test"
-
-print("automation scripts resolve from the defining revision")
+print("bundled preparation stays clean; only successful promotion hands its exact revision to retention")

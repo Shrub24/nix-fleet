@@ -1,15 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate the flake and its lock, as the update-candidate pipeline and the
-# human-pull-request consistency check both need.
-#
-#   prepare-candidate.sh           commit any regeneration as one child commit
-#   prepare-candidate.sh --check   fail, writing no commit, when the tree is not
-#                                  already exactly what regeneration produces
-#
-# `write-flake` renders flake.nix from the declared inputs. `nix flake lock`
-# without an update adds lock entries for declarations that have none and moves
-# nothing that is already locked, so a candidate's pins are the ones its
-# producer chose.
+# Regenerate flake.nix and flake.lock; --check refuses changes without committing.
 set -euo pipefail
 
 mode=commit
@@ -25,10 +15,7 @@ esac
 nix run .#write-flake
 nix flake lock
 
-# Preparation owns exactly the two files the writers above produce: flake.nix is
-# rendered by write-flake and flake.lock by `nix flake lock`. Anything else that
-# moved during regeneration is refused rather than committed, so a generator or a
-# stray edit cannot be absorbed into the preparation commit.
+# Regeneration may change only flake.nix and flake.lock.
 changed=$(git status --porcelain | cut -c4-)
 if [ -z "$changed" ]; then
   echo "prepare-candidate: generated files are current"

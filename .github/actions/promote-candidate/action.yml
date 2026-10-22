@@ -1,0 +1,14 @@
+name: Promote candidate
+description: Fast-forward the consumer main branch to an authorized candidate.
+outputs:
+  promoted_sha:
+    description: Successfully pushed revision; empty when no promotion occurred
+    value: ${{ steps.promote.outputs.promoted_sha }}
+runs:
+  using: composite
+  steps:
+    - id: promote
+      shell: bash
+      env:
+        GITHUB_ACTION_PATH: ${{ github.action_path }}
+      run: bash "$GITHUB_ACTION_PATH/promote-candidate.sh"

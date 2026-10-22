@@ -37,7 +37,7 @@ decision first.
 
 ## 3. Candidate preparation and consistency check
 
-- [x] 3.1 `.github/scripts/prepare-candidate.sh` (write-flake then `nix flake lock`). Fixtures, run against clones: complete tree (no change, check passes); declaration added without lock (check fails, commit adds one commit, only the new input's lock entry is added); generated flake out of date (check fails, commit regenerates).
+- [x] 3.1 `.github/actions/prepare-candidate/prepare-candidate.sh` (write-flake then `nix flake lock`). Fixtures, run against clones: complete tree (no change, check passes); declaration added without lock (check fails, commit adds one commit, only the new input's lock entry is added); generated flake out of date (check fails, commit regenerates).
 - [x] 3.2 Fixed point: the commit fixture passes a second `--check`; `flake.lock` entries that existed before keep their revisions.
 - [x] 3.3 Human-pull-request mode is `--check`, which fails without writing a commit when regeneration would change the tree. Wired into `ci.yml` for non-automation branches.
 - [x] 3.4 `docs/contracts/flake-inputs.md` and `context/update-candidates.md`.
@@ -66,7 +66,7 @@ decision first.
 
 ## 6. Promotion and ruleset
 
-- [ ] 6.1 `promote-candidate.yml` and `.github/scripts/promote-candidate.sh`: refusals for a non-candidate, a status not from the App, a ref that does not resolve to the candidate, a candidate that does not descend from the source or from `main`, a stale or closed pull request, and a moved `main`; fast-forward push otherwise. Verify each refusal and one promotion. Runbook §6.
+- [ ] 6.1 `promote-candidate.yml` and `.github/actions/promote-candidate/promote-candidate.sh`: refusals for a non-candidate, a status not from the App, a ref that does not resolve to the candidate, a candidate that does not descend from the source or from `main`, a stale or closed pull request, and a moved `main`; fast-forward push otherwise. Verify each refusal and one promotion. Runbook §6.
 - [ ] 6.2 Ruleset on `main` (required `update-candidate` pinned to the App, no bypass, no pull-request rule), enabled after 6.1 and 1.3. Verify the source pull request is marked merged after a promoted native pull request. Runbook §5.
 - [x] 6.5 Acceptance is bound to a revision, not a moment: `accept.yml` (a `pull_request_target` label event, callable by consumers) posts `update-accepted` on the event payload's head, and `promote-candidate.sh` requires that marker on the source revision it is about to promote. The timestamp comparison is gone, because a commit's dates describe when it claims to have been written rather than when it reached the pull request. Also added: the promoter refuses a candidate status older than the seven-day window a required status check must have succeeded within.
 - [ ] 6.3 `label` policy read from the repository variable `PROMOTION_POLICY`; verify with a labelled pull request (the label posts the marker and re-runs `ci`, so the candidate is re-validated rather than the status renewed), a head change that lapses acceptance, and a labelled pull request whose marker was posted before the head moved. Runbook §2.
@@ -82,9 +82,13 @@ decision first.
 ## Composable interfaces
 
 - [x] C.1 `build-push-cache.yml` (build), `verify-cache.yml` (verification), `candidate.yml` (the pipeline body) and `package-updates-refresh.yml` (the producer) are each callable on their own, and their inputs, secrets and error contracts are documented in `docs/contracts/update-candidates.md`.
-- [x] C.2 Consumer interface: `pipeline.yml`, `promote-candidate.yml`, `candidate-sweep.yml` and `accept.yml` are all callable, so a consumer owns a thin trigger per event and no orchestration; `docs/contracts/update-candidates.md` documents those files, the ref to pin, the permission union and `secrets: inherit` each trigger needs, and the variables and environment it configures. A called workflow's local `./` paths resolve from the caller's commit, which is the pinned ref, so no consumer needs a copy of `candidate.yml` or `validate.yml`.
+- [x] C.2 Consumer interface: `pipeline.yml`, `promote-candidate.yml`, `candidate-sweep.yml` and `accept.yml` are all callable, so a consumer owns a thin trigger per event and no orchestration; `docs/contracts/update-candidates.md` documents those files, the ref to pin, the permission union and `secrets: inherit` each trigger needs, and the variables and environment it configures. Self-repository `$/` workflow and composite-action calls resolve at the defining fleet commit, so consumers copy no workflow bodies or procedures. The consistency guard intentionally obtains its preparation action from fleet main.
 - [ ] C.3 Consumer adoption itself, in the consumer's repository: its thin files, its `automation` environment, its repository variables, the `accept-update` label and its ruleset. A separate change.
-- [ ] C.4 Cut a tag containing the pipeline files. `v1`, the line consumers use for `build-push-cache.yml`, predates them, so a consumer cannot pin the candidate lifecycle until the next tag exists.
+- [x] C.4 `v2` contains the initial pipeline files. Keep that milestone unchanged; new adoption uses a full SHA containing the composition fixes.
+- [x] C.5 Preparation and promotion are bundled composite actions invoked via `$/`; no scripts checkout dirties the candidate. Preserve the default-branch consistency guard.
+- [x] C.6 Replace promotion's hidden dispatch with a dependent pin job. Emit the exact pushed SHA only on success; forward retention selection and systems; document the caller's contents/OIDC permission union. Focused action fixtures exercise no-op, failed push and successful output handoff.
+- [x] C.7 Native jactionlint correctness checks cover workflows and composites, replacing actionlint ignores without a syntax adapter.
+- [ ] C.8 Live verification of the new nested promotion/pin path and consumer caller permission union. Existing manual pin runs do not establish this claim.
 
 ## Follow-ups
 

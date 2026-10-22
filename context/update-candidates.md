@@ -671,3 +671,68 @@ locally to ask whether its root is served).
 **Consequences:** `subject` (default `cache-root`) is the one naming knob, so an
 aggregate under another name needs no rename; `flakeModules.cacheRoot` publishes the
 default aggregate for consumers that want it.
+
+## Bundle procedures with same-revision self references
+
+**Id:** 10df9272-d503-4b8f-85c5-5b1e4ed9c4ca
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `.github/actions/`, `.github/workflows/validate.yml`, 2026-10-22
+
+Preparation and promotion are composite actions called through `$/`. GitHub resolves
+them at the invoking workflow's exact commit; their scripts run through
+`GITHUB_ACTION_PATH` without a checkout inside the consumer tree. The consistency
+guard retains its separate fleet-main checkout beside the target.
+
+**Reason:** the nested `trusted/` checkout was itself an unexpected change under
+preparation's write-set guard. Self references also remove consumer script copies
+and secondary action pins. Fleet PR consistency must still use a procedure the PR
+cannot replace; external consistency therefore retains the documented main drift.
+
+**Rejected alternatives:** duplicate consumer scripts; absolute internal refs;
+loosening the preparation write set; replacing the default-branch guard as part of
+this migration. Revisit the guard separately if pinned external validation is
+required throughout.
+
+## Retention is a dependent job with a success-only revision
+
+**Id:** a870f2bc-4ea9-4ecb-950c-31b3d4a9cb18
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `.github/workflows/promote-candidate.yml`, 2026-10-22
+
+Promotion emits its SHA only after the push succeeds. A dependent reusable pin job
+receives it and the consumer's retention selection and systems. Human-status
+no-ops emit nothing. Caller permissions include contents and OIDC write, but the
+App environment and OIDC authority remain in separate jobs.
+
+**Reason:** dispatch assumed a consumer-local pin workflow and Actions permission
+on the App, then hid failure as a warning. A successful no-op is not evidence of a
+promotion, and a status event's `github.sha` need not be the candidate. Retention
+failure must be visible without undoing the completed promotion.
+
+**Rejected alternatives:** another trigger workflow in every consumer; adding App
+Actions permission; swallowing pin failure. Reusable call jobs cannot use
+`continue-on-error`; a red run with a green promotion job reports the actual state.
+
+## Use native workflow linting rather than syntax translation
+
+**Id:** f20b0985-0872-46cd-9a65-cd1fdf75ec35
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** `pkgs/jactionlint/`, `modules/flake/tooling.nix`, 2026-10-22
+
+Shared tooling uses jactionlint's correctness profile for workflows and composite
+actions. The package supplies shellcheck. Additional security and policy profiles
+are not enabled by this migration.
+
+**Reason:** released actionlint rejects `$/`, queue settings and workflow identity
+contexts. Released jactionlint supports them natively, so an adapter or expanding
+ignore list would add maintenance while weakening validation.
+
+**Rejected alternatives:** source translation before linting; suppressing the self
+reference diagnostics. The cost is a pinned Go package until nixpkgs carries it;
+replace the local derivation when that package becomes available.

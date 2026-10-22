@@ -1,10 +1,22 @@
-# Fast-forwards main to a validated candidate. Runs from the default branch on a
-# `status` event; see docs/contracts/update-candidates.md.
+# Fast-forwards main to a validated update candidate, then retains its artefacts.
 name: promote-candidate
 
 on:
   status:
   workflow_call:
+    inputs:
+      systems:
+        description: "Systems whose retention roots were included in the approved build"
+        type: string
+        default: ""
+      targets:
+        description: "Retention selection; empty uses CACHE_PIN_TARGETS or .#packages"
+        type: string
+        default: ""
+      subject:
+        description: "Aggregate attribute; empty uses CACHE_PIN_SUBJECT or cache-root"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -20,24 +32,14 @@ jobs:
     environment: automation
     permissions:
       contents: write
+    outputs:
+      promoted_sha: ${{ steps.promote.outputs.promoted_sha }}
     steps:
       - name: Check out the default branch
         uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
-
-      # This job holds the token that pushes main, so the procedure is taken from
-      # the revision that defines the workflow — default-branch code, never a pull
-      # request's — and a consuming repository needs no copy of it.
-      - name: Check out the automation scripts from this workflow's revision
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
-          path: trusted
-          sparse-checkout: .github/scripts
-          persist-credentials: false
 
       - name: Mint the automation token
         id: app
@@ -47,22 +49,24 @@ jobs:
           private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
 
       - name: Fast-forward main to the candidate
+        id: promote
+        uses: $/.github/actions/promote-candidate
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           CANDIDATE: ${{ github.event.sha }}
           APP_LOGIN: ${{ vars.AUTOMATION_APP_SLUG }}[bot]
           POLICY: ${{ vars.PROMOTION_POLICY || 'auto' }}
-        run: bash "$GITHUB_WORKSPACE/trusted/.github/scripts/promote-candidate.sh"
 
-      - name: Move the cache pins to the promoted revision
-        if: ${{ vars.CACHE_PIN_NAME != '' }}
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          CANDIDATE: ${{ github.event.sha }}
-        run: |
-          set -euo pipefail
-          gh workflow run pin-cache.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref main \
-            -f revision="$CANDIDATE" || \
-            echo "::warning::could not queue pin-cache for $CANDIDATE; dispatch it by hand"
+  pin:
+    needs: promote
+    if: ${{ needs.promote.outputs.promoted_sha != '' && vars.CACHE_PIN_NAME != '' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: $/.github/workflows/pin-cache.yml
+    with:
+      revision: ${{ needs.promote.outputs.promoted_sha }}
+      pin_name: ${{ vars.CACHE_PIN_NAME }}
+      systems: ${{ inputs.systems || vars.CANDIDATE_SYSTEMS || 'x86_64-linux aarch64-linux' }}
+      targets: ${{ inputs.targets || vars.CACHE_PIN_TARGETS || '.#packages' }}
+      subject: ${{ inputs.subject || vars.CACHE_PIN_SUBJECT || 'cache-root' }}

@@ -120,7 +120,7 @@ jobs:
     if: ${{ needs.resolve.outputs.kind == 'human' }}
     permissions:
       contents: read
-    uses: ./.github/workflows/validate.yml
+    uses: $/.github/workflows/validate.yml
     with:
       revision: ${{ needs.resolve.outputs.sha }}
       generated_files: check
@@ -134,7 +134,7 @@ jobs:
       statuses: write
       pull-requests: write
       id-token: write
-    uses: ./.github/workflows/candidate.yml
+    uses: $/.github/workflows/candidate.yml
     with:
       source_sha: ${{ needs.resolve.outputs.sha }}
       source_pr: ${{ needs.resolve.outputs.pr }}
@@ -157,7 +157,7 @@ jobs:
       statuses: write
       pull-requests: write
       id-token: write
-    uses: ./.github/workflows/candidate.yml
+    uses: $/.github/workflows/candidate.yml
     with:
       source_sha: ${{ needs.resolve.outputs.sha }}
       source_pr: ${{ needs.resolve.outputs.pr }}
@@ -183,7 +183,7 @@ jobs:
       statuses: write
       pull-requests: write
       id-token: write
-    uses: ./.github/workflows/candidate.yml
+    uses: $/.github/workflows/candidate.yml
     with:
       source_sha: ${{ matrix.source_sha }}
       source_pr: ${{ matrix.source_pr }}

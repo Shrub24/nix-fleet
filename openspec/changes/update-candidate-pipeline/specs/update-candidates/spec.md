@@ -65,10 +65,11 @@ On success the pipeline SHALL post a required status on the candidate SHA, whose
 - **WHEN** the build succeeds but the configured substituter does not serve an output
 - **THEN** the success status is still posted, because availability says nothing about whether the revision is correct and an unavailable cache must not block dependency updates
 
-#### Scenario: Availability is checked only for a built revision
+#### Scenario: Availability is advisory for each default-branch revision
 
-- **WHEN** cache availability is checked
-- **THEN** it is checked for a revision that was built — a promoted candidate or an explicit dispatch — and not for every push to the default branch, because a revision whose new derivations were never realised would report them as misses
+- **WHEN** a push or explicit dispatch checks cache availability
+- **THEN** unserved roots are reported as notices without failing the diagnostic
+- **AND** failure to evaluate or query the store still fails the diagnostic
 
 #### Scenario: A stage does not report
 
@@ -104,6 +105,46 @@ The default branch SHALL require the pipeline's status and SHALL NOT require a p
 
 - **WHEN** the promoted SHA descends from the source PR head
 - **THEN** the source PR is marked merged
+
+### Requirement: Retention follows successful promotion
+
+After a successful push, promotion SHALL expose the pushed SHA and call pinning as
+a dependent reusable-workflow job. A no-op or failed push SHALL expose no promoted
+SHA. Pinning SHALL use the explicit retention selection and systems, whose roots
+MUST be realised by the approved build. A failed pin SHALL fail the overall run
+without rolling back promotion. Callers SHALL grant the permissions needed by both
+jobs, including `id-token: write` for pinning.
+
+#### Scenario: Human status is not a promotion
+
+- **WHEN** a successful status has no candidate ref
+- **THEN** promotion succeeds as a no-op and no pin job runs
+
+#### Scenario: The status event revision differs from the default branch revision
+
+- **WHEN** promotion pushes the candidate successfully
+- **THEN** pinning receives that candidate SHA, not the event's `github.sha`
+
+#### Scenario: Retention fails after the push
+
+- **WHEN** the cache refuses a retention root
+- **THEN** the pin job and overall run fail while the successful promotion remains visible
+- **AND** main is not rolled back
+
+### Requirement: Procedures travel with their invoking workflows
+
+Internal workflow and action composition SHALL use self-repository `$/` references
+at the invoking file's exact commit. Preparation and promotion SHALL execute their
+bundled scripts without copying procedures into consumer repositories or adding a
+checkout inside the candidate tree. The generated-file consistency guard SHALL
+retain its intentional fleet-default-branch procedure independently of the revision
+under test.
+
+#### Scenario: Consumer has no bundled procedures
+
+- **WHEN** a consumer calls a SHA-pinned fleet entry point
+- **THEN** its internal workflows and actions resolve from that fleet revision
+- **AND** no consumer-local pinning workflow is needed for automatic retention
 
 ### Requirement: Promotion policy is selected per repository
 

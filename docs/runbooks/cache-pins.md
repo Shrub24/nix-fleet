@@ -135,10 +135,16 @@ cache's `pins` rule (§2) rather than with a wildcard.
 
 ## 5. First run
 
-`promote-candidate` dispatches `pin-cache` after a successful fast-forward. By hand it
-is `gh workflow run pin-cache.yml -f pin_name=auto` (or an explicit prefix), which is
-also how a revision whose publication completed late is re-pinned. One pin per system
-is created.
+`promote-candidate` calls `pin-cache` as a dependent reusable job after a successful
+fast-forward, passing the pushed SHA. A human-status no-op emits no SHA and starts
+no pin job. A retention failure turns the run red without undoing promotion.
+Consumer promotion callers must grant `contents: write` and `id-token: write`.
+
+On nix-fleet, `gh workflow run pin-cache.yml -f pin_name=auto` re-pins by hand after
+late publication. A consumer needs its own manual trigger only if it wants manual
+re-pinning; automatic promotion does not require a local `pin-cache.yml` file.
+Set the actual `systems` and retention selection (`targets`, `subject`) when the
+consumer does not expose the defaults, and include the root in its approved build.
 
 Verify, from the cache host when no write token is at hand:
 
@@ -198,6 +204,6 @@ niks3 pins list --names-only --server-url "$API"
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `403` on `pins create`                  | missing `write` scope, or the name is reserved to another identity (§2)                                 |
 | `403` on the tailnet join               | `pin-cache.yml` missing from the tailnet credential's workflow list (§3)                                |
-| no pin run after a promotion            | `CACHE_PIN_NAME` unset (§4)                                                                             |
+| no pin job after a promotion            | `CACHE_PIN_NAME` unset (§4), or the event was a human-status no-op                                      |
 | `pins create` fails naming a store path | the path is not in the cache: the build's publication did not complete (this is the check pins provide) |
-| `pins list` empty after a promotion     | that dispatch failed (the promoter only warns), or it wrote to a different server than `$API`           |
+| `pins list` empty after a promotion     | inspect the failed pin job, selected prefix and server; promotion is not rolled back                    |

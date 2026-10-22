@@ -155,6 +155,7 @@ jobs:
       - name: Pin one aggregate root per system
         env:
           SYSTEMS: ${{ inputs.systems || 'x86_64-linux aarch64-linux' }}
+          REVISION: ${{ inputs.revision || github.sha }}
           TARGETS: ${{ inputs.targets || '.#packages' }}
           SUBJECT: ${{ inputs.subject || 'cache-root' }}
           PIN: ${{ inputs.pin_name || vars.CACHE_PIN_NAME }}
@@ -179,7 +180,7 @@ jobs:
               "$PIN-$system" "$root"
           done
           {
-            echo "### Pins moved for \`${GITHUB_SHA}\`"
+            echo "### Pins moved for \`${REVISION}\`"
             echo ""
             echo "- name: \`$PIN-<system>\`"
             echo "- systems: $SYSTEMS"

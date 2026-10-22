@@ -113,6 +113,7 @@ with tempfile.TemporaryDirectory() as directory:
                 "GITHUB_REPOSITORY": "Shrub24/nix-fleet",
                 "GITHUB_STEP_SUMMARY": str(summary),
                 "GITHUB_SHA": "0" * 40,
+                "REVISION": "1" * 40,
             },
             text=True,
             capture_output=True,
@@ -129,6 +130,7 @@ with tempfile.TemporaryDirectory() as directory:
     # The token command is handed to niks3, which runs and refreshes it per request.
     assert all("--auth-token-script" in line for line in created), created
     assert "nix-fleet-main-<system>" in summary.read_text(), summary.read_text()
+    assert "1" * 40 in summary.read_text() and "0" * 40 not in summary.read_text()
 
     # `auto` derives the prefix from the repository, so a consumer needs no variable.
     result = run("auto")

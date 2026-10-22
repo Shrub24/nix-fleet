@@ -69,17 +69,6 @@ jobs:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
 
-      # The procedure comes from the revision that defines this workflow, so a
-      # consuming repository needs no copy of it.
-      - name: Check out the automation scripts from this workflow's revision
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
-          path: trusted
-          sparse-checkout: .github/scripts
-          persist-credentials: false
-
       - name: Install Nix
         uses: NixOS/nix-installer-action@v1
 
@@ -101,10 +90,12 @@ jobs:
           GIT_AUTHOR_EMAIL: automation@users.noreply.github.com
           GIT_COMMITTER_NAME: nix-fleet automation
           GIT_COMMITTER_EMAIL: automation@users.noreply.github.com
-        run: bash "$GITHUB_WORKSPACE/trusted/.github/scripts/prepare-candidate.sh"
+        uses: $/.github/actions/prepare-candidate
 
       - name: Confirm the candidate is a fixed point
-        run: bash "$GITHUB_WORKSPACE/trusted/.github/scripts/prepare-candidate.sh" --check
+        uses: $/.github/actions/prepare-candidate
+        with:
+          mode: check
 
       - name: Record the candidate commit
         id: commit
@@ -183,7 +174,7 @@ jobs:
     if: ${{ needs.publish.result == 'success' }}
     permissions:
       contents: read
-    uses: ./.github/workflows/validate.yml
+    uses: $/.github/workflows/validate.yml
     with:
       revision: ${{ needs.prepare.outputs.candidate }}
       generated_files: skip
@@ -194,7 +185,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/build-push-cache.yml
+    uses: $/.github/workflows/build-push-cache.yml
     with:
       revision: ${{ needs.prepare.outputs.candidate }}
       targets: ${{ inputs.targets }}

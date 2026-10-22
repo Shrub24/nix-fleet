@@ -52,7 +52,7 @@ split a heavy leaf by contract — never to drop its probes. The ceiling that
 keeps a leaf to one claim is a review rule, not this memory figure.
 
 Human pull requests also check that the generated `flake.nix` and `flake.lock`
-are what regeneration produces (`.github/scripts/prepare-candidate.sh --check`).
+are what regeneration produces (`prepare-candidate` composite action, `mode: check`).
 Automation branches are exempt: their regeneration is the candidate's child commit.
 
 A scheduled `package-updates-refresh` workflow is the native producer: it moves
@@ -103,7 +103,7 @@ Pinning is a **separate workflow owned by promotion**, not a job here.
 `pin-cache.yml` (dispatch or `workflow_call`) pins one aggregate root per system —
 `packages.<system>.cache-root`, a linkFarm whose closure is every published package —
 and
-`promote-candidate.yml` dispatches it after a successful fast-forward. The split is
+`promote-candidate.yml` calls it as a dependent job with the successfully pushed SHA. The split is
 about what the two things mean: a pin name means "the fleet's current main", so it
 moves on the event that lands a revision the pipeline built, while `verify-cache`
 on a push is a measurement whose colour nothing may depend on. `pins create` fails
@@ -234,7 +234,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v2
+    uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@<full-sha>
     with:
       # cache_api_url: https://niks3.tailnet.example.com   (optional; the fleet
       #                                                     contract supplies it)
@@ -431,11 +431,11 @@ identity federation**: the action exchanges GitHub's OIDC token for a
 short-lived node key, so no long-lived credential exists in any repository,
 and it consumes the same `id-token: write` grant niks3 already needs.
 
-The `tailnet` input defaults to true. Before the build job joins, the
-prepare job resolves public identity metadata from the checked-out consumer's
-`packages.x86_64-linux.ci-tailscale`. It installs Nix before resolving that
-artifact; bootstrap flake inputs must therefore be reachable without the
-tailnet. The build job uses that resolved identity.
+The `tailnet` input defaults to true. The build job resolves public identity from
+the coordinator at `job.workflow_repository` / `job.workflow_sha` for
+`runner_system`, before joining. The consumer publishes no fleet metadata and
+needs no fleet input. The selection-only prepare job installs neither Nix nor the
+coordinator.
 
 The identity comes from `fleet.ci.tailscale.clientId` and `audience`, not GitHub
 secrets. An ordinary consumer assignment overrides the shared Client ID; its
@@ -511,10 +511,10 @@ claim. The claims worth binding:
   the tailnet credential use `…/workflows/*@*`, and why the containment is the
   repository allowlist and the `tag:ci` ACL rather than the ref pattern.
 
-## First-live-run caveats (honest state)
+## Builder trust
 
-- Prepare resolves `ci-tailscale` on x86_64; the build job resolves the builder
-  bundle and cache URL through `packages.<runner_system>` on its native runner.
+- The workflow and coordinator configuration resolve from one exact fleet SHA;
+  the checked-out consumer revision is independent of it.
 - Coordinator-side trust for substitution is separate from builder-side
   dispatch trust: the selected `build-account` aspect adds its account to the
   builder's `nix.settings.trusted-users`, allowing unsigned build inputs to be
@@ -544,13 +544,12 @@ variable after updating the caller and reusable workflow; they are no longer
 read. For a different identity, pass `ts_client_id`/`ts_audience` as inputs,
 optionally sourced from Variables rather than Secrets.
 
-The caller must grant `contents: read` and `id-token: write` and forward only
-`BUILDER_SSH_KEY`. Select the build targets and profile in the caller;
-importing an updated `flakeModules.fleet` supplies the canonical `ci` bundle,
-`cache-api-url` and `ci-tailscale` packages. Update both the flake pin and the
-workflow reference together: an older flake lacks the new metadata artifact.
-Override `cache_api_url` only for a different cache. An entirely substituted
-build may need no SSH key, but remote cache misses require it.
+The caller grants `contents: read` and `id-token: write`, forwards
+`BUILDER_SSH_KEY`, and selects targets, systems and profile. Pin the external
+workflow by full SHA; it resolves matching fleet configuration itself. No
+`flakeModules.fleet` import or metadata re-export is required. Override
+`cache_api_url` only for a different cache. An entirely substituted build may need
+no SSH key, but remote cache misses require it.
 
 ### Coordinator key and builder trust
 
