@@ -1,11 +1,11 @@
 # Adopting fleet CI in a repository
 
-Pin external workflow calls to a full nix-fleet SHA; let Renovate update that pin.
-Release tags mark contract milestones and are retained for legacy callers, not
-recommended: `v2` (`11a028b2`) predates bundled actions, nested retention, the
-cold-store evaluator, the runner-owned builder key and the shared verify/pin root.
-`462c312b` is the first revision with all of them. In the examples below, replace
-`<sha>` with the selected full commit — never `@main`.
+Pin external workflow calls to a full nix-fleet SHA and let Renovate update it.
+`v3` is the current contract milestone and a valid pin for a repository that would
+rather follow a tag; `v1` and `v2` (`11a028b2`) are legacy — `v2` predates bundled
+actions, nested retention, the cold-store evaluator, the runner-owned builder key
+and the shared verify/pin root. In the examples below, replace `<sha>` with the
+selected full commit (`v3` resolves to `e203a0c6`), never `@main`.
 
 A consumer repository declares **what** to build. nix-fleet owns **how**: the
 builders, the cache, the coordinator configuration and the validation. Nothing

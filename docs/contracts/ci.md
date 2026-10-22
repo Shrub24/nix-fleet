@@ -332,11 +332,12 @@ grants less than the workflow needs.
 | `ts_client_id`    | Public client ID override; empty resolves the fleet CI identity                                                                                                                                                                                                                                                                                                                    |
 | `ts_audience`     | Public audience override; empty resolves the fleet default, or derives the audience from an overridden client ID                                                                                                                                                                                                                                                                   |
 
-**Versioning:** pin a full commit SHA; never `@main`. Major tags are retained for
-legacy callers only (`v2` predates bundled actions and nested retention). A tag marks a contract
-change — `v1` is `build-push-cache` with `builder_attr`, `v2` is the reusable set
-with `profile` and the coordinator — so a tag bump is the same act as a contract
-bump, and `main` carries no promise. Because the coordinator resolves from the
+**Versioning:** pin a full commit SHA, or `@v3` if you would rather follow the
+current milestone tag; never `@main`. A tag marks a contract change — `v1` is
+`build-push-cache` with `builder_attr`, `v2` is the reusable set with `profile` and
+the coordinator, `v3` adds bundled actions, nested promotion-to-pin, the writable
+cold-store evaluator, the runner-owned builder key and the shared verify/pin root —
+so a tag bump is the same act as a contract bump, and `main` carries no promise. Because the coordinator resolves from the
 same revision, a pin bump moves the machinery and the builder and cache facts
 together: there is nothing else to keep in step.
 
@@ -578,14 +579,14 @@ claim. The claims worth binding:
   unmerged branches out.
 - `job_workflow_ref` — this entry point and its ref, e.g.
   `Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@refs/heads/main`,
-  `…/pin-cache.yml@refs/heads/main`, or `…@refs/tags/v2` for a consumer pinned to
-  a tag. **The cache binds it, one rule per workflow**: publishing is
+  `…/pin-cache.yml@refs/heads/main`, or `…@refs/tags/v3` for a consumer pinned to
+  the current tag (`refs/tags/v1` and `refs/tags/v2` for the legacy ones). **The cache binds it, one rule per workflow**: publishing is
   `build-push-cache.yml`, pinning is `pin-cache.yml`, each with its own pin
   authority (`docs/runbooks/cache-pins.md`). A missing bound claim is rejected, so
   inlining these steps instead of calling the workflow still denies a cache token.
 
   The ref shape matters and is easy to miss: a consumer that pins the call by
-  **tag or commit** presents `…@refs/tags/v2` or `…@<sha>`, not
+  **tag or commit** presents `…@refs/tags/v3` or `…@<sha>`, not
   `…@refs/heads/main`. Every rule that matches `job_workflow_ref` must therefore
   cover the shape consumers actually pin — which is why both the cache claims and
   the tailnet credential use `…/workflows/*@*`, and why the containment is the
