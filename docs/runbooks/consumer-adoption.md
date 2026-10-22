@@ -219,11 +219,16 @@ verifiable on its own.
    evaluation first, so a cold store works), and — with `generated_files: check` — a
    `write-flake` app that regenerates only `flake.nix` and `flake.lock`.
 
-   A flake whose evaluation needs genuine import-from-derivation cannot use the
-   evaluate job as shipped: the contract keeps IFD off, because enabling it runs
-   builds inside a job that has no builders. `nix-homelab` is that case (D-082:
-   degoog's bun2nix IFD), so it keeps its own evaluation until nix-fleet ships an
-   explicit, bound opt-in.
+   Import-from-derivation stays off, and there is no option to re-enable it: the
+   evaluation job has no builders, and a mode that builds there would restore the
+   coupling the cold-store gate exists to avoid. A flake that cannot evaluate
+   without IFD therefore removes it before adopting this suite. `nix-homelab` did:
+   upstream `degoog` generates its `bun.nix` during evaluation with
+   `runCommandLocal`, so the repository carries the generated file, passes it as
+   `bunDeps.bunNix`, and keeps it honest with a check that regenerates it from the
+   pinned lockfile and diffs. The one-line proof that the removal worked:
+   `nix eval --option allow-import-from-derivation false --raw
+.#checks.<system>.<host>.drvPath`.
 
    An externally pinned call runs the preparation action from its own revision.
    Only nix-fleet's own pull requests use the default-branch action, so a pull
@@ -314,6 +319,13 @@ package aggregate does not automatically include `nixosConfigurations`.
    own `ci.yml`, both of which Path B supersedes — its producer is a separate
    copy of a workflow nix-fleet now owns end to end, so adopting B is partly
    deletion. Do A first (two-line change, immediately verifiable), then B.
+
+   Before B, two attributes decide it, and both fail by name rather than subtly:
+   `nix eval .#checks.x86_64-linux --apply builtins.attrNames` must list `treefmt`
+   (`validate.yml` builds it; homelab formats in a development shell and its check
+   set does not contain one today), and the flake must evaluate with IFD off, which
+   its generated `bun.nix` establishes.
+
 2. **`agent-radar`** — smallest Path A: no existing Nix CI to unwind, so it
    proves that a repository with no fleet input builds and publishes.
 3. **`memex`** — Path A on a real, foreign closure. Both `memex` and
