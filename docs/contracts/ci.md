@@ -352,8 +352,10 @@ A consumer needs three things of its own, and nothing else:
 It does **not** need a fleet input, re-exported builder metadata, or a
 `flakeModules.fleet` import: it declares what to build and the workflow fetches
 its configuration from itself. Nixpkgs locality is separate — a consumer whose
-`nixpkgs` differs from the fleet's substitutes little of its own closure, so
-`nixpkgs.follows` on the fleet input is what makes the cache useful.
+`nixpkgs` differs from the fleet's substitutes little of its own closure. Derivation
+identity is what decides substitution, so the consumer's `nixpkgs` has to follow the
+fleet's (`inputs.nixpkgs.follows = "nix-fleet/nixpkgs"`) — the reverse alignment
+changes only the fleet's own artefacts.
 
 Two jobs:
 
@@ -591,6 +593,76 @@ claim. The claims worth binding:
   cover the shape consumers actually pin — which is why both the cache claims and
   the tailnet credential use `…/workflows/*@*`, and why the containment is the
   repository allowlist and the `tag:ci` ACL rather than the ref pattern.
+
+## Policy knobs and when to choose them
+
+One mechanism, a few switches. All of them are repository variables or typed
+inputs, so a repository picks a posture without editing a workflow.
+
+| Knob                                     | Values                          | What it decides                                                                                                                          |
+| ---------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROMOTION_POLICY`                       | `auto` (default), `label`       | whether a validated candidate moves the default branch on its own, or waits for `accept-update`                                          |
+| `AUTOMATION_UPDATE_AUTHORS`              | logins, comma-separated         | which PR authors are automation. A producer missing from this list is downgraded to a human change, with a warning rather than a refusal |
+| `CANDIDATE_TARGETS`                      | flake selection                 | what the candidate build realises. Narrow it to the deployable outputs and leave VM tests to validation, or every proposal pays for them |
+| `CANDIDATE_SYSTEMS`                      | space-separated systems         | which systems a candidate builds; must match what the repository exposes                                                                 |
+| `CANDIDATE_RUNNER_SYSTEM`                | a Nix system                    | the coordinator architecture                                                                                                             |
+| `CANDIDATE_PROFILE`                      | fleet build profile             | which builder set the candidate uses                                                                                                     |
+| `CACHE_PIN_NAME`                         | `auto`, a prefix, or empty      | retention. Empty means no pin job runs at all; `auto` derives `<repository>-main`                                                        |
+| `CACHE_PIN_TARGETS`, `CACHE_PIN_SUBJECT` | flake selection, attribute name | which aggregate is retained, when it is not `.#packages` / `cache-root`                                                                  |
+
+Two postures the switches express, both supported without touching a workflow:
+
+- **Review-gated.** `PROMOTION_POLICY=label`, plus `accept.yml` so the acceptance
+  label records which revision was accepted. A ruleset can then require
+  `update-candidate` on the default branch. Use it when an unattended bump carries
+  real risk — a deployable host, a production flake — and when somebody reviews
+  dependency changes anyway.
+- **Fast-moving linear.** `PROMOTION_POLICY=auto`, no `accept.yml` (its marker
+  exists only for the label policy), no ruleset. A candidate that validates and
+  builds moves the branch; the pipeline's own refusal is the only gate, which is
+  also what keeps hand-pushed commits possible. Use it for a repository whose
+  default branch is a working surface rather than a reviewed artefact.
+
+Two consequences belong with the second posture:
+
+- Promotion is a **fast-forward**, and it refuses a candidate whose base moved. A
+  repository that pushes to its default branch often therefore needs the proposal
+  rebased between validation and promotion: Renovate's
+  `"rebaseWhen": "behind-base-branch"` does that, and the rebase re-triggers
+  validation. `auto` also re-prepares open proposals on a default-branch push;
+  `label` does not, by design.
+- Merging a proposal **by hand** bypasses promotion, so the rolling pin stays on the
+  last promoted revision and `verify-cache` reports the merged revision's roots as
+  unserved. Nothing breaks, but the pin is stale until something promotes or
+  `pin-cache` is dispatched for that revision.
+
+`candidate-sweep.yml` is housekeeping in either posture: candidates are commits
+under `refs/candidates/`, and the sweep deletes those older than 30 days.
+
+## Action and workflow pins
+
+Every `uses:` in this repository names a 40-character commit digest with its tag as a
+trailing comment:
+
+```yaml
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+```
+
+Both halves are load-bearing. The digest fixes the code that runs; the comment is
+the only thing that lets Renovate follow it — Renovate disables a `uses:` pinned to a
+bare digest because it cannot tell which tag the commit belongs to, and a floating
+tag is updatable but mutable. `renovate.json` therefore extends
+`helpers:pinGitHubActionDigests` and carries a `packageRules` entry for both the
+`action` and `workflow` depTypes: `workflow` is the depType for a job-level `uses:`
+of a reusable workflow, so it needs its own rule or a newly added call stays on a tag.
+
+A consumer pinning these workflows uses the same two forms (`@v3`, or `@<sha> # v3`)
+and the same Renovate config, shown in
+[docs/runbooks/consumer-adoption.md](../runbooks/consumer-adoption.md).
+
+`renovate.json` here covers Actions only. Flake inputs move through this
+repository's native updater (`update-packages`), not Renovate, so a `flake.lock` bump
+arrives as an automation proposal through the same pipeline as any other.
 
 ## Builder trust
 
