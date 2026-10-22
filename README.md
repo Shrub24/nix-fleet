@@ -80,7 +80,7 @@ tests/
 .envrc               # direnv: use flake
 justfile             # fmt / fmt-check / check / lock
 lefthook.yml         # pre-commit fmt+statix+deadnix, pre-push flake check
-renovate.json        # weekly nix flake input updates
+renovate.json        # weekly GitHub Actions updates
 ```
 
 ````
@@ -190,7 +190,7 @@ mechanism, its code.
 - `treefmt` via `nix fmt` (prettier for md/yaml/json, taplo for TOML, plus the pinned Nix trio in `modules/flake/tooling.nix`); `nix flake check` runs the same formatter as a check, so unformatted files fail CI. Same tooling shape as dotfiles' `modules/flake/tooling.nix`.
 - Secrets enter through `/lib/secrets.nix` helpers only: `mkSecretFileOption` for consumer-bound paths, `mkRequiredSecretAssertion` for the named fail-closed gate, `mkSecretsFromMap` for `sops.secrets` registration. Byte-identical to nix-homelab's helper; consumers of these aspects do not need their own copy.
 - Every aspect declares its options; every option has a type; fail closed with named errors, never raw `builtins.head`/null derefs.
-- Input pins: once consumer flakes alias their nixpkgs-family inputs to nix-fleet's (`inputs.<x>.inputs.nixpkgs.follows = "nixpkgs"` via nix-fleet), this repository's `flake.lock` is the fleet's shared-input authority and its `renovate.json` schedule is the fleet's bump cadence — a nixpkgs bump lands here first, consumers inherit it through their follows chains.
+- Input pins: this repository's `flake.lock` is the fleet's shared-input authority, and its `renovate.json` covers Actions only — flake inputs are moved by this repository's own updater (`update-packages`), not Renovate. A consumer shares the fleet's nixpkgs by following it (`inputs.nixpkgs.follows = "nix-fleet/nixpkgs"`), which also shares its bump cadence.
 - Provenance discipline: no secrets, no private keys, no absolute paths in this repo. The canonical inventory carries public fleet facts only (machine IDs, systems, Tailscale hostnames, host *public* keys once harvested); consumer-local inventory lives downstream, additive only. The fixture is a consumer-shaped integration test and must never resemble or feed the canonical inventory.
 
 ## Pointers into nix-homelab (read-only reference)

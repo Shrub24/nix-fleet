@@ -1,11 +1,35 @@
 # Adopting fleet CI in a repository
 
-Pin external workflow calls to a full nix-fleet SHA and let Renovate update it.
-`v3` is the current contract milestone and a valid pin for a repository that would
-rather follow a tag; `v1` and `v2` (`11a028b2`) are legacy — `v2` predates bundled
+Pin external workflow calls to `@v3` or to a full commit SHA. `v3` is the current
+contract milestone; `v1` and `v2` (`11a028b2`) are legacy — `v2` predates bundled
 actions, nested retention, the cold-store evaluator, the runner-owned builder key
 and the shared verify/pin root. In the examples below, replace `<sha>` with the
-selected full commit (`git rev-parse v3` prints the tagged revision), never `@main`.
+selected full commit (`git rev-parse v3` prints the tagged revision), never
+`@main`.
+
+**Keep the pin current with a tag, or a SHA plus a version comment — never a bare
+SHA.** Renovate disables a `uses:` pinned to a bare SHA because it cannot tell
+which tag that commit belongs to: no comment, no updates, silently stale. The two
+forms it does maintain are
+
+```yaml
+uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@v3 # moves to v4 at the next major
+uses: Shrub24/nix-fleet/.github/workflows/build-push-cache.yml@a1b2c3d # v3
+```
+
+where the trailing `# v3` is what makes the digest follow the tag. A consumer's
+Renovate config that produces the second form on its own:
+
+```json
+{
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "packageRules": [{ "matchDepTypes": ["workflow"], "pinDigests": true }]
+}
+```
+
+`workflow` is Renovate's depType for a job-level `uses:` of a reusable workflow, so
+that rule is what covers these calls rather than ordinary actions. Nothing else is
+needed from the consumer: nix-fleet is public and the pin names no credential.
 
 A consumer repository declares **what** to build. nix-fleet owns **how**: the
 builders, the cache, the coordinator configuration and the validation. Nothing

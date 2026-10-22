@@ -334,9 +334,11 @@ calls need `contents: write`, `statuses: write`, `pull-requests: write` and
 App or the builder key. Promotion and pinning are separate jobs: only promotion
 gets the App environment, and only pinning gets `id-token: write`.
 
-Use a full SHA containing the composition fixes; Renovate can update it. The
-existing `v2` tag predates bundled actions and nested pinning and is not moved by
-this fix. Release tags remain contract milestones; legacy consumers may stay on
+Use `@v3`, or a full SHA carrying a `# v3` version comment. Renovate does not
+update a **bare** SHA — it cannot resolve which tag the commit belongs to and
+disables the dependency — so a pin without a comment or tag goes stale without
+saying so. The existing `v2` tag predates bundled actions and nested pinning and is
+not moved by this fix. Release tags remain contract milestones; legacy consumers may stay on
 their existing version while transitioning. nix-fleet is public, so the call
 itself needs no access grant.
 
