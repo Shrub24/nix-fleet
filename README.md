@@ -250,15 +250,17 @@ custom token refresher. Both direct dispatch and reusable callers require
 `contents: read` and `id-token: write`; cache authorization remains consumer
 policy in `services.niks3-cache.oidc.providers`.
 
-CI builder artifacts come from the fleet inventory, not repo variables: a
-consumer flake importing the fleet feature gets `packages.ci` (canonical profile;
-per-profile bundles as `packages.<profile>`) — a directory with `machines` (nix
-machines-file lines), `known_hosts`, and `ssh_config`, rendered from the
-merged inventory at consumer eval time. The `build-push-cache` reusable
-workflow installs these instead of holding builder coordinates; a
-tailnet join is enabled by default, using public `fleet.ci.tailscale` metadata
-rendered as `packages.<system>.ci-tailscale` — no repository variables or
-long-lived OAuth secret. Only the coordinator private key is a repository
+The build workflow resolves its **own** configuration, so a consumer needs no
+fleet input and holds no builder coordinates: it reads the fleet revision that
+defines the executing workflow (`job.workflow_repository` / `job.workflow_sha`),
+substitutes `packages.<runner_system>.ci-coordinator-<profile>` from that revision,
+and installs it — `nix.conf`, `machines`, `ssh_config` and `known_hosts` rendered
+from the inventory at fleet eval time. The same revision supplies the public
+`ci-tailscale` metadata for the tailnet join, so there are no repository variables
+and no long-lived OAuth secret. Importing `flakeModules.fleet` still yields the
+same artefacts in a consumer's own flake (`packages.ci`, per-profile
+`packages.<profile>`), but that is for a repository that also composes fleet
+aspects, not a requirement of the workflow. Only the coordinator private key is a repository
 secret; its public half is `fleet.ci.sshPublicKey`. The join reuses the same
 `id-token: write` grant niks3 needs. Full contract:
 [docs/contracts/ci.md](docs/contracts/ci.md).

@@ -28,6 +28,16 @@ so the disposable Podman VM check is x86_64-only. The fixture toplevel is
 evaluated for both architectures. Adding a check adds evaluation coverage
 without editing the workflow.
 
+The argument is a Nix flake reference, so a directory needs `./` (or `path:`) — a
+bare `target` is an indirect flake id and fails with `cannot find flake
+'flake:target' in the flake registries`. The action passes the reference through
+unchanged rather than guessing, and a check asserts every caller supplies a form
+Nix resolves as a directory.
+
+The cold-store claim needs a real store, so it is evidenced by a live
+`validate.yml` run rather than a `nix flake check` of this repository; the
+reproduction above is the local form.
+
 The package refresh producer and local pre-push hook use the same evaluator.
 Run it locally from a nix-fleet checkout (requires Nix, Bash and jq):
 
@@ -116,7 +126,11 @@ also [the package-update contract](package-updates.md).
 
 **What the cache is promised to serve is the target selection itself** — for
 nix-fleet, `.#checks` for each declared system, the same selection the build
-traverses. An output outside the selection is not promised, and if part of the
+traverses. Retention is a different, narrower promise: the pin and the diagnostic
+read `packages.<system>.cache-root`, the artefact aggregate, because a check's
+output moves whenever its inputs do. Build selection, retention and availability
+measurement are three distinct subjects, and only retention and measurement share
+one. An output outside the selection is not promised, and if part of the
 selection should not be cacheable the answer is to remove it from the selection
 rather than to weaken the check.
 
@@ -135,6 +149,13 @@ already empty. It names every missing path and **exits 0 regardless** — misses
 fails (evaluation, the store query), so a broken cache client is not reported as a
 cache that serves nothing. Presence is enforced fail-closed elsewhere: `pins create`
 refuses a path the cache does not hold.
+
+Locality is a property of derivation identity, not of input wiring: a consumer
+substitutes its own closure only when its derivations match the ones the cache
+holds — the same nixpkgs revision _and_ the same overlays, config and system.
+`inputs.nix-fleet.inputs.nixpkgs.follows = "nixpkgs"` aligns the fleet's artefacts
+to the consumer and leaves the consumer's own derivations unchanged; the consumer's
+`nixpkgs` following the fleet's is the direction that shares a cache.
 
 The selection is the **artefact set** under `.#packages`, reduced to the pinned
 root `cache-root` per system — not `.#checks`. A check answers a question about a revision and

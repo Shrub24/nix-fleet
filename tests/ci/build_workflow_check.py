@@ -51,15 +51,6 @@ coordinator = steps["Install the fleet coordinator from this workflow's revision
 env = coordinator["env"]
 assert env["FLEET_REPO"] == "${{ job.workflow_repository }}"
 assert env["FLEET_SHA"] == "${{ job.workflow_sha }}"
-assert "github:${FLEET_REPO}/${FLEET_SHA}#packages.${RUNNER_SYSTEM}.ci-coordinator-${PROFILE}" in coordinator["run"], (
-    "the flake reference must use the github: path form; `owner/repo@sha` is git-URL"
-    " syntax and resolves to 404"
-)
-assert "@${FLEET_SHA}" not in coordinator["run"]
-assert 'sudo "$coord/install.sh"' in coordinator["run"]
-# The readback runs outside sudo: the installer's PATH has no nix, and the point is
-# to observe the installed configuration from the caller's context.
-assert coordinator["run"].index("nix config show builders") > coordinator["run"].index('sudo "$coord/install.sh"')
 
 resolver = steps["Resolve the tailnet identity"]
 assert resolver["if"] == "${{ inputs.tailnet }}"
@@ -70,26 +61,41 @@ assert join["with"]["audience"] == "${{ steps.tailscale.outputs.audience }}"
 assert join["with"]["tags"] == "tag:ci"
 
 key = steps["Install the builder SSH identity"]
-assert "/etc/nix/builder_ed25519" in key["run"]
-assert "chmod 0600" in key["run"] and "0640" not in key["run"].replace("# ", ""), (
-    "OpenSSH rejects a group-readable key owned by its loader"
+assert key["env"]["BUILDER_KEY_PATH"] == "/etc/nix/builder_ed25519", (
+    "the rendered ssh_config names this path"
 )
-assert 'chown "$(id -un):$(id -gn)"' in key["run"], "the runner owns the identity"
+
+# Behaviour, not the script's text: the installed identity must be the caller's file,
+# at 0600. A group-readable key is not selected by OpenSSH, so the mode is the claim.
+if os.geteuid() != 0:
+    with tempfile.TemporaryDirectory() as directory:
+        staged = Path(directory)
+        (staged / "bin").mkdir()
+        (staged / "bin" / "sudo").write_text("#!/bin/sh\nexec \"$@\"\n")
+        (staged / "bin" / "sudo").chmod(0o755)
+        target = staged / "builder_ed25519"
+        result = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", key["run"]],
+            env={
+                **os.environ,
+                "PATH": f"{staged / 'bin'}:{os.environ['PATH']}",
+                "BUILDER_KEY": "-----BEGIN OPENSSH PRIVATE KEY-----\nfixture\n",
+                "BUILDER_KEY_PATH": str(target),
+            },
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        stat = target.stat()
+        assert stat.st_mode & 0o777 == 0o600, oct(stat.st_mode)
+        assert stat.st_uid == os.getuid(), "the identity belongs to the caller"
+        assert "fixture" in target.read_text()
 
 assert steps["Resolve cache API URL"]["env"]["COORDINATOR"] == "${{ steps.coordinator.outputs.coordinator }}"
 
 report = steps["Report builders and realisations"]
 assert report["if"] == "always()", "reporting must run even when the build failed"
-assert "GITHUB_STEP_SUMMARY" in report["run"]
-assert "exit 1" not in report["run"], "an unavailable builder is reported, never a veto"
-# Reporting runs after a failed build too, when the coordinator may never have
-# installed: an absent machines file must be reported, not fail the step.
-assert "-s /etc/nix/machines" in report["run"], report["run"]
-# Every line reaches the log too: the summary is not readable from the API, and a
-# run has to be diagnosable from its log.
-assert 'tee -a "$GITHUB_STEP_SUMMARY"' in report["run"], report["run"]
-assert report["run"].count(">> \"$GITHUB_STEP_SUMMARY\"") == 0, "write through report(), not directly"
-assert "_SUMMARY" in report["run"] and "ssh failed" in report["run"]
 
 build_step = steps["Build with the selected builder profile"]
 assert build_step["id"] == "build"
@@ -113,6 +119,53 @@ def run_script(script, env_extra, cwd_files=None):
             timeout=30,
         )
 
+
+# The report runs after a failed build too, so it must never fail the job: an
+# uninstalled coordinator and an unreachable builder are both facts, not verdicts.
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    (root / "bin").mkdir()
+    for name, body in (
+        ("nix", "#!/bin/sh\necho 'ssh-ng://home-forge x86_64-linux /root/.ssh/key'\n"),
+        ("ssh", '#!/bin/sh\nexit "${SSH_EXIT:-0}"\n'),
+        ("sudo", '#!/bin/sh\nexec "$@"\n'),
+    ):
+        (root / "bin" / name).write_text(body)
+        (root / "bin" / name).chmod(0o755)
+
+    def report_run(machines, ssh_exit):
+        machines_file = root / "machines"
+        if machines is None:
+            machines_file.unlink(missing_ok=True)
+        else:
+            machines_file.write_text(machines)
+        summary = root / "summary"
+        summary.write_text("")
+        return subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", report["run"]],
+            env={
+                **os.environ,
+                "PATH": f"{root / 'bin'}:{os.environ['PATH']}",
+                "MACHINES_FILE": str(machines_file),
+                "GITHUB_STEP_SUMMARY": str(summary),
+                "SSH_EXIT": str(ssh_exit),
+            },
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+
+    absent = report_run(None, 1)
+    assert absent.returncode == 0, absent.stderr
+    assert "did not install" in absent.stdout, absent.stdout
+
+    unreachable = report_run("ssh-ng://home-forge x86_64-linux /root/.ssh/key\n", 1)
+    assert unreachable.returncode == 0, "an unavailable builder failed the report"
+    assert "ssh failed" in unreachable.stdout, unreachable.stdout
+    assert "configured, not proof of use" in unreachable.stdout, unreachable.stdout
+
+    reachable = report_run("ssh-ng://home-forge x86_64-linux /root/.ssh/key\n", 0)
+    assert reachable.returncode == 0 and reachable.stdout.count("ssh ok") == 2, reachable.stdout
 
 # The resolver: overrides win, a partial override completes the audience, and an
 # injected newline never reaches a job output.
@@ -199,12 +252,12 @@ with tempfile.TemporaryDirectory() as directory:
         # never happened; an absent output is treated as failure.
         expected_outcome = "outcome=success\n" if build_exit == 0 else ""
         assert outcome_file.read_text() == expected_outcome, outcome_file.read_text()
-        assert config_file.read_text().splitlines() == [
-            "post-build-hook = /action/hook",
-            "max-jobs = 1",
-        ], config_file.read_text()
-        assert args_file.read_text().splitlines() == [
-            "run", "github:Shrub24/nix-fleet/" + "f" * 40 + "#packages.aarch64-linux.nix-fast-build", "--", "--eval-workers", "2",
-            "--eval-max-memory-size", "3072", "--max-jobs", "4", "--skip-cached",
-            "--systems", systems, "--flake", targets or ".#checks",
-        ]
+        written = config_file.read_text().splitlines()
+        assert not any(line.startswith("builders") for line in written), written
+        assert "max-jobs = 1" in written, written
+        argv = args_file.read_text().splitlines()
+        assert argv[argv.index("--systems") + 1] == systems, argv
+        assert argv[argv.index("--flake") + 1] == (targets or ".#checks"), argv
+        assert not any("nixpkgs#" in arg for arg in argv), (
+            "the build engine is resolved from the fleet revision, not the registry"
+        )

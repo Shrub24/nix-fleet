@@ -55,10 +55,24 @@ costs more than reading them.
    claims name the consumer. A repository that is not in the credential joins and
    then fails at the API, or fails to join — both are credential changes, not
    workflow changes.
-3. **Nothing else.** No fleet flake input is needed for the build. For cache
-   _locality_ (substituting a consumer's own closure rather than rebuilding it),
-   add `nixpkgs.follows` on the fleet input — a flake change, and the single
-   highest-value one for a consumer with a different `nixpkgs` revision.
+3. **Nothing else.** No fleet flake input is needed for the build, and importing one
+   does not by itself improve cache locality.
+
+   Locality is a property of **derivation identity**, not of which flake inputs are
+   connected: a consumer substitutes its own closure only when the derivations it
+   evaluates are the ones the cache already holds. Those were produced from the
+   nixpkgs revision this repository's `flake.lock` pins, so a consumer whose nixpkgs
+   is a different revision — or the same revision with different overlays, config or
+   `system` — rebuilds, however its inputs are wired.
+
+   The direction matters. `inputs.nix-fleet.inputs.nixpkgs.follows = "nixpkgs"` makes
+   the _fleet's_ artefacts use the consumer's nixpkgs; it changes nothing about the
+   consumer's own derivations. To share the cache's derivations the consumer's
+   `nixpkgs` must follow the **fleet's** nixpkgs (`inputs.nixpkgs.follows =
+"nix-fleet/nixpkgs"`, or the same revision pinned directly), and its overlays and
+   module config must leave package derivations alone. That is a flake change with a
+   cost — the consumer inherits the fleet's bump cadence — so treat it as an
+   optimisation to adopt deliberately, not a prerequisite.
 
 ## 1. Path A — one file
 
@@ -306,8 +320,9 @@ package aggregate does not automatically include `nixosConfigurations`.
    `agent-radar` track `nixpkgs-unstable` directly and have no fleet input, which
    is the honest default for a standalone consumer: the build works, but almost
    nothing of its own closure substitutes, so expect a first run that compiles.
-   `nixpkgs.follows` on a fleet input, or a cache warmed by a local `nix-fast-build`,
-   is what changes that — not the workflow.
+   What changes that is derivation identity: its `nixpkgs` following the fleet's
+   `nixpkgs` (not the fleet input following the consumer's), or a cache warmed by a
+   local `nix-fast-build` of that same revision — not the workflow.
 4. **`nix-dotfiles`** — Path A, replacing the checks it builds locally today.
    Its flake already follows nix-fleet's `flake-parts`, `flake-file` and
    `import-tree`, so locality should be good.

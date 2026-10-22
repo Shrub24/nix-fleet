@@ -105,10 +105,18 @@ join rather than naming one file:
 job_workflow_ref = Shrub24/nix-fleet/.github/workflows/*@*
 ```
 
-Keep `subject` at the repository-and-branch form
-(`repo:Shrub24/nix-fleet:ref:refs/heads/main`) so the wildcard cannot match another
-repository, another ref, or a pull request; the containment is then the `tag:ci` ACL,
-which is what decides what a joined node reaches. If a narrower pattern is required
+Two identities, and the subject is whose OIDC token is being minted:
+
+- **A caller from another repository** — the subject is that repository and the ref
+  it runs on, e.g. `repo:Shrub24/nix-homelab:ref:refs/heads/main`. One entry per
+  consumer; a nix-fleet subject for a consumer would let any nix-fleet run join as it.
+- **nix-fleet itself** — the subject is `repo:Shrub24/nix-fleet:ref:refs/heads/main`,
+  which additionally contains the wildcard below, since it can match another
+  repository only if a nix-fleet ref itself were a branch of that name.
+
+Keep the branch in the subject rather than pairing a repository-wide subject with a
+wildcard; the containment is then the `tag:ci` ACL, which is what decides what a
+joined node reaches. If a narrower pattern is required
 later, the alternative is one federated identity per workflow, which costs a second
 client id and a varied `ci-tailscale` artifact.
 

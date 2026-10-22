@@ -52,7 +52,8 @@ jobs:
       - name: Evaluate all systems
         uses: $/.github/actions/validate-flake
         with:
-          flake: target
+          # `./`: a bare `target` is an indirect flake id, not the checkout.
+          flake: ./target
 
   consistency:
     if: ${{ inputs.generated_files == 'check' }}

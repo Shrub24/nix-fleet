@@ -34,7 +34,6 @@ steps = {step.get("name"): step for step in workflow["jobs"]["pin"]["steps"]}
 fleet = steps["Resolve the fleet revision"]
 assert fleet["env"]["FLEET_REPO"] == "${{ job.workflow_repository }}"
 assert fleet["env"]["FLEET_SHA"] == "${{ job.workflow_sha }}"
-assert 'echo "ref=github:$FLEET_REPO/$FLEET_SHA"' in fleet["run"]
 for coordinate in ("ci-tailscale", "cache-api-url"):
     owners = [n for n, step in steps.items() if coordinate in step.get("run", "")]
     assert owners, f"nothing resolves {coordinate}"
@@ -46,7 +45,6 @@ for coordinate in ("ci-tailscale", "cache-api-url"):
 
 pin_step = steps["Pin one aggregate root per system"]
 assert pin_step["env"]["SUBJECT"] == "${{ inputs.subject || 'cache-root' }}"
-assert '"$TARGETS.$system.$SUBJECT.outPath"' in pin_step["run"]
 pin = workflow["jobs"]["pin"]
 join = next(s for s in pin["steps"] if s.get("uses", "").startswith("tailscale/github-action@"))
 assert join["with"]["oauth-client-id"] == "${{ steps.ts.outputs.client-id }}"

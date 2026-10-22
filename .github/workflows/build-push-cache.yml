@@ -241,14 +241,15 @@ jobs:
       - name: Install the builder SSH identity
         env:
           BUILDER_KEY: ${{ secrets.BUILDER_SSH_KEY || secrets.FLEET_BUILDER_SSH_KEY }}
+          BUILDER_KEY_PATH: /etc/nix/builder_ed25519
         run: |
           set -euo pipefail
           [ -n "$BUILDER_KEY" ] || { echo "::error::ci: no builder key; pass secrets.BUILDER_SSH_KEY"; exit 1; }
           # Owned by the runner at 0600: OpenSSH rejects a group-readable key owned by
           # the user loading it, and root reads any file regardless of owner.
-          (umask 0077; printf '%s\n' "$BUILDER_KEY" | sudo tee /etc/nix/builder_ed25519 > /dev/null)
-          sudo chown "$(id -un):$(id -gn)" /etc/nix/builder_ed25519
-          sudo chmod 0600 /etc/nix/builder_ed25519
+          (umask 0077; printf '%s\n' "$BUILDER_KEY" | sudo tee "$BUILDER_KEY_PATH" > /dev/null)
+          sudo chown "$(id -un):$(id -gn)" "$BUILDER_KEY_PATH"
+          sudo chmod 0600 "$BUILDER_KEY_PATH"
 
       - name: Resolve cache API URL
         id: cache-url
@@ -329,13 +330,15 @@ jobs:
         # sustained failure belongs to fleet telemetry rather than a pre-flight veto.
         # Lines go to the log as well as the summary, so a run is diagnosed from its
         # log alone.
+        env:
+          MACHINES_FILE: /etc/nix/machines
         run: |
           set -uo pipefail
           report() { echo "$1" | tee -a "$GITHUB_STEP_SUMMARY"; }
           report "### Build report"
           report ""
           report "- builder configuration: \`$(nix config show builders)\` (configured, not proof of use)"
-          if [ ! -s /etc/nix/machines ]; then
+          if [ ! -s "$MACHINES_FILE" ]; then
             report "- no builder configuration: the coordinator did not install"
             exit 0
           fi
@@ -355,7 +358,7 @@ jobs:
                 report "- \`$host\` ($systems): $context ssh failed — ${out%%$'\n'*}"
               fi
             done
-          done < /etc/nix/machines
+          done < "$MACHINES_FILE"
           if [ -e /tmp/build-start ]; then
             logs=$(find /nix/var/log/nix/drvs -name '*.drv.bz2' -newer /tmp/build-start | wc -l)
             report "- build logs written on this runner: \`$logs\` (where derivations ran is not established by this report)"

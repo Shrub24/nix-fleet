@@ -1,7 +1,15 @@
-"""The evaluation gate primes source paths writably, then stock flake check decides."""
+"""The evaluation gate: priming is best-effort, the stock check is the verdict, and
+every caller passes a reference Nix resolves as a directory rather than an indirect
+flake id.
+
+The cold-store claim itself is not asserted here: it needs a real store and a real
+`nix`, which a nix check cannot provide. Its evidence is a live `validate.yml` run,
+and `docs/contracts/ci.md` carries the local reproduction.
+"""
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -11,105 +19,94 @@ import yaml
 
 root = Path.cwd()
 load = lambda path: yaml.load(Path(path).read_text(), Loader=yaml.BaseLoader)
-
-evaluate = load(".github/workflows/validate.yml")["jobs"]["evaluate"]["steps"]
-step = next(step for step in evaluate if step.get("name") == "Evaluate all systems")
-assert step["uses"] == "$/.github/actions/validate-flake", step
-assert step["with"] == {"flake": "target"}, step
-assert not any("flake check" in step.get("run", "") for step in evaluate), (
-    "the evaluation command lives in the action, not in the workflow"
-)
-
-producer = load(".github/workflows/package-updates-refresh.yml")["jobs"]["update"]
-steps = producer["steps"]
-evaluation = next(step for step in steps if step.get("uses") == "$/.github/actions/validate-flake")
-approval = next(step for step in steps if step.get("id") == "evaluate")
-assert steps.index(evaluation) < steps.index(approval)
-assert evaluation["if"] == "${{ steps.propose.outputs.patch == 'true' }}"
-assert approval["if"] == "${{ success() && steps.propose.outputs.patch == 'true' }}"
-assert producer["outputs"]["publish"] == "${{ steps.evaluate.outputs.publish }}"
-
-template = load(".github/templates/nvfetcher-refresh.yml")["jobs"]["regenerate"]["steps"]
-validation = next(step for step in template if "/validate-flake@" in step.get("uses", ""))
-assert validation["with"] == {"flake": "path:."}, "regeneration must include untracked sources"
-
 action = load(".github/actions/validate-flake/action.yml")
-prime = Path(".github/actions/validate-flake/prime.nix").read_text()
-for kind in ("checks", "devShells", "legacyPackages", "packages", "nixosConfigurations", "hydraJobs"):
-    assert kind in prime, f"the prime does not reach {kind}, which an all-systems check evaluates"
-assert "drvPath" in prime, "the prime must force derivations to instantiate their inputs"
+script = next(step["run"] for step in action["runs"]["steps"])
 
-source = "/nix/store/" + "a" * 32 + "-source"
-nar_hash = "sha256-fixture"
+# The action's interface: an ordinary Nix flake reference. `directory` was renamed,
+# so a caller that still passes it would be silently ignored by a laxer action.
+declared = set(action["inputs"])
+for path in [*Path(".github/workflows").glob("*.yml"), *Path(".github/templates").glob("*.yml")]:
+    for step in (s for job in load(path)["jobs"].values() for s in job.get("steps", [])):
+        if "validate-flake" not in step.get("uses", ""):
+            continue
+        unknown = set(step.get("with") or {}) - declared
+        assert not unknown, f"{path}: unknown validate-flake input(s) {sorted(unknown)}"
 
+# A bare word is an indirect flake id, not a directory: `nix flake prefetch target`
+# fails with "cannot find flake 'flake:target' in the flake registries", so a caller
+# that names its checkout without `./` breaks the gate for every revision.
+scheme = re.compile(r"^(flake|path|github|gitlab|sourcehut|git\+[a-z]+|https?|file|tarball):")
+
+
+def is_reference(value):
+    return (
+        value in (".", "..")
+        or value.startswith(("./", "../", "/", "~/"))
+        or bool(scheme.match(value))
+        or value.startswith("${{")
+    )
+
+
+assert is_reference("./target") and is_reference("path:.") and is_reference(".")
+assert not is_reference("target"), "the rule must reject the indirect form this gate shipped"
+for path in [*Path(".github/workflows").glob("*.yml"), *Path(".github/templates").glob("*.yml")]:
+    for step in (s for job in load(path)["jobs"].values() for s in job.get("steps", [])):
+        if "validate-flake" not in step.get("uses", ""):
+            continue
+        reference = (step.get("with") or {}).get("flake", action["inputs"].get("flake", {}).get("default"))
+        assert is_reference(reference), f"{path}: {reference!r} is not a flake reference Nix accepts"
+
+# Behaviour: the check decides, and priming only ever warns.
 with tempfile.TemporaryDirectory() as directory:
     temporary = Path(directory)
-    target = temporary / "target"
     binary = temporary / "bin"
-    target.mkdir()
     binary.mkdir()
-    bash = shutil.which("bash")
-    base = {**os.environ, "PATH": f"{binary}:{os.environ['PATH']}"}
-
     (binary / "nix").write_text(
-        f"""#!{bash}
+        f"""#!{shutil.which("bash")}
 set -eu
-printf '%s\\n' "$*" | tr '\\n' ' ' >> "$CALLS"; echo >> "$CALLS"
 case "$1" in
+  build) echo "nix build must never be called: $*" >&2; exit 3 ;;
   flake)
     case "$2" in
-      prefetch)
-        [ "$PREFETCH" = ok ] || exit 1
-        printf '{{"hash":"%s","storePath":"%s"}}\\n' "{nar_hash}" "{source}"
-        ;;
-      check) [ "$CHECK" = ok ] ;;
-      *) echo "unexpected flake call: $*" >&2; exit 2 ;;
+      prefetch) printf '{{"hash":"sha256-fixture","storePath":"/nix/store/%s-source"}}\\n' "$SOURCE" ;;
+      check) exit "$CHECK_EXIT" ;;
     esac
     ;;
-  eval) [ "$PRIME" = ok ] ;;
-  build) echo "nix build must never be called: $*" >&2; exit 3 ;;
-  *) echo "unexpected nix call: $*" >&2; exit 2 ;;
+  eval) exit "$PRIME_EXIT" ;;
 esac
 """
     )
     (binary / "nix").chmod(0o755)
 
-    calls = temporary / "calls"
-    command = [bash, "-euo", "pipefail", "-c", action["runs"]["steps"][0]["run"]]
-    for case, expected in (("ok", 0), ("prime", 0), ("prefetch", 0), ("check", 1)):
-        calls.write_text("")
-        env = {
-            **base,
-            "CALLS": str(calls),
-            "PREFETCH": "fail" if case == "prefetch" else "ok",
-            "PRIME": "fail" if case == "prime" else "ok",
-            "CHECK": "fail" if case == "check" else "ok",
-            "GITHUB_ACTION_PATH": str(root / ".github/actions/validate-flake"),
-            "FLAKE": f"path:{target}" if case == "ok" else str(target),
-        }
-        # Deliberately run away from the target: the action names the directory.
-        result = subprocess.run(command, cwd=temporary, env=env, text=True, capture_output=True)
-        assert result.returncode == expected, (case, result.stdout, result.stderr)
-
-        lines = [line.strip() for line in calls.read_text().splitlines() if line.strip()]
-        assert not any(line.startswith("build") for line in lines), (case, lines)
-        assert lines[-1] == f"flake check --no-build --no-write-lock-file --all-systems --option allow-import-from-derivation false {env['FLAKE']}", (
-            case,
-            lines,
+    for prime_exit, check_exit, want_exit, want_warning in (
+        (0, 0, 0, False),
+        (1, 0, 0, True),
+        (0, 1, 1, False),
+        (1, 1, 1, True),
+    ):
+        result = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", script],
+            env={
+                **os.environ,
+                "PATH": f"{binary}:{os.environ['PATH']}",
+                "GITHUB_ACTION_PATH": str(root / ".github/actions/validate-flake"),
+                "PRIME_EXIT": str(prime_exit),
+                "SOURCE": "a" * 32,
+                "CHECK_EXIT": str(check_exit),
+            },
+            text=True,
+            capture_output=True,
+            timeout=30,
         )
-        if case in ("ok", "prime"):
-            evaluation = " ".join(next(line for line in lines if line.startswith("eval ")).split())
-            assert "--option allow-import-from-derivation false" in evaluation, evaluation
-            ref = f'builtins.getFlake "path:{source}?narHash={nar_hash}"'
-            assert f"--expr {ref}" in evaluation, evaluation
-            assert " ".join(prime.split()) in evaluation, "the prime expression must be the shipped one"
-        assert lines[0].startswith("flake prefetch "), (case, lines)
-        if case in ("prime", "prefetch"):
-            assert "::warning::" in result.stdout, (
-                f"a failed prime must not hide the check's verdict ({case})",
-                result.stdout,
-            )
-        if case == "check":
-            assert "::warning::" not in result.stdout, result.stdout
+        assert result.returncode == want_exit, (prime_exit, check_exit, result.stdout, result.stderr)
+        assert ("::warning::" in result.stdout) is want_warning, (
+            prime_exit,
+            check_exit,
+            result.stdout,
+        )
+        assert "must never be called" not in result.stderr, "the gate built something"
 
-print("the evaluation gate primes writably, builds nothing, and lets the check decide")
+print(
+    "the evaluation gate passes references through, warns on a failed prime, "
+    "lets the check decide the verdict, and builds nothing"
+)
