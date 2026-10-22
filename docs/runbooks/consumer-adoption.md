@@ -5,7 +5,7 @@ Pin external workflow calls to a full nix-fleet SHA and let Renovate update it.
 rather follow a tag; `v1` and `v2` (`11a028b2`) are legacy — `v2` predates bundled
 actions, nested retention, the cold-store evaluator, the runner-owned builder key
 and the shared verify/pin root. In the examples below, replace `<sha>` with the
-selected full commit (`v3` resolves to `e203a0c6`), never `@main`.
+selected full commit (`git rev-parse v3` prints the tagged revision), never `@main`.
 
 A consumer repository declares **what** to build. nix-fleet owns **how**: the
 builders, the cache, the coordinator configuration and the validation. Nothing
