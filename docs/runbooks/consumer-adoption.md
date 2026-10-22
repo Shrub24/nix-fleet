@@ -263,16 +263,27 @@ verifiable on its own.
    union its jobs need (`contents: write`, `statuses: write`,
    `pull-requests: write`, `id-token: write`). `on:` cannot be inherited, so this
    file is the consumer's; the orchestration is not.
-3. **The App and environment.** Register a GitHub App, install it on the
-   consumer repository, and create an environment named `automation` holding
-   `AUTOMATION_APP_PRIVATE_KEY` with a branch policy restricted to the default
-   branch. Variables: `AUTOMATION_APP_ID`, `AUTOMATION_APP_SLUG`,
-   `PROMOTION_POLICY=label`, and optionally `CANDIDATE_TARGETS`,
-   `CANDIDATE_SYSTEMS`, `CANDIDATE_RUNNER_SYSTEM`, `CANDIDATE_PROFILE`,
-   `AUTOMATION_UPDATE_AUTHORS`, `CACHE_PIN_NAME`. Set `CANDIDATE_SYSTEMS` to the
-   systems the repository actually exposes. Retention defaults to
-   `.#packages.<system>.cache-root`; `CACHE_PIN_TARGETS` and `CACHE_PIN_SUBJECT`
-   override it independently of the build selection.
+3. **The App and environment.** Register a GitHub App (or install an existing one),
+   install it on the consumer repository, and create an environment named
+   `automation` holding `AUTOMATION_APP_PRIVATE_KEY` with a branch policy restricted
+   to the default branch. Then one variable: `AUTOMATION_APP_ID`.
+
+   That is the irreducible set. Add only what this repository needs:
+
+   - `AUTOMATION_APP_SLUG` — if the repository's own producer should count as
+     automation; `renovate[bot]` is recognised without it.
+   - `CANDIDATE_SYSTEMS` — if it does not expose both Linux systems, or the
+     candidate build fails on the system it lacks.
+   - `PROMOTION_POLICY=label` — to require acceptance; leave unset for `auto`.
+   - `CACHE_PIN_NAME=auto` — retention. `CACHE_PIN_TARGETS` / `CACHE_PIN_SUBJECT`
+     override the root; it defaults to `.#packages.<system>.cache-root`.
+   - `AUTOMATION_UPDATE_AUTHORS` — for producers beyond the App and Renovate.
+   - `CANDIDATE_TARGETS`, `CANDIDATE_RUNNER_SYSTEM`, `CANDIDATE_PROFILE` — only to
+     move off `.#checks`, `aarch64-linux` and `ci`.
+
+   Until `AUTOMATION_APP_ID` exists the pipeline is **inert**: it skips rather than
+   failing, so a repository can adopt the build alone without noise.
+
 4. **Labels.** `accept-update`, `dependencies`, `automated`. Creating a label the
    repository does not have fails the producer at its pull-request step with a
    `404`.

@@ -14,6 +14,24 @@ root = Path.cwd()
 load = lambda path: yaml.load(Path(path).read_text(), Loader=yaml.BaseLoader)
 workflows = {path.stem: load(path) for path in Path(".github/workflows").glob("*.yml")}
 
+# Adoption of the reusable build alone must not create a lifecycle: a repository
+# without the automation App runs `pipeline` on every ci completion, and any job
+# there that reaches the App fails. So every job must be unreachable without
+# `AUTOMATION_APP_ID` — `resolve` by its guard, the rest through `needs`.
+pipeline_jobs = workflows["pipeline"]["jobs"]
+resolve = pipeline_jobs["resolve"]
+assert "AUTOMATION_APP_ID" in resolve.get("if", ""), (
+    "the pipeline must be inert in a repository that has not configured the App"
+)
+for name, job in pipeline_jobs.items():
+    if name == "resolve":
+        continue
+    needs = job.get("needs") or []
+    needs = [needs] if isinstance(needs, str) else needs
+    assert "resolve" in needs, (
+        f"pipeline job {name} can run without resolve, so a configured guard cannot reach it"
+    )
+
 candidate = workflows["candidate"]["jobs"]["prepare"]
 assert not any(step.get("with", {}).get("path") == "trusted" for step in candidate["steps"]), (
     "a script checkout inside the candidate is rejected by its write-set guard"

@@ -30,6 +30,11 @@ concurrency:
 
 jobs:
   resolve:
+    # Every other job needs this one, so an unconfigured repository runs no
+    # lifecycle at all: without the App nothing can post a status, and selecting
+    # the `automation` environment from a called workflow would fail on every
+    # completion. Adoption of the build alone must stay silent here.
+    if: ${{ vars.AUTOMATION_APP_ID != '' }}
     runs-on: ubuntu-latest
     outputs:
       kind: ${{ steps.resolve.outputs.kind }}

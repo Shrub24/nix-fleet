@@ -639,6 +639,35 @@ Two consequences belong with the second posture:
 `candidate-sweep.yml` is housekeeping in either posture: candidates are commits
 under `refs/candidates/`, and the sweep deletes those older than 30 days.
 
+### What a consumer has to configure
+
+Built-in defaults cover most of the table, so the irreducible set is small:
+
+| Required for the lifecycle                                                                                       | Why it cannot be defaulted                                                |
+| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| the App, installed on the repository                                                                             | installation tokens are per repository and per installation               |
+| an `automation` environment holding `AUTOMATION_APP_PRIVATE_KEY`, branch policy restricted to the default branch | the key is a secret, and an environment scopes it to one job              |
+| variable `AUTOMATION_APP_ID`                                                                                     | required to mint a token                                                  |
+| label `automated`                                                                                                | the producer's pull-request step fails with `404` when a label is missing |
+
+Conditionally required: `accept-update` (label policy only), `AUTOMATION_APP_SLUG`
+(only if the repository's own producer should be recognised as automation —
+`renovate[bot]` is built in), `CANDIDATE_SYSTEMS` (only if the repository does not
+expose both Linux systems), `CACHE_PIN_NAME` (retention), `AUTOMATION_UPDATE_AUTHORS`
+(producers beyond the App and Renovate). `PROMOTION_POLICY` defaults to `auto`,
+`CANDIDATE_TARGETS` to `.#checks`, `CANDIDATE_RUNNER_SYSTEM` to `aarch64-linux`,
+`CANDIDATE_PROFILE` to `ci`. `FLEET_BUILDER_SSH_KEY` belongs to the build, not the
+lifecycle.
+
+Environments and their secrets are repository-scoped, so the key is duplicated per
+repository. An organisation could share it through organisation secrets; a user
+account cannot.
+
+**An unconfigured repository runs no lifecycle.** `pipeline.yml` skips every job when
+`AUTOMATION_APP_ID` is empty, and each job reaches the App only through `resolve`, so
+a repository that adopts the build and nothing else sees skipped pipeline runs rather
+than failures on every commit.
+
 ## Action and workflow pins
 
 Every `uses:` in this repository names a 40-character commit digest with its tag as a
