@@ -315,7 +315,10 @@ owned by the promotion path rather than by verification.
 Turning pins on (and what caching guarantees them) is an operator procedure:
 [docs/runbooks/cache-pins.md](docs/runbooks/cache-pins.md). Bringing a repository
 onto fleet CI — build only, or with the update lifecycle — is
-[docs/runbooks/consumer-adoption.md](docs/runbooks/consumer-adoption.md).
+[docs/runbooks/consumer-adoption.md](docs/runbooks/consumer-adoption.md). Moving the
+repositories themselves to an organisation — what it buys, what it breaks and why the
+merge queue is a separate change — is
+[docs/runbooks/github-org-migration.md](docs/runbooks/github-org-migration.md).
 
 Using the cache without this flake:
 
