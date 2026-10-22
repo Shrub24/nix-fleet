@@ -1,9 +1,11 @@
 # Adopting fleet CI in a repository
 
-Pin external workflow calls to a full nix-fleet SHA containing the composition
-fixes; let Renovate update that pin. Release tags mark contract milestones. `v2`
-is retained for legacy callers but predates bundled actions and nested retention.
-In the examples below, replace `<sha>` with the selected full commit.
+Pin external workflow calls to a full nix-fleet SHA; let Renovate update that pin.
+Release tags mark contract milestones and are retained for legacy callers, not
+recommended: `v2` (`11a028b2`) predates bundled actions, nested retention, the
+cold-store evaluator, the runner-owned builder key and the shared verify/pin root.
+`462c312b` is the first revision with all of them. In the examples below, replace
+`<sha>` with the selected full commit — never `@main`.
 
 A consumer repository declares **what** to build. nix-fleet owns **how**: the
 builders, the cache, the coordinator configuration and the validation. Nothing
@@ -20,9 +22,23 @@ Nix it contains.
 | **B — plus the update lifecycle**    | repositories whose dependency updates you want validated, built, evidenced and promoted | A+, plus five thin trigger files, an App, an environment, labels, a ruleset |
 
 State today: **A and A+ are proven** on nix-fleet itself (runs 39543925779 for the
-build, 39593416105 for the pin). **B is unproven end to end** — the mechanism exists
-and every part has run in nix-fleet, but no consumer has completed a promotion, and
-nix-fleet's own `PROMOTION_POLICY` is `label`. Adopt B expecting to debug it.
+build, 39593416105 for the pin). **B is unproven end to end** — every part has run in
+nix-fleet, but no consumer has completed a promotion, and nix-fleet's own
+`PROMOTION_POLICY` is `label`. Three claims are specifically unmeasured:
+
+- a **cross-repository** call of a SHA-pinned `validate.yml` (nix-fleet only ever
+  calls its own files locally, so `job.workflow_sha` has never been exercised from
+  another repository);
+- the **runner-owned `0600` builder key** opening a real distributed build (§1
+  verification is still the only way to confirm a build went remote);
+- a consumer's **promotion → nested pin** run, which is the last unrun path in B.
+
+Adopt B expecting to debug it.
+
+Where the two repositories stand: `nix-dotfiles` has all six Path B trigger files
+but pins `11a028b2`, so it runs the pre-fix contracts — the cold-store evaluation
+failure it hit comes from that pin, not its flake. `nix-homelab` is at Path A only,
+pinned at `e5d74415`, which predates the `builder_attr` → `profile` rename.
 
 ## 0. Prerequisites that are not in the consumer's hands
 
@@ -128,8 +144,10 @@ packages.<system>.cache-root = pkgs.linkFarm "cache-root" (
 );
 ```
 
-`verify-cache` is the one worth having on every push: it reports coverage with
-notices and never fails on a miss.
+`verify-cache` is the one worth having on every push: it reports whether the cache
+serves the root you would pin (`<targets>.<system>.<subject>`) and never fails on a
+miss. It measures the same root as retention, so a green run means the pin would be
+refused-or-not for the same path.
 
 ```yaml
 jobs:
@@ -181,8 +199,22 @@ verifiable on its own.
    `generated_files: check`. Its `pull_request` types include `labeled`, so
    acceptance revalidates. Do not copy nix-fleet's `ci.yml`: its `$/` references
    are for internal composition. No scripts or actions need copying either.
-   The consistency guard deliberately reads the preparation action from fleet
-   `main`; this is the exception to pinned validation, preserving fleet PR trust.
+   `validate.yml` requires three things of the flake: `checks.x86_64-linux.treefmt`
+   (the format job builds it), evaluation under `nix flake check --no-build
+--all-systems` (the evaluate job primes sources with a writable, IFD-disabled
+   evaluation first, so a cold store works), and — with `generated_files: check` — a
+   `write-flake` app that regenerates only `flake.nix` and `flake.lock`.
+
+   A flake whose evaluation needs genuine import-from-derivation cannot use the
+   evaluate job as shipped: the contract keeps IFD off, because enabling it runs
+   builds inside a job that has no builders. `nix-homelab` is that case (D-082:
+   degoog's bun2nix IFD), so it keeps its own evaluation until nix-fleet ships an
+   explicit, bound opt-in.
+
+   An externally pinned call runs the preparation action from its own revision.
+   Only nix-fleet's own pull requests use the default-branch action, so a pull
+   request cannot supply the procedure that judges it.
+
 2. **The pipeline trigger.** `on: workflow_run: {workflows: [ci], types: [completed]}`
    → `uses: .../pipeline.yml@<sha>`, with `secrets: inherit` and the permission
    union its jobs need (`contents: write`, `statuses: write`,

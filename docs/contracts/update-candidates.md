@@ -316,12 +316,12 @@ external entry point by full SHA, not copies of the workflow bodies, scripts or
 an additional action ref. The actions execute their bundled scripts through
 `GITHUB_ACTION_PATH`; no secondary checkout is added to the candidate tree.
 
-The intentional exception is `validate.yml`'s consistency guard: it checks out the
-preparation action from fleet `main` beside the target checkout. This prevents a
-fleet PR from replacing the procedure that checks itself. It also means external
-consistency validation follows fleet `main`, even when the external entry point
-is SHA-pinned; the rest of the procedure remains pinned. This trust boundary is
-not changed by the composition migration.
+`validate.yml`'s consistency guard selects its preparation action by caller: a
+fleet pull request checks out the action from fleet `main`, so it cannot replace the
+procedure that judges it, while any other repository checks out the action from the
+workflow revision it pinned (`job.workflow_sha`). An external entry point is
+therefore consistent with its own pin; only nix-fleet's own revisions have the
+default-branch exception.
 
 A called workflow cannot be granted more than its caller holds, and GitHub
 validates _every_ job in the called workflow against the caller's grant when the
