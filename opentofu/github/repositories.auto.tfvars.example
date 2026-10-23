@@ -1,0 +1,16 @@
+owner = "Shrub24"
+
+# The automation App: registered and installed by hand; only its numbers live here.
+app_id   = "0"
+app_slug = "nix-updater-ci"
+
+repositories = {
+  "nix-fleet" = {
+    build            = true
+    lifecycle        = true
+    promotion_policy = "label"
+    pin_name         = "auto"
+    ruleset          = "disabled"
+  }
+  "agent-radar" = { build = true }
+}
