@@ -618,7 +618,7 @@ in
               nativeBuildInputs = [ pkgs.python3 ];
             }
             ''
-              export OTELCOL=${pkgs.opentelemetry-collector-contrib}/bin/otelcol-contrib
+              export OTELCOL=${runtimeConfigValue.services.otel-collector.package}/bin/otelcol-contrib
               export CONFIG=$PWD/output-views.yaml
               export ROUTE_ADDR=127.0.0.2
               export ROUTE_PORT=14369
@@ -629,7 +629,7 @@ in
               export OTELCOL_latitudeApiKey=synthetic-latitude-api-key
               export OTELCOL_latitudeProject=synthetic-project
               sed "s|@STATE@|$PWD|g" ${runtimeConfig} > "$CONFIG"
-              ${pkgs.opentelemetry-collector-contrib}/bin/otelcol-contrib validate --config=file:"$CONFIG"
+              ${runtimeConfigValue.services.otel-collector.package}/bin/otelcol-contrib validate --config=file:"$CONFIG"
               python3 ${../../tests/telemetry/output_views_check.py}
               # The pinned Latitude parser probe reads this artifact, so a missing
               # or empty one fails here rather than silently retiring the claim.

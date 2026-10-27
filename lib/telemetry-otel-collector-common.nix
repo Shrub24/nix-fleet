@@ -25,6 +25,12 @@ let
       }) cfg.exporterInstances
     )
   );
+  # nixpkgs' collector set compiles with Go 1.27, whose build guard in swiss (via
+  # pebble) is not tagged until collector 0.162.0 — nixpkgs PR #581121 bumps it.
+  # Same nixpkgs set, older toolchain; delete this with that PR.
+  otelcol = pkgs.callPackage (pkgs.path + "/pkgs/tools/misc/opentelemetry-collector/releases.nix") {
+    buildGoModule = pkgs.buildGo126Module;
+  };
   # An exporter id is a persistent state identity: two destinations claiming one
   # id would merge into a single exporter and share its queue and WAL, which is
   # exactly the isolation the id scheme exists to provide. The ids are declared
@@ -134,7 +140,7 @@ in
   options.services.otel-collector = {
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.opentelemetry-collector-contrib;
+      default = otelcol.otelcol-contrib;
     };
     resourceAttributes = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
