@@ -33,3 +33,25 @@ An aspect registers a failure event, and attaches any unit configuration of its 
 **Rejected alternative:** drop the fragment import so a missing notify fails as an unknown option. That makes every producer a hard dependency of notify, which needs a transport, a topic and sometimes a chat ID and fails closed on each — and dependencies belong to the composition that selects both, not to a producer's registration.
 
 **Rejected alternative:** a realized marker or an orphan guard. The fragment cannot observe which modules were imported, so such a guard would infer capability from merged configuration — the inference the telemetry contract removed.
+
+## The ntfy transport publishes ntfy's JSON format on the root URL
+
+**Id:** f92bd3c3-5d96-4e40-a1db-85476baf7463
+**Type:** decision
+**Type:** constraint
+**Status:** active
+**Evidence:** confirmed
+**Source:** ntfy's `docs/publish.md` ("Publish as JSON") and `server/server.go` — `transformBodyJSON` is registered for `POST /` only, and the topic route hands the raw body to `handlePublishBody`, which makes it the message text — plus the maintainer's attribute rulings, 2026-11-05
+**Revisit when:** the transport moves to ntfy's header API, or ntfy renames or retypes a JSON publish field
+
+Delivery to ntfy is one JSON POST to `{server_url}/` with `topic`, `title`, `message`, `priority` and `tags` — the server's own field names — and the topic travels in the body, not the path. Severity maps onto the priority scale at 1, 3 and 5; `tags` carries the severity and then context the notification cannot show (a unit event adds its host, since one topic carries every host's events, and webhooks pass their own); the ntfy title is the event's own, without the `[topic]` prefix Telegram keeps; a message past ntfy's 4 KiB limit is trimmed around a marker while keeping its tail. `checks.notify-alertmanager` pins the payload shape once, because every one of these drifts silently: the HTTP request succeeds either way.
+
+**Reason:** ntfy parses JSON on the root URL only. The topic path is the header/body API, so a JSON body sent there is published verbatim as the message text — the raw object shows up in the client while title, priority and tags are dropped, and the request still returns 200. That is how this shipped and how it was noticed, months before it was traced to the endpoint rather than to the field names. The attribute choices follow from what each transport can show: Telegram's topic is a numeric thread id the reader never sees, so the title carries the use case; ntfy's topic is the subscription the notification arrives on, so repeating it in the title is noise.
+
+**Rejected alternative:** keep the per-topic POST and correct only the field names. The endpoint is the defect: `body` is ignored (the message falls back to `triggered`) and `Tags` as a string fails ntfy's decode outright, but fixing them in place would still deliver the JSON blob as text.
+
+**Rejected alternative:** priority 2/3/5 or 3/4/5. Low and min are both silent and differ only in whether the notification is folded under "Other notifications"; default sounds on every informational success, which makes an unreachable cache and a completed deploy equally loud.
+
+**Rejected alternative:** tag the service or unit name, or the severity alone. The unit is already in the title (and a title override is the caller's choice), and severity alone repeats what the priority already encodes in sound and placement.
+
+**Rejected alternative:** leave an over-long message to ntfy, or raise the server's `message-size-limit`. Past 4 KiB ntfy delivers a file attachment, so a 50-line journal arrives as something to download; raising the limit makes every notification a long one, and the limit is consumer policy rather than the transport's.

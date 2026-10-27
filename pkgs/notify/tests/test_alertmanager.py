@@ -15,6 +15,7 @@ import unittest
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 # notifylib resolves the config path at import time, so the seam is set before
 # the package is imported; the file itself is written in setUpClass, once the
@@ -247,12 +248,12 @@ class TestAlertmanagerEndpoint(unittest.TestCase):
         status, reply = self.post("/alertmanager?topic=infra", firing_group())
         self.assertEqual((status, reply), (200, {"status": "ok"}))
         delivery = self.last_delivery()
-        self.assertEqual(delivery["path"], "/infra-topic")
+        self.assertEqual(delivery["body"]["topic"], "infra-topic")
         self.assertEqual(delivery["body"]["priority"], 5)  # critical
-        self.assertEqual(delivery["body"]["Tags"], "critical")
-        self.assertEqual(delivery["body"]["title"], "[infra] [firing] FixtureHighLoad")
+        self.assertEqual(delivery["body"]["tags"], ["critical"])
+        self.assertEqual(delivery["body"]["title"], "[firing] FixtureHighLoad")
         self.assertEqual(
-            delivery["body"]["body"],
+            delivery["body"]["message"],
             "[critical] fixture-1: CPU pegged at 99%\n[info] fixture-2: disk full",
         )
 
@@ -261,12 +262,12 @@ class TestAlertmanagerEndpoint(unittest.TestCase):
         status, reply = self.post("/alertmanager", payload)
         self.assertEqual((status, reply), (200, {"status": "ok"}))
         delivery = self.last_delivery()
-        # The default use case resolves to its own ntfy topic. The title names
-        # only a topic the caller asked for, so it carries no invented label.
-        self.assertEqual(delivery["path"], "/fleet-topic")
+        # The default use case resolves to its own ntfy topic. The title carries
+        # no use-case label: the topic is where the notification arrives.
+        self.assertEqual(delivery["body"]["topic"], "fleet-topic")
         self.assertEqual(delivery["body"]["title"], "[firing] FixtureHighLoad")
         self.assertEqual(delivery["body"]["priority"], 3)  # warning
-        self.assertEqual(delivery["body"]["Tags"], "warning")
+        self.assertEqual(delivery["body"]["tags"], ["warning"])
 
     def test_resolved_group_is_delivered_at_info_weight(self):
         payload = firing_group()
@@ -275,7 +276,61 @@ class TestAlertmanagerEndpoint(unittest.TestCase):
         self.assertEqual((status, reply), (200, {"status": "ok"}))
         delivery = self.last_delivery()
         self.assertEqual(delivery["body"]["priority"], 1)  # info
-        self.assertEqual(delivery["body"]["title"], "[infra] [resolved] FixtureHighLoad")
+        self.assertEqual(delivery["body"]["title"], "[resolved] FixtureHighLoad")
+
+    def test_the_payload_is_the_documented_json_publish_format(self):
+        """One place pins ntfy's wire format, because it fails silently.
+
+        A stray field, or a topic URL instead of the root, degrades the
+        notification and still returns 200.
+        """
+        self.post("/alertmanager?topic=infra", firing_group())
+        delivery = self.last_delivery()
+        self.assertEqual(delivery["path"], "/")
+        self.assertEqual(
+            sorted(delivery["body"]), ["message", "priority", "tags", "title", "topic"]
+        )
+
+    def test_an_over_long_message_keeps_its_tail_and_says_it_was_trimmed(self):
+        # Past 4 KiB ntfy delivers a file attachment, so the transport trims.
+        lines = ["line %03d %s" % (i, "x" * 60) for i in range(80)]
+        status, reply = self.post(
+            "/notify",
+            {"severity": "warning", "title": "long", "message": "\n".join(lines)},
+        )
+        self.assertEqual((status, reply), (200, {"status": "ok"}))
+        sent = self.last_delivery()["body"]["message"]
+        self.assertLessEqual(len(sent.encode()), dispatch.NTFY_MESSAGE_LIMIT)
+        self.assertTrue(sent.startswith("... (truncated"))
+        self.assertTrue(sent.endswith(lines[-1]))
+        self.assertNotIn(lines[0], sent)
+
+    def test_a_caller_supplied_tag_follows_the_severity_and_junk_is_dropped(self):
+        status, reply = self.post(
+            "/notify",
+            {"severity": "warning", "title": "tagged", "tags": ["fixture-host", 7, ""]},
+        )
+        self.assertEqual((status, reply), (200, {"status": "ok"}))
+        self.assertEqual(self.last_delivery()["body"]["tags"], ["warning", "fixture-host"])
+
+    def test_one_tag_sent_as_a_bare_string_is_not_split_into_characters(self):
+        status, reply = self.post(
+            "/notify",
+            {"severity": "info", "title": "tagged", "tags": "home-forge"},
+        )
+        self.assertEqual((status, reply), (200, {"status": "ok"}))
+        self.assertEqual(self.last_delivery()["body"]["tags"], ["info", "home-forge"])
+
+    def test_a_unit_event_tags_the_host_it_came_from(self):
+        policy = os.path.join(_TEST_DIR, "events.json")
+        with open(policy, "w") as f:
+            json.dump({"fixture-unit": {"failure": {"severity": "warning"}}}, f)
+        with mock.patch.dict(os.environ, {"NOTIFY_EVENTS_FILE": policy}):
+            status, reply = self.post("/event", {"unit": "fixture-unit", "result": "failed"})
+        self.assertEqual((status, reply), (200, {"status": "ok"}))
+        self.assertEqual(
+            self.last_delivery()["body"]["tags"], ["warning", os.uname().nodename]
+        )
 
     def test_unknown_topic_is_a_partial_delivery_not_a_silent_drop(self):
         status, reply = self.post("/alertmanager?topic=absent", firing_group())
@@ -311,7 +366,7 @@ class TestAlertmanagerEndpoint(unittest.TestCase):
     def test_the_other_routes_still_route(self):
         status, reply = self.post("/notify", {"severity": "info", "title": "fixture"})
         self.assertEqual((status, reply), (200, {"status": "ok"}))
-        self.assertEqual(self.last_delivery()["path"], "/fleet-topic")
+        self.assertEqual(self.last_delivery()["body"]["topic"], "fleet-topic")
         status, reply = self.post("/nowhere", {"severity": "info"})
         self.assertEqual((status, reply), (404, {"error": "not found"}))
 

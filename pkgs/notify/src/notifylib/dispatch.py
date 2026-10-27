@@ -37,6 +37,9 @@ NTFY_PRIORITY_MAP = {
     "critical": 5,
 }
 
+# A longer message is delivered as a file attachment (ntfy publish docs, "Limitations").
+NTFY_MESSAGE_LIMIT = 4096
+
 
 def _resolve_topic(settings, topic, transport):
     """Resolve a notification's use-case topic to this transport's destination.
@@ -85,7 +88,30 @@ def _send_apprise(settings, title, message, severity, topic):
     return []
 
 
-def _send_ntfy(ntfy, title, message, severity, topic):
+def _ntfy_message(message):
+    """Keep a message inside ntfy's limit, dropping the oldest lines.
+
+    journalctl emits oldest-first, so the tail holds what explains a failure.
+    """
+    if len(message.encode()) <= NTFY_MESSAGE_LIMIT:
+        return message
+    marker = "... (truncated; most recent lines kept)\n"
+    room = NTFY_MESSAGE_LIMIT - len(marker)
+    return marker + message.encode()[-room:].decode(errors="ignore")
+
+
+def _ntfy_tags(severity, tags):
+    """Severity, then the caller's context — what the notification cannot show."""
+    if isinstance(tags, str):
+        tags = (tags,)
+    kept = []
+    for tag in (severity,) + tuple(tags or ()):
+        if isinstance(tag, str) and tag and tag not in kept:
+            kept.append(tag)
+    return kept
+
+
+def _send_ntfy(ntfy, title, message, severity, topic, tags):
     server = ntfy.get("server_url")
     if not server:
         return []
@@ -96,12 +122,14 @@ def _send_ntfy(ntfy, title, message, severity, topic):
     if errors:
         return errors
 
-    body = {
+    # ntfy decodes JSON on the root URL only; a topic path publishes the body as
+    # the message text. The topic travels in the body.
+    payload = {
         "topic": ntfy_topic,
         "title": title,
-        "body": message or "(no body)",
+        "message": _ntfy_message(message or "(no body)"),
         "priority": NTFY_PRIORITY_MAP.get(severity, 3),
-        "Tags": severity,
+        "tags": _ntfy_tags(severity, tags),
     }
     headers = {"Content-Type": "application/json"}
     token_file = ntfy.get("token_file")
@@ -113,8 +141,8 @@ def _send_ntfy(ntfy, title, message, severity, topic):
             pass  # best-effort: send unauthenticated rather than not at all
 
     req = urllib.request.Request(
-        "%s/%s" % (server.rstrip("/"), ntfy_topic),
-        data=json.dumps(body).encode(),
+        "%s/" % server.rstrip("/"),
+        data=json.dumps(payload).encode(),
         headers=headers,
     )
     try:
@@ -125,21 +153,23 @@ def _send_ntfy(ntfy, title, message, severity, topic):
     return []
 
 
-def dispatch(severity, title, message, topic=None):
-    """Send one notification. Returns a list of error strings (empty = all sent)."""
+def dispatch(severity, title, message, topic=None, tags=()):
+    """Send one notification; returns a list of error strings (empty = all sent).
+
+    `tags` is transport decoration, not routing — context the message cannot show.
+    """
     settings = cfg.load()
     if settings is None:
         return ["config not found"]
 
     errors = []
-    # The title carries the routing topic when the caller named one. It invents
-    # nothing otherwise: each transport resolves its own default topic, and a
-    # single label could not name them all.
+    # Telegram's topic is a numeric thread the reader never sees, so its title
+    # carries the use case; ntfy's topic is where the message arrives.
     labelled = "[%s] %s" % (topic, title) if topic else title
 
     errors += _send_apprise(settings.get("telegram", settings), labelled, message, severity, topic)
 
     if settings.get("ntfy", {}).get("server_url"):
-        errors += _send_ntfy(settings["ntfy"], labelled, message, severity, topic)
+        errors += _send_ntfy(settings["ntfy"], title, message, severity, topic, tags)
 
     return errors

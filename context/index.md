@@ -54,7 +54,7 @@
 
 ## N
 
-- [notify.md](notify.md) — a registration and a drop-in follow the unit they describe; contract is shared vocabulary, not a selectable capability
+- [notify.md](notify.md) — a registration and a drop-in follow the unit they describe; contract is shared vocabulary, not a selectable capability; the ntfy transport publishes ntfy's own JSON format on the root URL
 
 ## O
 

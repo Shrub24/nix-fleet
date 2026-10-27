@@ -85,7 +85,8 @@ def _handle_event(payload):
         parts.append(journal)
     body = "\n\n".join(parts)
 
-    errors = dispatch(severity, title, body, topic=topic)
+    # The title names the unit, never the host, and one topic carries every host.
+    errors = dispatch(severity, title, body, topic=topic, tags=[os.uname().nodename])
     if errors:
         return {"status": "partial", "errors": errors}, 500
     return {"status": "ok"}, 200
@@ -132,6 +133,7 @@ class Handler(BaseHTTPRequestHandler):
                 body.get("title", "Notification"),
                 body.get("message", ""),
                 topic=body.get("topic"),
+                tags=body.get("tags"),
             )
             if errors:
                 self._reply({"status": "partial", "errors": errors}, status=500)
