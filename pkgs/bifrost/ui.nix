@@ -13,7 +13,7 @@ buildNpmPackage {
   pname = "bifrost-ui";
   inherit src version;
 
-  npmDepsHash = "sha256-sH7vaaCBRLSwDUNj/C1mwQtaQ+1Ft8AJkILHnugkceQ=";
+  npmDepsHash = "sha256-JtaSXBfz7toZ8gF9Jjq5iveV/b5obQNhA9VvjyvDky0=";
 
   # `build` is vite build + typecheck + a copy step into the Go module tree,
   # which the Go derivation does itself; `build-enterprise` is that same build
