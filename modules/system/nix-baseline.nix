@@ -41,14 +41,14 @@ in
           # aspect's own `extraSubstituters` was declared here once and read by
           # nothing, so a host following it silently kept the wrong catalog.
           substituters = lib.mkAfter [
-            "https://nix-community.cachix.org"
-            "https://cache.numtide.com"
-            cache.endpoints.cache.publicUrl
+            "https://cache.numtide.com?priority=41"
+            "https://nix-community.cachix.org?priority=42"
+            "${cache.endpoints.cache.publicUrl}?priority=45"
           ];
           trusted-substituters = lib.mkAfter [
-            "https://nix-community.cachix.org"
-            "https://cache.numtide.com"
-            cache.endpoints.cache.publicUrl
+            "https://cache.numtide.com?priority=41"
+            "https://nix-community.cachix.org?priority=42"
+            "${cache.endpoints.cache.publicUrl}?priority=45"
             "ssh-ng://eu.nixbuild.net"
           ];
           trusted-public-keys = lib.mkAfter (
