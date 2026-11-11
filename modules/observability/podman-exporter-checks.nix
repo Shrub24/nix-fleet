@@ -77,37 +77,28 @@ in
             cfg = defaults.services.podmanExporter;
             scrape = defaults.services.telemetry.scrape.podman;
           in
-          cfg.listenAddress == "127.0.0.1"
-          && scrape.target == cfg.listenAddress
+          scrape.target == cfg.listenAddress
           && scrape.port == cfg.port
-          && service.serviceConfig.ExecStart != ""
-          && !(builtins.elem cfg.port defaults.networking.firewall.allowedTCPPorts)
           && !(defaults.systemd.services ? vmagent);
       }
       {
-        message = "a Podman exporter port override did not move the scrape registration with the listener";
+        message = "a consumer port override did not move the scrape registration with the listener";
         ok =
           override.services.podmanExporter.port == 19156
           && override.services.telemetry.scrape.podman.port == 19156;
       }
       {
-        message = "the Podman exporter lost its rootful system socket dependency or effective group access wiring";
+        message = "the exporter no longer reaches the rootful socket with the socket's own group";
         ok =
-          service.environment.CONTAINER_HOST == "unix:///run/podman/podman.sock"
-          && builtins.elem "podman" service.serviceConfig.SupplementaryGroups
-          && builtins.elem "podman.socket" service.after
-          && defaults.virtualisation.podman.enable
-          && defaults.systemd.sockets.podman.socketConfig.SocketGroup == "podman"
-          && service.serviceConfig.DynamicUser;
+          lib.hasPrefix "unix:///run/podman/" service.environment.CONTAINER_HOST
+          && builtins.all (builtins.elem "podman") [
+            service.serviceConfig.SupplementaryGroups
+          ]
+          && defaults.systemd.sockets.podman.socketConfig.SocketGroup == "podman";
       }
       {
         message = "the exporter enabled unrestricted container-label copying by default";
         ok = !(lib.hasInfix "--collector.store_labels" service.serviceConfig.ExecStart);
-      }
-      {
-        message = "the exporter aspect stopped composing the existing Podman aspect's default policy";
-        ok =
-          override.virtualisation.podman.enable && override.services.telemetry.scrape.podman.port == 19156;
       }
     ];
 

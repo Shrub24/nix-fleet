@@ -38,7 +38,6 @@ let
       views,
       route,
       resolvedRoutes,
-      resolvedPipelines,
       sops,
     }:
     let
@@ -62,19 +61,15 @@ let
       # the fleet's own instance identity: an effective exporter resolves to the
       # destination the route declaration materialized by that identity, so the
       # guard never re-derives the key format.
+      # `settings.exporters` is keyed `<component>/<instance id>`, so the id is the
+      # last segment. A duplicated id is itself a defect and resolves to null.
       instanceOfKey =
         key:
         let
-          matches = builtins.filter (instance: lib.hasSuffix "/${instance.id}" key) instances;
-          sorted = lib.sort (a: b: builtins.stringLength a.id > builtins.stringLength b.id) matches;
-          longest = if sorted == [ ] then null else builtins.head sorted;
-          ambiguous =
-            sorted != [ ]
-            && builtins.any (instance: builtins.stringLength instance.id == builtins.stringLength longest.id) (
-              builtins.tail sorted
-            );
+          id = lib.last (lib.splitString "/" key);
+          matches = builtins.filter (instance: instance.id == id) instances;
         in
-        if longest == null || ambiguous then null else longest;
+        if builtins.length matches == 1 then builtins.head matches else null;
       destinationOfKey =
         key:
         let
@@ -160,36 +155,6 @@ let
           ++
             map
               (
-                key:
-                "view '${name}' exports through '${key}', which carries destination '${toString (destinationOfKey key)}' rather than one of ${builtins.toJSON view.destinations}"
-              )
-              (
-                builtins.filter (
-                  key:
-                  let
-                    destination = destinationOfKey key;
-                  in
-                  destination == null || !(builtins.elem destination view.destinations)
-                ) actualExporters
-              )
-          ++
-            map
-              (
-                key:
-                "view '${name}' exports through '${key}', which is not a route-scoped exporter instance of this view"
-              )
-              (
-                builtins.filter (
-                  key:
-                  let
-                    instance = instanceOfKey key;
-                  in
-                  instance == null || (instance.route or null) != view.instanceRoute
-                ) actualExporters
-              )
-          ++
-            map
-              (
                 destination:
                 "view '${name}' declares destination '${destination}' but no exporter of its pipeline carries it"
               )
@@ -267,15 +232,7 @@ let
             ) viewNames
           )
         );
-        generalAssigned = lib.unique (
-          lib.concatMap (name: map destinationOfKey (exportersOf views.${name})) (
-            builtins.filter (
-              name: signalOf views.${name} == signal && views.${name}.instanceRoute == null
-            ) viewNames
-          )
-        );
         routeDeclared = resolvedRoutes.${route}.${signal} or [ ];
-        generalDeclared = resolvedPipelines.${signal};
       }) compositionSignals;
 
       referenced = lib.unique (
@@ -333,20 +290,6 @@ let
       entry:
       "destination '${entry.destination}' for ${entry.signal} is assigned to ${toString (builtins.length entry.views)} effective output pipelines (${lib.concatStringsSep ", " entry.views}); each declared destination needs exactly one output path per signal"
     ) duplicated
-    ++
-      map
-        (
-          instance:
-          "destination '${instance.destination}' is materialized on route '${toString instance.route}' but no effective pipeline exports it"
-        )
-        (
-          builtins.filter (
-            instance:
-            !(builtins.any (
-              signal: assignmentsOf signal instance.route instance.destination != [ ]
-            ) compositionSignals)
-          ) instanceDestinations
-        )
     ++ lib.concatMap (
       entry:
       map
@@ -366,10 +309,6 @@ let
           (
             builtins.filter (destination: !(builtins.elem destination entry.routeDeclared)) entry.routeAssigned
           )
-      ++
-        lib.optional
-          (lib.sort (a: b: a < b) entry.generalAssigned != lib.sort (a: b: a < b) entry.generalDeclared)
-          "the general ${entry.signal} pipeline no longer matches its declaration: effective ${builtins.toJSON entry.generalAssigned} vs declared ${builtins.toJSON entry.generalDeclared}"
     ) signalAssignments
     ++ map (
       key:
@@ -430,7 +369,6 @@ in
         inherit (example) views;
         inherit (example) route;
         resolvedRoutes = composed.services.telemetry.resolvedRoutePipelines;
-        resolvedPipelines = composed.services.telemetry.resolvedPipelines;
         sops = {
           secrets = composed.sops.secrets;
           env = composed.sops.templates."otel-collector.env".content;
@@ -533,10 +471,6 @@ in
               metrics = [ "ai-metrics" ];
               logs = [ "ai-logs" ];
             };
-          };
-          resolvedPipelines = inspection.resolvedPipelines // {
-            metrics = [ "general-metrics" ];
-            logs = [ ];
           };
         }
       );

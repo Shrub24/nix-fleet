@@ -68,9 +68,7 @@ programs.ssh.extraConfig = resolve.sshConfig specs;   # User from managementUser
 
 Selection members may carry `sshOptions` (e.g. `IdentityFile`, a
 non-default port, `ControlMaster`) — connection-local, and a credential
-REFERENCE (a path), never secret material. For consumers that cannot take
-the option form (system-manager), `resolve.knownHostsText specs` renders
-the same set as known_hosts lines.
+REFERENCE (a path), never secret material.
 
 `scheduling` uses the other door (`resolveBuildProfile`); the two never
 constrain each other — naming a host for trust never makes it schedulable,

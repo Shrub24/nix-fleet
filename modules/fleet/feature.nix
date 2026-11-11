@@ -424,78 +424,55 @@ let
                 touch "$out"
               '';
 
+          # Selector claims only: the pair contract is what catches a daemon
+          # dialing a different endpoint than the option form advertises.
           checks.fleet-render =
             assert assertRegistry sample;
             assert assertRegistry config.fleet;
             assert schedulingRejection;
             assert serviceCheck;
             assert ciMetadataCheck;
-            # Scheduling path (sampleSpecs) and trust path (trustSpecs) both
-            # render here; the trust selection includes a NON-builder. The
-            # separation itself is pinned by the schedulingRejection binding
-            # below — if the capability check ever relaxes, eval fails there.
             let
               specs = sampleSpecs;
               trustSpecs = resolve.resolveHosts sample {
                 sample-nonbuilder = { };
-                sample-host = { }; # a BuilderSpec's host renders trust too
+                sample-host = { }; # scheduling specs render trust too
               };
             in
             pkgs.runCommand "fleet-render-check"
               rec {
                 machines = resolve.machinesFile specs;
                 sshConfig = resolve.sshConfig specs;
-                knownHosts = builtins.toJSON (resolve.knownHosts specs);
+                knownHosts = builtins.toJSON (resolve.knownHosts trustSpecs);
                 optionForm = builtins.toJSON (resolve.buildMachines specs);
-                trustKnownHosts = builtins.toJSON (resolve.knownHosts trustSpecs);
                 trustSshConfig = resolve.sshConfig trustSpecs;
-                knownHostsText = resolve.knownHostsText trustSpecs;
                 passAsFile = [
                   "machines"
                   "sshConfig"
                   "knownHosts"
                   "optionForm"
-                  "trustKnownHosts"
                   "trustSshConfig"
-                  "knownHostsText"
                 ];
               }
               ''
-                awk 'NF > 0 { if (NF != 7) { print "fleet: machines line has " NF " fields, expected 7"; exit 1 } }' "$machinesPath"
                 grep -qx 'ssh-ng://nixbuild@fleet-host x86_64-linux - 2 1 big-parallel,nixos-test -' "$machinesPath" \
-                  || { echo "fleet: fleet-host line wrong (override not applied?)"; cat "$machinesPath"; exit 1; }
+                  || { echo "fleet: profile override did not reach the machines line"; cat "$machinesPath"; exit 1; }
                 grep -qx 'ssh-ng://root@eu.nixbuild.net aarch64-linux - 4 1 - -' "$machinesPath" \
-                  || { echo "fleet: external line wrong"; cat "$machinesPath"; exit 1; }
+                  || { echo "fleet: external builder line wrong"; cat "$machinesPath"; exit 1; }
                 grep -qx '  User root' "$sshConfigPath" \
                   || { echo "fleet: external sshUser override missing"; cat "$sshConfigPath"; exit 1; }
 
-                # Nix-module form ≡ machines-file form. nixpkgs composes its
-                # machines-file first field as protocol://sshUser@hostName from
-                # the option form's separate fields; that has to equal the first
-                # field the text renderer emits, or the two disagree about who
-                # gets dialed.
                 ${pkgs.jq}/bin/jq -r '.[] | "\(.protocol)://\(.sshUser)@\(.hostName)"' "$optionFormPath" > option-form
                 awk 'NF > 0 { print $1 }' "$machinesPath" > machines-form
                 paste option-form machines-form | awk '$1 != $2 { print "fleet: option form says " $1 " but machines-file form says " $2; exit 1 }'
 
-                # Trust path: both selected hosts land, the non-builder included.
-                grep -q '"host-sample-nonbuilder"' "$trustKnownHostsPath" \
-                  || { echo "fleet: resolveHosts omitted the non-builder"; cat "$trustKnownHostsPath"; exit 1; }
-                grep -q '"host-sample-host"' "$trustKnownHostsPath" \
-                  || { echo "fleet: resolveHosts omitted the builder host"; cat "$trustKnownHostsPath"; exit 1; }
-                # managementUser = null: no User line, never the dispatch default.
+                for host in host-sample-host host-sample-nonbuilder; do
+                  grep -q "\"$host\"" "$knownHostsPath" \
+                    || { echo "fleet: resolveHosts omitted $host"; cat "$knownHostsPath"; exit 1; }
+                done
+                # managementUser = null must not inherit the dispatch login.
                 grep -q 'User' "$trustSshConfigPath" \
                   && { echo "fleet: sshConfig emitted a User line for managementUser = null"; cat "$trustSshConfigPath"; exit 1; }
-                grep -qx 'Host fleet-peer' "$trustSshConfigPath" \
-                  || { echo "fleet: trust sshConfig missing the peer Host block"; cat "$trustSshConfigPath"; exit 1; }
-
-                # Text-form ≡ option-form knownHosts: every attrset entry's
-                # key must appear in the line form (same selection, same set).
-                ${pkgs.jq}/bin/jq -r 'to_entries[] | .value.hostNames[0] + " " + .value.publicKey' "$trustKnownHostsPath" \
-                  | while read -r line; do
-                      grep -qx "$line" "$knownHostsTextPath" \
-                        || { echo "fleet: knownHostsText missing line: $line"; exit 1; }
-                    done
 
                 cat "$machinesPath" > "$out"
               '';

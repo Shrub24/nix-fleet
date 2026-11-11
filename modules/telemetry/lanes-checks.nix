@@ -1,6 +1,5 @@
-# Lane composition checks. `telemetry-lane-realization` owns what a lane
-# composition renders for itself; `telemetry-capability-matrix` owns which units
-# and pipelines a composition realizes, so no other leaf repeats that claim.
+# Lane composition: which providers a composition realizes, what each renders
+# for itself, and the two spellings/aliases admission must still accept.
 {
   lib,
   config,
@@ -31,6 +30,15 @@ let
     }).config;
   accepts =
     host: (builtins.tryEval (lib.asserts.checkAssertWarn host.assertions host.warnings true)).success;
+  # The units a composition actually starts: the realization claim, not the
+  # option that requested it.
+  providers =
+    host:
+    builtins.filter (unit: host.systemd.services ? ${unit}) [
+      "opentelemetry-collector"
+      "vector"
+      "vmagent"
+    ];
 in
 {
   perSystem =
@@ -44,6 +52,11 @@ in
         protocol = "prometheus-remote-write";
         endpoint = "https://metrics.invalid/api/v1/write";
         signals = [ "metrics" ];
+      };
+      tracesDestination = {
+        protocol = "otlp-http";
+        endpoint = "https://traces.invalid";
+        signals = [ "traces" ];
       };
       vmagentHealthJob = {
         job_name = "vmagent-health";
@@ -60,26 +73,20 @@ in
           }
         ];
       };
-      logsLane = host [ aspects.telemetry-logs ] {
-        journald = {
-          includeUnits = [ "fixture-monitored" ];
-          sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
-        };
+      journald = {
+        includeUnits = [ "fixture-monitored" ];
+        sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
       };
-      # A different loopback address is a different socket: the pair the gateway
-      # binds (127.0.0.1 local, 127.0.0.2 ingress) has to stay legal, or
-      # normalizing loopback aliases would over-reject a real gateway.
+      logsLane = host [ aspects.telemetry-logs ] { inherit journald; };
+      # A different loopback address is a different socket: normalizing loopback
+      # aliases would over-reject a real gateway.
       distinctLoopback = host [ aspects.telemetry-otlp ] {
         otlp.signals = [ "traces" ];
         otlp.ingress.host = "127.0.0.2";
-        destinations.traces = {
-          protocol = "otlp-http";
-          endpoint = "https://backend.invalid";
-          signals = [ "traces" ];
-        };
+        destinations.traces = tracesDestination;
       };
       # Raw and already-bracketed IPv6 spellings must produce usable URLs and
-      # socket addresses on both receivers, not merely pass admission.
+      # socket addresses, not merely pass admission.
       ipv6Host =
         spelling:
         host [ aspects.telemetry-otlp ] {
@@ -92,11 +99,7 @@ in
               grpcPort = 4317;
             };
           };
-          destinations.traces = {
-            protocol = "otlp-http";
-            endpoint = "https://backend.invalid";
-            signals = [ "traces" ];
-          };
+          destinations.traces = tracesDestination;
         };
       contractOnlyDestination = host [ aspects.telemetry ] { destinations.metrics = remoteWrite; };
       producerOnly = host [
@@ -116,11 +119,7 @@ in
             };
             otlp.signals = [ "traces" ];
             destinations.metrics = remoteWrite;
-            destinations.traces = {
-              protocol = "otlp-http";
-              endpoint = "https://traces.invalid";
-              signals = [ "traces" ];
-            };
+            destinations.traces = tracesDestination;
           };
       noRegisteredSource = host [ aspects.telemetry-vmagent ] { destinations.metrics = remoteWrite; };
       admittedTraces = host [ aspects.telemetry-vmagent ] {
@@ -138,10 +137,7 @@ in
             aspects.telemetry-vmagent
           ]
           {
-            journald = {
-              includeUnits = [ "fixture-monitored" ];
-              sink.endpoint = "http://victorialogs.invalid:9428/insert/jsonline";
-            };
+            inherit journald;
             destinations.metrics = remoteWrite;
           };
       deliveryHealth = host [ aspects.telemetry-metrics ] {
@@ -159,23 +155,72 @@ in
           signals = [ "traces" ];
         };
       };
+      # Each composition and the providers it must realize. A composition that
+      # selects a contract-only declaration starts nothing.
+      matrix = [
+        {
+          composition = "contract-only destination";
+          host = contractOnlyDestination;
+          expect = [ ];
+        }
+        {
+          composition = "producer only";
+          host = producerOnly;
+          expect = [ ];
+        }
+        {
+          # The ingress listener is a collector receiver, so the collector is the
+          # only provider a gateway binds.
+          composition = "gateway ingress";
+          host = distinctLoopback;
+          expect = [ "opentelemetry-collector" ];
+        }
+        {
+          composition = "logs lane";
+          host = logsLane;
+          expect = [ "vector" ];
+        }
+        {
+          composition = "both collector realizations";
+          host = otelBoth;
+          expect = [ "opentelemetry-collector" ];
+        }
+        {
+          composition = "metrics with no registered source";
+          host = noRegisteredSource;
+          expect = [ "vmagent" ];
+        }
+        {
+          composition = "admitted traces beside a scrape provider";
+          host = admittedTraces;
+          expect = [ "vmagent" ];
+        }
+        {
+          composition = "logs and metrics";
+          host = journaldWithMetrics;
+          expect = [
+            "vector"
+            "vmagent"
+          ];
+        }
+        {
+          composition = "delivery-health scrape";
+          host = deliveryHealth;
+          expect = [ "vmagent" ];
+        }
+        {
+          composition = "traces only";
+          host = otlpTraces;
+          expect = [ "opentelemetry-collector" ];
+        }
+      ];
+      mismatches = builtins.filter (entry: providers entry.host != entry.expect) matrix;
     in
     {
       checks.telemetry-lane-realization = leaf "telemetry-lane-realization" [
         {
-          message = "the logs-lane composition no longer accepts its sink and allowlist";
-          ok = accepts logsLane;
-        }
-        {
-          message = "a second, distinct loopback address no longer admits the ingress listener";
-          ok = accepts distinctLoopback;
-        }
-        {
-          message = "a gateway ingress added remote scraping or journald shipping to that host";
-          ok =
-            !(distinctLoopback.systemd.services ? vmagent)
-            && !distinctLoopback.services.vector.enable
-            && !(distinctLoopback.services.opentelemetry-collector.settings.receivers ? prometheus);
+          message = "the logs lane no longer accepts its sink and allowlist, or a distinct loopback address is refused";
+          ok = accepts logsLane && accepts distinctLoopback;
         }
         {
           message = "an IPv6 spelling no longer renders usable producer URLs and receiver sockets";
@@ -204,64 +249,26 @@ in
 
       checks.telemetry-capability-matrix = leaf "telemetry-capability-matrix" [
         {
-          message = "a contract-only destination started a runtime service";
+          message = "a lane composition no longer realizes exactly its own providers";
           ok =
-            !(contractOnlyDestination.systemd.services ? vmagent)
-            && !(contractOnlyDestination.systemd.services ? vector)
-            && !(contractOnlyDestination.systemd.services ? opentelemetry-collector);
+            builtins.length mismatches == 0
+            || throw (
+              "telemetry-capability-matrix: "
+              + lib.concatStringsSep "; " (
+                map (
+                  entry:
+                  "${entry.composition} realizes ${builtins.toJSON (providers entry.host)} instead of ${builtins.toJSON entry.expect}"
+                ) mismatches
+              )
+            );
         }
         {
-          message = "a producer-only host is no longer accepted, or started a scrape or collector service";
+          message = "a composition no longer renders its own health path";
           ok =
-            accepts producerOnly
-            && !(producerOnly.systemd.services ? vmagent)
-            && !(producerOnly.systemd.services ? opentelemetry-collector);
-        }
-        {
-          message = "the logs realization did not select Vector alone and publish its health scrape";
-          ok =
-            logsLane.services.vector.enable
-            && builtins.hasAttr "vector-health" logsLane.services.telemetry.scrape
-            && !logsLane.services.vmagent.enable
-            && !logsLane.services.opentelemetry-collector.enable
-            && !(logsLane.systemd.services ? vmagent)
-            && !(logsLane.systemd.services ? opentelemetry-collector);
-        }
-        {
-          message = "the two collector realizations no longer compose into one instance without a scraper";
-          ok =
-            otelBoth.services.opentelemetry-collector.enable
-            &&
-              builtins.attrNames otelBoth.services.opentelemetry-collector.settings.service.pipelines == [
-                "metrics/scrape"
-                "traces"
-              ]
-            && !(otelBoth.systemd.services ? vmagent);
-        }
-        {
-          message = "a metrics destination with no registered scrape source no longer starts exactly vmagent and its own health job";
-          ok =
-            noRegisteredSource.services.vmagent.enable
-            && noRegisteredSource.services.vmagent.prometheusConfig.scrape_configs == [ vmagentHealthJob ]
-            && !noRegisteredSource.services.opentelemetry-collector.enable
-            && !(noRegisteredSource.systemd.services ? opentelemetry-collector)
-            && !noRegisteredSource.services.vector.enable;
-        }
-        {
-          message = "an admitted OTLP trace signal no longer leaves the scrape provider alone on the host";
-          ok =
-            admittedTraces.services.vmagent.enable
+            noRegisteredSource.services.vmagent.prometheusConfig.scrape_configs == [ vmagentHealthJob ]
             && admittedTraces.services.vmagent.prometheusConfig.scrape_configs == [ vmagentHealthJob ]
             && builtins.attrNames admittedTraces.services.telemetry.scrape == [ "vmagent-health" ]
-            && !admittedTraces.services.opentelemetry-collector.enable
-            && !(admittedTraces.systemd.services ? opentelemetry-collector)
-            && !admittedTraces.services.vector.enable;
-        }
-        {
-          message = "the combined logs and metrics composition no longer realizes both providers and its health path";
-          ok =
-            journaldWithMetrics.services.vector.settings.sources.internal_metrics.type == "internal_metrics"
-            && journaldWithMetrics.services.vector.settings.sinks.vector-health.inputs == [ "internal_metrics" ]
+            && builtins.hasAttr "vector-health" logsLane.services.telemetry.scrape
             &&
               builtins.map (
                 job: job.job_name
@@ -272,23 +279,19 @@ in
             && !(journaldWithMetrics.services.telemetry.scrape ? app);
         }
         {
-          message = "a registered delivery-health scrape no longer composes the scrape provider alone";
+          message = "the two collector realizations no longer compose into one instance";
           ok =
-            accepts deliveryHealth
-            && deliveryHealth.services.vmagent.enable
-            && !deliveryHealth.services.opentelemetry-collector.enable
-            && !(deliveryHealth.systemd.services ? opentelemetry-collector)
-            && !(deliveryHealth.services.notify.events ? opentelemetry-collector);
+            builtins.attrNames otelBoth.services.opentelemetry-collector.settings.service.pipelines == [
+              "metrics/scrape"
+              "traces"
+            ];
         }
         {
-          message = "a traces-only composition no longer realizes the collector without the log shipper";
-          ok =
-            otlpTraces.services.opentelemetry-collector.enable
-            && !otlpTraces.services.vmagent.enable
-            && !otlpTraces.services.vector.enable
-            && !(otlpTraces.systemd.services ? vmagent);
+          message = "the delivery-health scrape no longer composes the scrape provider alone";
+          ok = accepts deliveryHealth && !(deliveryHealth.services.notify.events ? opentelemetry-collector);
         }
         {
+          # Two scrape realizations would both own the health path.
           message = "two scrape realizations were accepted together";
           ok =
             let

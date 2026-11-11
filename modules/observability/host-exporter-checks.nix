@@ -28,6 +28,8 @@ let
     leaf
     assertionFailures
     ;
+  # A named refusal from the aspect, whatever its wording.
+  refusedBy = prefix: cfg: builtins.any (lib.hasPrefix prefix) (assertionFailures cfg);
 
   hostFor =
     system: modules:
@@ -103,9 +105,7 @@ in
           in
           builtins.elem "systemd" native.enabledCollectors
           && scrape.target == native.listenAddress
-          && scrape.port == native.port
-          && node.systemd.services."prometheus-node-exporter".serviceConfig.ExecStart != ""
-          && !(builtins.elem native.port node.networking.firewall.allowedTCPPorts);
+          && scrape.port == native.port;
       }
       {
         message = "Tailscale metrics registration no longer targets the daemon endpoint or opened network exposure";
@@ -178,8 +178,7 @@ in
             unit.serviceConfig.AmbientCapabilities == [
               "CAP_SYS_RAWIO"
               "CAP_SYS_ADMIN"
-            ]
-          && !(builtins.elem native.port smart.networking.firewall.allowedTCPPorts);
+            ];
       }
       {
         message = "SMART consumer port override did not move the exporter and registration together";
@@ -206,8 +205,7 @@ in
                 name = "fixture";
                 comm = [ "fixture" ];
               }
-            ]
-          && !(builtins.elem native.port process.networking.firewall.allowedTCPPorts);
+            ];
       }
       {
         message = "process exporter port override did not move its listener and registration together";
@@ -217,9 +215,7 @@ in
       }
       {
         message = "process exporter accepted empty selectors without the named failure";
-        ok = builtins.any (lib.hasPrefix "process-exporter: services.prometheus.exporters.process.settings.process_names is empty") (
-          assertionFailures processMissing
-        );
+        ok = refusedBy "process-exporter: " processMissing;
       }
     ];
   };

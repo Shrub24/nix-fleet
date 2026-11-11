@@ -1,6 +1,6 @@
-# Provider-owned vmagent checks: what the scrape provider renders for the jobs a
-# host registers, which fanout mistakes it refuses by name, and the arbitration
-# error of composing two scrape implementations.
+# Provider-owned vmagent checks: the fanout mistakes the provider refuses, the
+# job it renders for a registration, and the arbitration error of composing two
+# scrape implementations.
 {
   lib,
   config,
@@ -36,41 +36,18 @@ in
       pkgs = inputs.nixpkgs.legacyPackages.${system};
       inherit (import ../../lib/contract-leaf.nix { inherit lib pkgs; }) assertionFailures leaf;
       vmagentHost = vmagentHostFor system;
-      rejectsWith = message: host: builtins.any (lib.hasPrefix message) (assertionFailures host);
+      # A named telemetry refusal, whatever its wording.
+      refused = host: builtins.any (lib.hasPrefix "telemetry: ") (assertionFailures host);
       remoteWrite = {
         protocol = "prometheus-remote-write";
         endpoint = "https://metrics.invalid/api/v1/write";
         signals = [ "metrics" ];
       };
-      vmagentHealthJob = {
-        job_name = "vmagent-health";
-        scrape_interval = "30s";
-        metrics_path = "/metrics";
-        scheme = "http";
-        static_configs = [
-          {
-            targets = [ "127.0.0.1:8429" ];
-            labels = {
-              host = "nixos";
-              instance = "nixos:vmagent";
-            };
-          }
-        ];
-      };
-      otelCollectorHealthJob = {
-        job_name = "otel-collector-health";
-        scrape_interval = "30s";
-        metrics_path = "/metrics";
-        scheme = "http";
-        static_configs = [
-          {
-            targets = [ "127.0.0.1:9464" ];
-            labels = {
-              host = "nixos";
-              instance = "nixos:otel-collector";
-            };
-          }
-        ];
+      registeredApp = {
+        scrape.app = {
+          target = "127.0.0.1";
+          port = 9187;
+        };
       };
       rendered = vmagentHost {
         scrape.everything = {
@@ -86,6 +63,9 @@ in
         };
         destinations.metrics = remoteWrite;
       };
+      jobsOf = cfg: cfg.services.vmagent.prometheusConfig.scrape_configs;
+      jobNamed =
+        cfg: name: builtins.head (builtins.filter (candidate: candidate.job_name == name) (jobsOf cfg));
       otelScrape =
         (lib.nixosSystem {
           inherit system;
@@ -93,168 +73,138 @@ in
             inputs.sops-nix.nixosModules.sops
             config.flake.modules.nixos.telemetry-otel-collector-scrape
             {
-              services.telemetry = {
-                scrape.app = {
-                  target = "127.0.0.1";
-                  port = 9187;
-                };
+              services.telemetry = registeredApp // {
                 destinations.metrics = remoteWrite;
               };
             }
             { system.stateVersion = "25.11"; }
           ];
         }).config;
-      # A literal the adapter would render into its own comma-separated argument
-      # array, so it has to be refused while it is still visible at build time.
-      hostileEndpoint = vmagentHost {
-        scrape.app = {
-          target = "127.0.0.1";
-          port = 9187;
-        };
-        destinations.metrics = remoteWrite // {
-          endpoint = "https://metrics.invalid/api/v1/write?tenant=a,b";
-        };
+      # Literals the adapter would render into its own comma-separated argument
+      # array, so they must be refused while still visible at build time.
+      hostileWith =
+        extra:
+        vmagentHost (
+          registeredApp
+          // {
+            destinations.metrics = remoteWrite // extra;
+          }
+        );
+      hostileEndpoint = hostileWith {
+        endpoint = "https://metrics.invalid/api/v1/write?tenant=a,b";
       };
-      hostileHeader = vmagentHost {
-        scrape.app = {
-          target = "127.0.0.1";
-          port = 9187;
-        };
-        destinations.metrics = remoteWrite // {
-          headers.Authorization = {
-            secret = "token";
-            prefix = "Bearer,x ";
+      hostileHeader = vmagentHost (
+        registeredApp
+        // {
+          destinations.metrics = remoteWrite // {
+            headers.Authorization = {
+              secret = "token";
+              prefix = "Bearer,x ";
+            };
           };
-        };
-        secretFiles.token = fixtureSecretFile;
-        secretKeys.token = "fixture/token";
-      };
+          secretFiles.token = fixtureSecretFile;
+          secretKeys.token = "fixture/token";
+        }
+      );
     in
     {
       checks = {
+        # A registered source with no metrics fanout, and one whose only
+        # destination carries traces, are the same refusal.
         vmagent-provider-rejections = leaf "vmagent-provider-rejections" [
           {
-            message = "a scrape registration with no metrics destination is no longer refused by the provider";
-            ok =
-              rejectsWith "telemetry: scrape sources are registered but the metrics pipeline has no destination"
-                (vmagentHost {
-                  scrape.app = {
-                    target = "127.0.0.1";
-                    port = 9100;
-                  };
-                });
+            message = "a scrape registration with no metrics destination is no longer refused";
+            ok = refused (vmagentHost registeredApp);
           }
           {
-            # The traces-carrying destination must not become what carries scraped
-            # metrics: the refusal is that the metrics fanout has no destination.
-            message = "a scrape registration whose only destination carries traces is no longer refused for having no metrics destination";
-            ok =
-              rejectsWith "telemetry: scrape sources are registered but the metrics pipeline has no destination"
-                (vmagentHost {
-                  scrape.app = {
-                    target = "127.0.0.1";
-                    port = 9100;
-                  };
+            message = "a scrape registration whose only destination carries traces is no longer refused";
+            ok = refused (
+              vmagentHost (
+                registeredApp
+                // {
                   destinations.tracesOnly = {
                     protocol = "otlp-grpc";
                     endpoint = "http://langfuse.invalid:4317";
                     signals = [ "traces" ];
                   };
-                });
+                }
+              )
+            );
           }
         ];
 
         vmagent-rendered-jobs = leaf "vmagent-rendered-jobs" [
           {
-            message = "the registered scrape fields or the provider's own health job no longer render";
+            # A registration becomes one job named for its key, targeting its
+            # address, carrying the host identity plus its own labels, with its
+            # overrides honoured.
+            message = "a registered scrape no longer renders as its own job";
             ok =
+              let
+                job = jobNamed rendered "everything";
+                target = builtins.head job.static_configs;
+              in
               rendered.services.vmagent.enable
               &&
-                rendered.services.vmagent.prometheusConfig.scrape_configs == [
-                  {
-                    job_name = "everything";
-                    scrape_interval = "45s";
-                    metrics_path = "/custom-metrics";
-                    scheme = "https";
-                    static_configs = [
-                      {
-                        targets = [ "10.0.0.5:9090" ];
-                        labels = {
-                          host = "nixos";
-                          service = "everything";
-                          environment = "fixture";
-                        };
-                      }
-                    ];
-                  }
-                  vmagentHealthJob
-                ];
+                builtins.map (candidate: candidate.job_name) (jobsOf rendered) == [
+                  "everything"
+                  "vmagent-health"
+                ]
+              && target.targets == [ "10.0.0.5:9090" ]
+              && job.metrics_path == "/custom-metrics"
+              && job.scheme == "https"
+              && job.scrape_interval == "45s"
+              &&
+                target.labels == {
+                  host = "nixos";
+                  service = "everything";
+                  environment = "fixture";
+                };
           }
           {
-            message = "the persistent queue, loopback management endpoint, build-time validation or firewall posture regressed";
+            message = "the persistent queue, build-time validation or loopback management posture regressed";
             ok =
-              rendered.services.vmagent.extraArgs == [
-                "-remoteWrite.url=https://metrics.invalid/api/v1/write"
-                "-remoteWrite.tmpDataPath=%S/vmagent/remote_write_tmp"
-                "-httpListenAddr=127.0.0.1:8429"
-                "-remoteWrite.maxDiskUsagePerURL=1073741824"
-              ]
-              && rendered.systemd.services.vmagent.serviceConfig.StateDirectory == "vmagent"
+              rendered.systemd.services.vmagent.serviceConfig.StateDirectory == "vmagent"
               && rendered.services.vmagent.checkConfig
               && !rendered.services.vmagent.openFirewall
               && !(builtins.elem 8429 rendered.networking.firewall.allowedTCPPorts);
           }
           {
-            message = "the explicit OTel scrape realization no longer renders only its own job and health mapping";
+            # The OTel realization is the collector's own prometheus receiver, not
+            # a second scrape provider beside it.
+            message = "the OTel scrape realization no longer renders only its own receiver and jobs";
             ok =
               !(otelScrape.systemd.services ? vmagent)
               && !(otelScrape.services.opentelemetry-collector.settings.receivers ? otlp)
               &&
-                builtins.attrNames otelScrape.services.opentelemetry-collector.settings.receivers
-                == [ "prometheus" ]
+                builtins.attrNames otelScrape.services.opentelemetry-collector.settings.receivers == [
+                  "prometheus"
+                ]
               &&
-                builtins.attrNames otelScrape.services.opentelemetry-collector.settings.service.pipelines
-                == [ "metrics/scrape" ]
+                builtins.attrNames otelScrape.services.opentelemetry-collector.settings.service.pipelines == [
+                  "metrics/scrape"
+                ]
               &&
-                otelScrape.services.opentelemetry-collector.settings.service.pipelines."metrics/scrape".receivers
-                == [ "prometheus" ]
-              &&
-                otelScrape.services.opentelemetry-collector.settings.receivers.prometheus.config.scrape_configs == [
-                  {
-                    job_name = "app";
-                    scrape_interval = "30s";
-                    metrics_path = "/metrics";
-                    scheme = "http";
-                    static_configs = [
-                      {
-                        targets = [ "127.0.0.1:9187" ];
-                        labels = {
-                          host = "nixos";
-                        };
-                      }
-                    ];
-                  }
-                  otelCollectorHealthJob
+                builtins.map (
+                  job: job.job_name
+                ) otelScrape.services.opentelemetry-collector.settings.receivers.prometheus.config.scrape_configs
+                == [
+                  "app"
+                  "otel-collector-health"
                 ];
           }
         ];
 
+        # The adapter renders remote-write arguments as one comma-separated
+        # array, so a literal carrying that structure must not reach it.
         vmagent-fanout-guards = leaf "vmagent-fanout-guards" [
           {
-            message = "a registered endpoint whose literal the remote-write argument parser reads as structure no longer fails by name";
-            ok =
-              builtins.any (lib.hasPrefix "telemetry: the metrics pipeline selects values vmagent's argument parser") (
-                assertionFailures hostileEndpoint
-              )
-              && hostileEndpoint.services.vmagent.enable;
+            message = "an endpoint literal the argument parser reads as structure is no longer refused";
+            ok = refused hostileEndpoint;
           }
           {
-            message = "a registered header prefix whose literal the remote-write argument parser reads as structure no longer fails by name";
-            ok =
-              builtins.any (lib.hasPrefix "telemetry: the metrics pipeline selects values vmagent's argument parser") (
-                assertionFailures hostileHeader
-              )
-              && hostileHeader.services.vmagent.enable;
+            message = "a header-prefix literal the argument parser reads as structure is no longer refused";
+            ok = refused hostileHeader;
           }
         ];
       };

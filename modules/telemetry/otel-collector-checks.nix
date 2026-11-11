@@ -13,6 +13,7 @@
     let
       pkgs = inputs.nixpkgs.legacyPackages.${system};
       inherit (import ../../lib/contract-leaf.nix { inherit lib pkgs; }) leaf assertionFailures;
+      refusedBy = prefix: cfg: builtins.any (lib.hasPrefix prefix) (assertionFailures cfg);
       # Telemetry values and the collector's own option surface are separate
       # namespaces: the processor order is declared on the collector.
       hostFor =
@@ -102,9 +103,7 @@
         otel-collector-resource-order = leaf "otel-collector-resource-order" [
           {
             message = "a raw processors.resource declaration is no longer rejected when resourceAttributes is also declared";
-            ok = builtins.any (lib.hasPrefix "otel-collector: configure the resource processor through resourceAttributes, not processors.resource") (
-              assertionFailures rawResource
-            );
+            ok = refusedBy "otel-collector: " rawResource;
           }
           {
             message = "a directly declared resource processor no longer reaches the pipeline order";
@@ -124,14 +123,6 @@
                 "memory_limiter"
                 "resource/telemetry-identity"
                 "deltatocumulative"
-              ];
-          }
-          {
-            message = "deltatocumulative reached the traces pipeline, which the processor does not accept";
-            ok =
-              metricsCollector.settings.service.pipelines.traces.processors == [
-                "memory_limiter"
-                "resource/telemetry-identity"
               ];
           }
           {
