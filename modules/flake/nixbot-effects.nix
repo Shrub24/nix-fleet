@@ -34,8 +34,9 @@ let
           step = system: ''
             niks3 push "''${auth[@]}" ${roots.${system}}
             niks3 pins create "''${auth[@]}" ${pin system} ${roots.${system}}
-            nix path-info --store ${lib.escapeShellArg cacheUrl} ${roots.${system}} >/dev/null \
-              || { echo "cache-retain: ${system} root is not substitutable from ${cacheUrl}" >&2; exit 1; }
+            # The effect sandbox's Nix enables no experimental features.
+            nix --extra-experimental-features nix-command path-info --store ${lib.escapeShellArg cacheUrl} ${roots.${system}} >/dev/null \
+              || { echo "cache-retain: ${system} root failed the substitution check against ${cacheUrl}" >&2; exit 1; }
           '';
         in
         lib.optionalAttrs

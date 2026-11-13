@@ -69,8 +69,12 @@ in
             cat > bin/nix <<'SH'
             #!${pkgs.runtimeShell}
             set -euo pipefail
-            printf 'verify %s\n' "$4" >> "$CALLS"
-            [[ "$4" != "''${FAIL_VERIFY:-}" ]]
+            # Like the effect sandbox's Nix: the new CLI refuses unless the invocation enables it.
+            [[ "$1 $2" == "--extra-experimental-features nix-command" ]] \
+              || { echo "error: experimental Nix feature 'nix-command' is disabled" >&2; exit 1; }
+            root=''${*: -1}
+            printf 'verify %s\n' "$root" >> "$CALLS"
+            [[ "$root" != "''${FAIL_VERIFY:-}" ]]
             SH
             cat > bin/niks3 <<'SH'
             #!${pkgs.runtimeShell}
