@@ -23,6 +23,13 @@
         treefmt-nix.follows = "treefmt-nix";
       };
     };
+    nixbot = {
+      url = "github:Mic92/nixbot";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        treefmt-nix.follows = "treefmt-nix";
+      };
+    };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     sops-nix = {
       url = "github:Mic92/sops-nix";

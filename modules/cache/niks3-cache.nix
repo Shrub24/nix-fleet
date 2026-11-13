@@ -9,6 +9,21 @@ _: {
       secretHelpers = import ../../lib/secrets.nix { inherit lib; };
 
       cfg = config.services.niks3-cache;
+      claims = import ../../lib/nixbot-effects.nix;
+      inherit (cfg) nixbot;
+      namespaceOf =
+        repository:
+        claims.pinNamespace (lib.last (
+          lib.splitString "/" repository
+        )) nixbot.repositories.${repository}.branch;
+      repositories = builtins.attrNames nixbot.repositories;
+      # A pin glob `<ns>-*` also matches another repository's pins when its namespace starts with `<ns>-`.
+      overlaps = lib.concatMap (
+        a:
+        map (b: "${a} and ${b}") (
+          builtins.filter (b: a != b && lib.hasPrefix "${namespaceOf a}-" "${namespaceOf b}-") repositories
+        )
+      ) repositories;
     in
     {
       options.services.niks3-cache = {
@@ -127,6 +142,39 @@ _: {
             Policy data — consumer-supplied.
           '';
         };
+
+        nixbot = {
+          issuer = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Public URL of the nixbot instance that mints effect tokens.";
+          };
+          audience = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = cfg.cacheUrl;
+            defaultText = lib.literalExpression "config.services.niks3-cache.cacheUrl";
+            description = "Token audience; flakeModules.nixbotEffects presents the cache URL.";
+          };
+          repositories = lib.mkOption {
+            type = lib.types.attrsOf (
+              lib.types.submodule {
+                options.branch = lib.mkOption {
+                  type = lib.types.str;
+                  default = "main";
+                  description = "Branch whose retention effect may push and pin.";
+                };
+              }
+            );
+            default = { };
+            example = {
+              "owner/repo" = { };
+            };
+            description = ''
+              Repositories (`owner/name`) whose nixbot retention effect may write
+              and move its own `<name>-<branch>-*` pins. Renders the `nixbot` provider.
+            '';
+          };
+        };
       };
 
       config = {
@@ -151,6 +199,20 @@ _: {
             feature = "niks3-cache";
             label = "secretFiles.apiToken";
           })
+        ]
+        ++ lib.optionals (nixbot.repositories != { }) [
+          {
+            assertion = nixbot.issuer != null;
+            message = "niks3-cache: services.niks3-cache.nixbot.issuer must be set when repositories are listed.";
+          }
+          {
+            assertion = !(cfg.oidc.providers ? nixbot);
+            message = "niks3-cache: oidc.providers.nixbot is rendered from services.niks3-cache.nixbot; do not also set it.";
+          }
+          {
+            assertion = overlaps == [ ];
+            message = "niks3-cache: nixbot pin namespaces overlap: ${lib.concatStringsSep "; " overlaps}.";
+          }
         ];
 
         services.niks3 = {
@@ -180,7 +242,25 @@ _: {
           inherit (cfg) signKeyFiles;
           inherit (cfg) apiTokenFile;
 
-          oidc.providers = cfg.oidc.providers;
+          oidc.providers =
+            cfg.oidc.providers
+            // lib.optionalAttrs (nixbot.repositories != { }) {
+              nixbot = {
+                inherit (nixbot) issuer audience;
+                # Discovery at startup would tie the cache's boot to nixbot being up.
+                jwksUrl = "${nixbot.issuer}/.well-known/jwks.json";
+                rules = map (repository: {
+                  boundClaims = {
+                    repository = [ repository ];
+                    ref = [ "refs/heads/${nixbot.repositories.${repository}.branch}" ];
+                    event = [ "push" ];
+                    effect = [ claims.retainEffect ];
+                  };
+                  scopes = [ "write" ];
+                  pins = [ "${namespaceOf repository}-*" ];
+                }) repositories;
+              };
+            };
         };
 
         # Each secret file is optional on its own: the assertions above are the

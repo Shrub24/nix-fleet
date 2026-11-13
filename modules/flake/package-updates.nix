@@ -5,7 +5,8 @@
 # Contract: docs/contracts/package-updates.md.
 { inputs, ... }:
 let
-  packageUpdatesModule = _: {
+  packageUpdatesModule = {
+    key = "nix-fleet#flakeModules.packageUpdates";
     perSystem =
       {
         config,

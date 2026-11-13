@@ -7,7 +7,8 @@
 # importing the fleet schema (`imports = [ inputs.nix-fleet.flakeModules.cacheRoot ];`).
 { lib, ... }:
 let
-  cacheRootModule = _: {
+  cacheRootModule = {
+    key = "nix-fleet#flakeModules.cacheRoot";
     perSystem =
       { config, pkgs, ... }:
       {
