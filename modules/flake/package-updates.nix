@@ -25,8 +25,55 @@ let
               inherit (set) paths reason;
             }) config.packageUpdates.writeSets;
             deferredInputs = config.packageUpdates.deferredInputs;
+            commands = config.packageUpdates.commands;
           }
         );
+
+        # A lockfile refresh is the ecosystem's own command; the build must read the
+        # lockfile (cargoLock.lockFile, crane, importNpmLock, bun2nix) rather than a
+        # vendored hash, or the refreshed lock no longer builds.
+        lockfileAdapters = {
+          cargo = {
+            tool = pkgs.cargo;
+            run = "cargo update";
+            files = [ "Cargo.lock" ];
+          };
+          bun = {
+            tool = pkgs.bun;
+            run = "bun update";
+            files = [
+              "bun.lock"
+              "package.json"
+            ];
+          };
+          npm = {
+            tool = pkgs.nodejs;
+            run = "npm update --package-lock-only";
+            files = [
+              "package-lock.json"
+              "package.json"
+            ];
+          };
+        };
+        lockfileCommand =
+          name: lockfile:
+          let
+            adapter = lockfileAdapters.${lockfile.ecosystem};
+            at = file: if lockfile.directory == "." then file else "${lockfile.directory}/${file}";
+          in
+          {
+            program = lib.getExe (
+              pkgs.writeShellApplication {
+                name = "update-${name}";
+                runtimeInputs = [ adapter.tool ];
+                text = ''
+                  cd ${lib.escapeShellArg lockfile.directory}
+                  ${adapter.run}
+                '';
+              }
+            );
+            paths = map at adapter.files;
+          };
 
         runnerPackage = pkgs.callPackage ../../pkgs/package-updates { };
 
@@ -99,6 +146,56 @@ let
           '';
         };
 
+        options.packageUpdates.commands = lib.mkOption {
+          type = lib.types.attrsOf (
+            lib.types.submodule {
+              options = {
+                program = lib.mkOption {
+                  type = lib.types.str;
+                  description = "Executable run from the checkout root; it may edit only `paths`.";
+                };
+                paths = lib.mkOption {
+                  type = lib.types.nonEmptyListOf lib.types.str;
+                  description = "Repository-relative paths the command may change.";
+                };
+              };
+            }
+          );
+          default = { };
+          description = ''
+            Updates that are not a package's nix-update run, keyed by name: a
+            repository-specific script (a pinned tag, a generated file). Each runs in
+            the same transaction as the packages.
+          '';
+        };
+
+        options.packageUpdates.lockfiles = lib.mkOption {
+          type = lib.types.attrsOf (
+            lib.types.submodule {
+              options = {
+                ecosystem = lib.mkOption {
+                  type = lib.types.enum (builtins.attrNames lockfileAdapters);
+                  description = "Which ecosystem's lockfile to refresh within its declared ranges.";
+                };
+                directory = lib.mkOption {
+                  type = lib.types.str;
+                  default = ".";
+                  description = "Repository-relative directory holding the manifest.";
+                };
+              };
+            }
+          );
+          default = { };
+          example = {
+            cargo.ecosystem = "cargo";
+            web = {
+              ecosystem = "bun";
+              directory = "web";
+            };
+          };
+          description = "Ecosystem lockfiles refreshed as command updates.";
+        };
+
         options.packageUpdates.deferredInputs = lib.mkOption {
           type = lib.types.attrsOf lib.types.str;
           default = { };
@@ -108,6 +205,8 @@ let
             `--input` request still moves a deferred input.
           '';
         };
+
+        config.packageUpdates.commands = lib.mapAttrs lockfileCommand config.packageUpdates.lockfiles;
 
         config.apps = {
           update-packages = {

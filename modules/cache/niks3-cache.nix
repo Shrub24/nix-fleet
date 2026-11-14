@@ -9,21 +9,38 @@ _: {
       secretHelpers = import ../../lib/secrets.nix { inherit lib; };
 
       cfg = config.services.niks3-cache;
-      claims = import ../../lib/nixbot-effects.nix;
+      claims = import ../../lib/ci.nix;
       inherit (cfg) nixbot;
-      namespaceOf =
-        repository:
-        claims.pinNamespace (lib.last (
-          lib.splitString "/" repository
-        )) nixbot.repositories.${repository}.branch;
       repositories = builtins.attrNames nixbot.repositories;
-      # A pin glob `<ns>-*` also matches another repository's pins when its namespace starts with `<ns>-`.
+      nameOf = repository: lib.last (lib.splitString "/" repository);
+      # Each repository's two grants: its default-branch retention and its tag releases.
+      grants =
+        repository:
+        let
+          name = nameOf repository;
+        in
+        [
+          {
+            inherit repository;
+            ref = "refs/heads/${nixbot.repositories.${repository}.branch}";
+            effect = claims.retainEffect;
+            namespace = claims.pinNamespace name nixbot.repositories.${repository}.branch;
+          }
+          {
+            inherit repository;
+            ref = "refs/tags/*";
+            effect = claims.releaseEffect;
+            namespace = claims.releaseNamespace name;
+          }
+        ];
+      allGrants = lib.concatMap grants repositories;
+      # A pin glob `<ns>-*` also matches another grant's pins when its namespace starts with `<ns>-`.
       overlaps = lib.concatMap (
         a:
-        map (b: "${a} and ${b}") (
-          builtins.filter (b: a != b && lib.hasPrefix "${namespaceOf a}-" "${namespaceOf b}-") repositories
+        map (b: "${a.namespace} (${a.repository}) and ${b.namespace} (${b.repository})") (
+          builtins.filter (b: a != b && lib.hasPrefix "${a.namespace}-" "${b.namespace}-") allGrants
         )
-      ) repositories;
+      ) allGrants;
     in
     {
       options.services.niks3-cache = {
@@ -143,6 +160,12 @@ _: {
           '';
         };
 
+        gc.olderThan = lib.mkOption {
+          type = lib.types.str;
+          default = "720h";
+          description = "Age after which an unpinned closure is collected. Pins are what is kept beyond it.";
+        };
+
         nixbot = {
           issuer = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
@@ -153,7 +176,7 @@ _: {
             type = lib.types.nullOr lib.types.str;
             default = cfg.cacheUrl;
             defaultText = lib.literalExpression "config.services.niks3-cache.cacheUrl";
-            description = "Token audience; flakeModules.nixbotEffects presents the cache URL.";
+            description = "Token audience; flakeModules.ci presents the cache URL.";
           };
           repositories = lib.mkOption {
             type = lib.types.attrsOf (
@@ -170,8 +193,9 @@ _: {
               "owner/repo" = { };
             };
             description = ''
-              Repositories (`owner/name`) whose nixbot retention effect may write
-              and move its own `<name>-<branch>-*` pins. Renders the `nixbot` provider.
+              Repositories (`owner/name`) whose nixbot retention effects may write:
+              a default-branch push may move `<name>-<branch>-*` pins and a tag push
+              `<name>-release-*` pins. Renders the `nixbot` provider.
             '';
           };
         };
@@ -223,7 +247,7 @@ _: {
 
           gc = {
             enable = true;
-            olderThan = "720h";
+            inherit (cfg.gc) olderThan;
             failedUploadsOlderThan = "6h";
             schedule = "daily";
             randomizedDelaySec = 1800;
@@ -249,16 +273,16 @@ _: {
                 inherit (nixbot) issuer audience;
                 # Discovery at startup would tie the cache's boot to nixbot being up.
                 jwksUrl = "${nixbot.issuer}/.well-known/jwks.json";
-                rules = map (repository: {
+                rules = map (grant: {
                   boundClaims = {
-                    repository = [ repository ];
-                    ref = [ "refs/heads/${nixbot.repositories.${repository}.branch}" ];
+                    repository = [ grant.repository ];
+                    ref = [ grant.ref ];
                     event = [ "push" ];
-                    effect = [ claims.retainEffect ];
+                    effect = [ grant.effect ];
                   };
                   scopes = [ "write" ];
-                  pins = [ "${namespaceOf repository}-*" ];
-                }) repositories;
+                  pins = [ "${grant.namespace}-*" ];
+                }) allGrants;
               };
             };
         };

@@ -20,7 +20,7 @@ def main(argv: list[str] | None = None) -> int:
         "packages",
         nargs="*",
         metavar="PACKAGE",
-        help="registered package outputs to update (default: all registered)",
+        help="registered packages or commands to update (default: all registered)",
     )
     parser.add_argument(
         "--input",
@@ -55,9 +55,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         registry = load_registry()
-        names = select(registry, args.packages)
+        names = select(registry, args.packages, args.refresh_inputs or bool(args.inputs))
         if args.check:
-            print(render(check(names, registry.system)))
+            packages = [name for name in names if name not in registry.commands]
+            print(render(check(packages, registry.system)))
             return 0
         return update(
             names,
@@ -68,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
             package_paths=registry.package_paths,
             inputs=lock_refresh(args.inputs, args.refresh_inputs),
             deferred_inputs=registry.deferred_inputs,
+            commands=registry.commands,
         )
     except (UpdateError, TransactionError, OSError) as error:
         # Nothing was proposed and nothing can be. A run that completed with

@@ -1,12 +1,13 @@
 # The shipped effect scripts' decision paths, run against a probe consumer of
-# flakeModules.nixbotEffects with niks3, nix, jj and git stubbed.
+# flakeModules.ci with niks3, nix, jj and git stubbed.
 { config, inputs, ... }:
 let
-  module = config.flake.flakeModules.nixbotEffects;
+  module = config.flake.flakeModules.ci;
 in
 {
   perSystem =
     {
+      lib,
       pkgs,
       system,
       ...
@@ -19,18 +20,13 @@ in
             "aarch64-linux"
           ];
           imports = [ module ];
-          nixbotEffects = {
-            inherit system;
-            nixPackage = pkgs.nix;
-            cacheRetain = {
-              enable = true;
+          ci = {
+            instance = {
+              inherit system;
               cacheUrl = "https://cache.example";
               writeEndpoint = "http://writer.example";
             };
-            packageUpdates = {
-              enable = true;
-              when.dayOfWeek = [ "Mon" ];
-            };
+            retention.generations = 2;
           };
           perSystem =
             { pkgs, ... }:
@@ -38,81 +34,110 @@ in
               packages.alpha = pkgs.runCommand "alpha" { } "touch $out";
             };
         }).config.flake;
-      primaryRepo = {
+      repo = {
         owner = "owner";
         name = "probe";
-        branch = "main";
-        tag = null;
         remoteHttpUrl = "https://github.com/owner/probe";
       };
-      ci = probe.herculesCI { inherit primaryRepo; };
-      retain = ci.onPush.default.outputs.effects.cache-retain;
-      update = ci.onSchedule.package-updates.outputs.effects.update;
+      onPush =
+        primaryRepo:
+        (probe.herculesCI { primaryRepo = repo // primaryRepo; }).onPush.default.outputs.effects;
+      main = onPush {
+        branch = "main";
+        tag = null;
+      };
+      tagged = onPush {
+        branch = null;
+        tag = "v1/2";
+      };
+      update =
+        (probe.herculesCI {
+          primaryRepo = repo // {
+            branch = "main";
+          };
+        }).onSchedule.package-updates.outputs.effects.update;
       script =
         name: effect: pkgs.writeText name (builtins.unsafeDiscardStringContext effect.effectScript);
       root = s: builtins.unsafeDiscardStringContext (toString probe.packages.${s}.cache-root);
+      niks3Stub = pkgs.writeShellScript "niks3" ''
+        set -euo pipefail
+        case "$1 $2" in
+          "pins list") printf '%s' "''${PINS_JSON:-[]}"; exit 0 ;;
+          "pins create") printf 'pin %s %s\n' "$5" "$6" >> "$CALLS"; exit 0 ;;
+        esac
+        printf 'push %s\n' "$4" >> "$CALLS"
+        [[ "$4" != "''${FAIL_ROOT:-}" ]]
+      '';
+      # Like the effect sandbox's Nix: the new CLI refuses unless the invocation enables it.
+      nixStub = pkgs.writeShellScript "nix" ''
+        set -euo pipefail
+        [[ "$1 $2" == "--extra-experimental-features nix-command" ]] \
+          || { echo "error: experimental Nix feature 'nix-command' is disabled" >&2; exit 1; }
+        root=''${*: -1}
+        printf 'verify %s\n' "$root" >> "$CALLS"
+        [[ "$root" != "''${FAIL_VERIFY:-}" ]]
+      '';
     in
+    assert lib.assertMsg (
+      builtins.attrNames main == [ "cache-retain" ] && builtins.attrNames tagged == [ "cache-release" ]
+    ) "a branch push must retain and a tag push must release, never both";
     {
-      checks.nixbot-cache-retain =
-        pkgs.runCommandLocal "nixbot-cache-retain-check"
+      checks.ci-retention =
+        pkgs.runCommandLocal "ci-retention-check"
           {
             nativeBuildInputs = [
               pkgs.bash
+              pkgs.jq
               pkgs.python3
             ];
-            effectScript = script "cache-retain" retain;
+            retainScript = script "cache-retain" main.cache-retain;
+            releaseScript = script "cache-release" tagged.cache-release;
             x86Root = root "x86_64-linux";
             armRoot = root "aarch64-linux";
           }
           ''
             mkdir bin
-            cat > bin/nix <<'SH'
-            #!${pkgs.runtimeShell}
-            set -euo pipefail
-            # Like the effect sandbox's Nix: the new CLI refuses unless the invocation enables it.
-            [[ "$1 $2" == "--extra-experimental-features nix-command" ]] \
-              || { echo "error: experimental Nix feature 'nix-command' is disabled" >&2; exit 1; }
-            root=''${*: -1}
-            printf 'verify %s\n' "$root" >> "$CALLS"
-            [[ "$root" != "''${FAIL_VERIFY:-}" ]]
-            SH
-            cat > bin/niks3 <<'SH'
-            #!${pkgs.runtimeShell}
-            set -euo pipefail
-            if [[ "$1" == push ]]; then
-              printf 'push %s\n' "$4" >> "$CALLS"
-              [[ "$4" != "''${FAIL_ROOT:-}" ]]
-            else
-              printf 'pin %s %s\n' "$5" "$6" >> "$CALLS"
-            fi
-            SH
-            chmod +x bin/*
+            cp ${niks3Stub} bin/niks3
+            cp ${nixStub} bin/nix
             export PATH="$PWD/bin:$PATH" CALLS="$PWD/calls"
             expect() {
               python3 -c 'import os,sys; got=open(os.environ["CALLS"]).read().split("\n")[:-1]; want=sys.argv[2:]; sys.exit(0 if got==want else f"{sys.argv[1]}: {got}")' "$@"
               : > "$CALLS"
             }
             x=$x86Root a=$armRoot
+            p=probe-main-x86_64-linux q=probe-main-aarch64-linux
 
-            if FAIL_ROOT=$a bash "$effectScript"; then
+            if FAIL_ROOT=$a bash "$retainScript"; then
               echo 'cache-retain hid a failed push' >&2; exit 1
             fi
             expect 'a failed push must prevent its pin and stop the effect' \
-              "push $x" "pin probe-main-x86_64-linux $x" "verify $x" "push $a"
+              "push $x" "pin $p $x" "verify $x" "push $a"
 
-            bash "$effectScript"
+            bash "$retainScript"
             expect 'a repair run must publish, pin and verify every root' \
-              "push $x" "pin probe-main-x86_64-linux $x" "verify $x" \
-              "push $a" "pin probe-main-aarch64-linux $a" "verify $a"
+              "push $x" "pin $p $x" "verify $x" "push $a" "pin $q $a" "verify $a"
 
-            if FAIL_VERIFY=$x bash "$effectScript"; then
+            if FAIL_VERIFY=$x bash "$retainScript"; then
               echo 'cache-retain hid an unsubstitutable root' >&2; exit 1
             fi
+            : > "$CALLS"
+
+            PINS_JSON=$(jq -nc --arg x "$x" --arg a "$a" \
+              '[{name:"'$p'",store_path:"/old"},{name:"'$p'-1",store_path:"/older"},{name:"'$q'",store_path:$a}]') \
+              bash "$retainScript"
+            expect 'a moved root must shift earlier generations down; an unmoved one must not' \
+              "push $x" "pin $p-2 /older" "pin $p-1 /old" "pin $p $x" "verify $x" \
+              "push $a" "pin $q $a" "verify $a"
+
+            bash "$releaseScript"
+            expect 'a tag must pin its roots under the release namespace' \
+              "push $x" "pin probe-release-v1-2-x86_64-linux $x" "verify $x" \
+              "push $a" "pin probe-release-v1-2-aarch64-linux $a" "verify $a"
             touch "$out"
           '';
 
-      checks.nixbot-package-updates =
-        pkgs.runCommandLocal "nixbot-package-updates-check"
+      checks.ci-updates =
+        pkgs.runCommandLocal "ci-updates-check"
           {
             nativeBuildInputs = [
               pkgs.bash
@@ -165,14 +190,14 @@ in
             touch "$out"
           '';
 
-      checks.nixbot-update-publish =
-        pkgs.runCommandLocal "nixbot-update-publish-check"
+      checks.ci-update-publish =
+        pkgs.runCommandLocal "ci-update-publish-check"
           {
             nativeBuildInputs = [ pkgs.python3 ];
             PUBLISH_SCRIPT = ../../pkgs/nixbot-update-publish/publish.py;
           }
           ''
-            python3 ${../../tests/nixbot-effects/test_publish.py} -v
+            python3 ${../../tests/ci/test_update_publish.py} -v
             touch "$out"
           '';
     };

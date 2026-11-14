@@ -17,6 +17,7 @@ import unittest
 from unittest import mock
 
 from package_updates import cli
+from package_updates.runner import UpdateError, load_registry, select
 from package_updates.transaction import (
     TransactionError,
     allowed,
@@ -98,10 +99,10 @@ class BatchTestCase(unittest.TestCase):
         self.enter(checkout)
         return checkout
 
-    def register(self, registered, available=None, system="x86_64-linux", root=None):
+    def register(self, registered, available=None, system="x86_64-linux", root=None, commands=None):
         registry = self.root / "registry.json"
         if root is None:
-            root = self.jj_checkout() if registered else self.root
+            root = self.jj_checkout() if registered or commands else self.root
         else:
             self.enter(root)
         registry.write_text(
@@ -112,6 +113,7 @@ class BatchTestCase(unittest.TestCase):
                     "available": list(registered if available is None else available),
                     "root": str(root),
                     "packagePaths": {name: f"pkgs/{name}" for name in registered},
+                    "commands": commands or {},
                 }
             )
         )
@@ -270,6 +272,32 @@ class BatchTestCase(unittest.TestCase):
         self.register([])
         self.assertNotEqual(cli.main([]), 0)
         self.assertEqual(self.invoked(), [])
+
+    def test_an_empty_registry_may_still_refresh_the_lock(self):
+        self.register([])
+        registry = load_registry()
+        self.assertEqual(select(registry, [], refresh_inputs=True), [])
+        with self.assertRaisesRegex(UpdateError, "nothing registered"):
+            select(registry, [])
+
+    def command(self, name, writes):
+        script = self.root / f"{name}.sh"
+        script.write_text(
+            f"#!{shutil.which('bash')}\nprintf 'refreshed\\n' > {writes}\n"
+        )
+        script.chmod(0o755)
+        return str(script)
+
+    def test_a_command_update_is_adopted_within_its_write_set(self):
+        self.register([], commands={"cargo": {"program": self.command("cargo", "Cargo.lock"), "paths": ["Cargo.lock"]}})
+        self.assertEqual(cli.main([]), 0)
+        self.assertEqual(Path("Cargo.lock").read_text(), "refreshed\n")
+        self.assertEqual(self.invoked(), [], "a command update must not run nix-update")
+
+    def test_a_command_writing_outside_its_write_set_is_not_adopted(self):
+        self.register([], commands={"cargo": {"program": self.command("cargo", "flake.nix"), "paths": ["Cargo.lock"]}})
+        self.assertNotEqual(cli.main([]), 0)
+        self.assertFalse(Path("flake.nix").exists())
 
     def test_duplicate_selection_is_refused_before_any_update(self):
         self.register(["alpha", "beta"])

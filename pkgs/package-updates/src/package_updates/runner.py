@@ -1,8 +1,10 @@
-"""Refresh flake inputs, then run each package update as a local file transaction.
+"""Refresh flake inputs, then run each update as a local file transaction.
 
-Package update policy stays in each package expression (``passthru.updateScript`` and
-nix-update's own discovery). Versions and the working-copy diff are read outside the
-updater, so the report never parses nix-update's output.
+An update is a registered package, run through nix-update with its own policy
+(``passthru.updateScript`` and nix-update's discovery), or a registered command
+that edits only its declared write set, such as a lockfile refresh. Versions and the
+working-copy diff are read outside the updater, so the report never parses its
+output.
 """
 
 from __future__ import annotations
@@ -56,6 +58,8 @@ class Registry:
     root: str
     package_paths: dict[str, str]
     deferred_inputs: dict[str, str] = field(default_factory=dict)
+    # Command updates: name -> (program, write set).
+    commands: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
 
 
 def load_registry(environ=os.environ) -> Registry:
@@ -83,6 +87,15 @@ def load_registry(environ=os.environ) -> Registry:
         if not str(reason).strip():
             raise UpdateError(f"deferred input '{name}' needs a non-empty reason")
 
+    commands = {}
+    for name, entry in data.get("commands", {}).items():
+        if not entry.get("paths"):
+            raise UpdateError(f"command '{name}' needs a non-empty write set")
+        commands[name] = (entry["program"], tuple(entry["paths"]))
+    clash = sorted(set(commands) & set(data["registered"]))
+    if clash:
+        raise UpdateError(f"registered as both package and command: {', '.join(clash)}")
+
     return Registry(
         system=data["system"],
         registered=tuple(data["registered"]),
@@ -91,28 +104,32 @@ def load_registry(environ=os.environ) -> Registry:
         root=data.get("root", "."),
         package_paths=data.get("packagePaths", {}),
         deferred_inputs=deferred,
+        commands=commands,
     )
 
 
-def select(registry: Registry, requested: list[str]) -> list[str]:
+def select(registry: Registry, requested: list[str], refresh_inputs: bool = False) -> list[str]:
     """Return the effective selection in lexical order, or refuse by name.
 
-    The whole selection is validated before any updater runs: an empty,
-    duplicate, unregistered or output-less selection must never reach the
-    update loop.
+    The whole selection is validated before any updater runs: a duplicate,
+    unregistered or output-less selection must never reach the update loop. An
+    empty registry is a valid run only when the lock is being refreshed.
     """
-    if not registry.registered:
-        raise UpdateError("nothing registered; set perSystem.packageUpdates.packages")
-    selection = requested or list(registry.registered)
-    if not selection:
-        raise UpdateError("empty selection")
+    known = set(registry.registered) | set(registry.commands)
+    if not known and not requested:
+        if refresh_inputs:
+            return []
+        raise UpdateError(
+            "nothing registered; set perSystem.packageUpdates.packages or .commands"
+        )
+    selection = requested or sorted(known)
     duplicates = sorted({name for name in selection if selection.count(name) > 1})
     if duplicates:
         raise UpdateError(f"duplicate selection: {', '.join(duplicates)}")
-    unknown = sorted(set(selection) - set(registry.registered))
+    unknown = sorted(set(selection) - known)
     if unknown:
         raise UpdateError(f"not registered: {', '.join(unknown)}")
-    missing = sorted(set(selection) - set(registry.available))
+    missing = sorted(set(selection) - set(registry.commands) - set(registry.available))
     if missing:
         raise UpdateError(
             f"registered but no packages.{registry.system} output: {', '.join(missing)}"
@@ -239,6 +256,7 @@ def update(
     root_path: str | None = None,
     inputs: list[str] | None = None,
     deferred_inputs: dict[str, str] | None = None,
+    commands: dict[str, tuple[str, tuple[str, ...]]] | None = None,
 ) -> int:
     """Refresh the lock when asked, then run selected updaters in jj workspaces.
 
@@ -248,13 +266,17 @@ def update(
     Successful package diffs are applied in sequence; failed candidates are
     discarded and later packages still run.
     """
+    commands = commands or {}
+    packages = [name for name in names if name not in commands]
     executable = shutil.which("nix-update")
-    if executable is None:
+    if packages and executable is None:
         raise UpdateError("nix-update not found on PATH")
     root = Path(root_path).resolve() if root_path else repository_root()
     write_sets = write_sets or {}
     package_paths = package_paths or {}
-    before_versions = {name: evaluate(name, system) for name in names}
+    before_versions = {
+        name: (None, None) if name in commands else evaluate(name, system) for name in names
+    }
 
     aborted = False
     input_entries: list[InputEntry] = []
@@ -271,23 +293,28 @@ def update(
     for name in names:
         print(f"package-updates: updating {name}", flush=True)
         before, changelog_before = before_versions[name]
-        write_set = tuple(write_sets.get(name, ())) or (
-            package_paths.get(name, f"pkgs/{name}"),
-        )
+        if name in commands:
+            program, write_set = commands[name]
+            argv = [program]
+        else:
+            write_set = tuple(write_sets.get(name, ())) or (
+                package_paths.get(name, f"pkgs/{name}"),
+            )
+            argv = [executable, "--flake", "--use-update-script", "--system", system, name]
         try:
             result, paths = staged_package(
                 root,
                 name,
                 write_set,
                 lambda candidate: subprocess.run(
-                    [executable, "--flake", "--use-update-script", "--system", system, name],
+                    argv,
                     cwd=candidate,
                     capture_output=True,
                     text=True,
                     env=os.environ.copy(),
                 ),
             )
-            after, changelog_after = evaluate(name, system)
+            after, changelog_after = (None, None) if name in commands else evaluate(name, system)
             moved = before != after or bool(paths)
             status = FAILED if result.returncode != 0 else UPDATED if moved else UNCHANGED
             if result.returncode != 0:
