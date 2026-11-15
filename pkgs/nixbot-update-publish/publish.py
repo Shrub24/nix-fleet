@@ -80,11 +80,11 @@ def open_pull_request(
 
 
 def request_auto_merge(api: str, repo: str, pull: dict, token: str) -> None:
-    """Enable auto-merge, or merge now where the repository does not offer it.
+    """Enable auto-merge, or fail and leave the pull request open.
 
-    Auto-merge is a repository setting. Where it is off, GitHub refuses the
-    mutation, so the pull request is merged directly once it is mergeable and
-    the refusal is reported if it is not.
+    GitHub refuses the mutation where auto-merge is off or the pull request is
+    already mergeable, which is what a repository without required checks looks
+    like. Merging then would land an unchecked proposal, so it never does.
     """
     owner, name = repo.split("/", 1)
     node = send(
@@ -107,24 +107,12 @@ def request_auto_merge(api: str, repo: str, pull: dict, token: str) -> None:
             "variables": {"id": node["data"]["repository"]["pullRequest"]["id"]},
         },
     )
-    if "errors" not in enabled:
-        print(f"Enabled auto-merge (squash) on #{pull['number']}")
-        return
-    reason = enabled["errors"]
-    if pull.get("mergeable") is False:
-        raise Failed(f"enabling auto-merge on #{pull['number']}: {reason}")
-    try:
-        send(
-            f"{api}/repos/{repo}/pulls/{pull['number']}/merge",
-            token,
-            "PUT",
-            {"merge_method": "squash"},
-        )
-    except Failed as error:
+    if "errors" in enabled:
         raise Failed(
-            f"enabling auto-merge on #{pull['number']}: {reason}: {error}"
-        ) from error
-    print(f"Auto-merge unavailable ({reason}); merged #{pull['number']} directly")
+            f"auto-merge refused on #{pull['number']}, left open "
+            f"(does the repository require nixbot's checks?): {enabled['errors']}"
+        )
+    print(f"Enabled auto-merge (squash) on #{pull['number']}")
 
 
 def main(argv: list[str]) -> int:

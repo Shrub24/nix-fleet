@@ -1,9 +1,10 @@
-# The federation plane: the instance operator's one repository list, reconciled on
-# the forge by `nix run .#ci-enrol`. The same list drives the operator's nixbot
-# `repoAllowlist` and `services.niks3-cache.nixbot.repositories`.
+# The federation plane: the instance operator's list of enrolled repositories,
+# reconciled onto nixbot (enabled) and GitHub (auto-merge, the `nixbot` ruleset) by
+# `nix run .#ci-enrol`. Discovery and cache trust are by owner, so the list is the
+# only per-repository decision.
 #
 # Contract: docs/contracts/federated-ci.md.
-{ inputs, ... }:
+_:
 let
   ciFederationModule =
     { config, lib, ... }:
@@ -28,17 +29,12 @@ let
           example = {
             "owner/repo" = { };
           };
-          description = "Enrolled repositories, `owner/name`.";
+          description = "Enrolled repositories, `owner/name`; every other enabled nixbot project is withdrawn.";
         };
         appId = lib.mkOption {
           type = lib.types.nullOr lib.types.int;
           default = null;
           description = "The nixbot GitHub App's id: the integration its required checks must come from.";
-        };
-        installationId = lib.mkOption {
-          type = lib.types.nullOr lib.types.int;
-          default = null;
-          description = "The App's installation on the owner; null leaves installation to the operator.";
         };
         nixbotUrl = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
@@ -61,14 +57,13 @@ let
       };
 
       config.perSystem =
-        { pkgs, system, ... }:
+        { pkgs, ... }:
         let
           need = value: option: if value == null then throw "ciFederation: ${option} must be set" else value;
           plan = pkgs.writeText "ci-enrol-plan.json" (
             builtins.toJSON {
               inherit (cfg)
                 repositories
-                installationId
                 requiredChecks
                 bypassAdmins
                 ;
@@ -80,9 +75,7 @@ let
         {
           apps.ci-enrol = {
             type = "app";
-            program = lib.getExe (
-              pkgs.callPackage ../../pkgs/ci-enrol { inherit (inputs.nixbot.packages.${system}) nixbot-cli; } plan
-            );
+            program = lib.getExe (pkgs.callPackage ../../pkgs/ci-enrol { } plan);
           };
         };
     };

@@ -53,12 +53,28 @@ refresh `flake.lock` rather than refuse.
 - **WHEN** nothing is registered and the scheduled run refreshes inputs
 - **THEN** the run completes with only the lock changed
 
-### Requirement: The forge side follows the operator's list
+### Requirement: The operator's list is the only enrolment
 
-`ci-enrol` MUST make each listed repository match the plan and MUST NOT write to a
-repository that already matches.
+`ci-enrol` MUST enable each listed repository in nixbot and give it auto-merge and
+the `nixbot` ruleset, MUST disable every other enabled project and remove its
+ruleset, and MUST NOT write where nothing differs.
 
 #### Scenario: A reconciled repository
 
-- **WHEN** the App is installed, auto-merge allowed and the ruleset current
-- **THEN** a run makes no forge writes
+- **WHEN** a listed repository is enabled, allows auto-merge and carries the current ruleset
+- **THEN** a run makes no writes
+
+#### Scenario: A repository leaves the list
+
+- **WHEN** an enabled repository is not listed
+- **THEN** it is disabled and its `nixbot` ruleset removed
+
+### Requirement: Auto-merge never falls back to merging
+
+When GitHub refuses auto-merge the update effect MUST fail with the pull request
+left open.
+
+#### Scenario: A repository without required checks
+
+- **WHEN** the update pull request is already mergeable and auto-merge is refused
+- **THEN** the effect fails and nothing is merged

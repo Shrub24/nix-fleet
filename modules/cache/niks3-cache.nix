@@ -33,14 +33,32 @@ _: {
             namespace = claims.releaseNamespace name;
           }
         ];
-      allGrants = lib.concatMap grants repositories;
+      repositoryGrants = lib.concatMap grants repositories;
+      # One rule pair covers every repository of an owner on `main`. niks3 pin
+      # patterns cannot name the token's repository, so these pins are shared by
+      # the owner's repositories rather than reserved per repository.
+      ownerGrants = lib.concatMap (owner: [
+        {
+          repository = "${owner}/*";
+          ref = "refs/heads/main";
+          effect = claims.retainEffect;
+          namespace = "*-main";
+        }
+        {
+          repository = "${owner}/*";
+          ref = "refs/tags/*";
+          effect = claims.releaseEffect;
+          namespace = "*-release";
+        }
+      ]) nixbot.owners;
+      allGrants = ownerGrants ++ repositoryGrants;
       # A pin glob `<ns>-*` also matches another grant's pins when its namespace starts with `<ns>-`.
       overlaps = lib.concatMap (
         a:
         map (b: "${a.namespace} (${a.repository}) and ${b.namespace} (${b.repository})") (
-          builtins.filter (b: a != b && lib.hasPrefix "${a.namespace}-" "${b.namespace}-") allGrants
+          builtins.filter (b: a != b && lib.hasPrefix "${a.namespace}-" "${b.namespace}-") repositoryGrants
         )
-      ) allGrants;
+      ) repositoryGrants;
     in
     {
       options.services.niks3-cache = {
@@ -178,6 +196,16 @@ _: {
             defaultText = lib.literalExpression "config.services.niks3-cache.cacheUrl";
             description = "Token audience; flakeModules.ci presents the cache URL.";
           };
+          owners = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            example = [ "owner" ];
+            description = ''
+              Owners whose every repository's nixbot effects may write: a push to
+              `main` may move `*-main-*` pins and a tag push `*-release-*` pins. Which
+              repositories actually run is nixbot's enabled set.
+            '';
+          };
           repositories = lib.mkOption {
             type = lib.types.attrsOf (
               lib.types.submodule {
@@ -193,9 +221,9 @@ _: {
               "owner/repo" = { };
             };
             description = ''
-              Repositories (`owner/name`) whose nixbot retention effects may write:
-              a default-branch push may move `<name>-<branch>-*` pins and a tag push
-              `<name>-release-*` pins. Renders the `nixbot` provider.
+              Repositories (`owner/name`) outside `owners`, or retaining a branch other
+              than `main`: a push to the branch may move `<name>-<branch>-*` pins and a
+              tag push `<name>-release-*` pins.
             '';
           };
         };
@@ -224,10 +252,10 @@ _: {
             label = "secretFiles.apiToken";
           })
         ]
-        ++ lib.optionals (nixbot.repositories != { }) [
+        ++ lib.optionals (allGrants != [ ]) [
           {
             assertion = nixbot.issuer != null;
-            message = "niks3-cache: services.niks3-cache.nixbot.issuer must be set when repositories are listed.";
+            message = "niks3-cache: services.niks3-cache.nixbot.issuer must be set when owners or repositories are listed.";
           }
           {
             assertion = !(cfg.oidc.providers ? nixbot);
@@ -268,7 +296,7 @@ _: {
 
           oidc.providers =
             cfg.oidc.providers
-            // lib.optionalAttrs (nixbot.repositories != { }) {
+            // lib.optionalAttrs (allGrants != [ ]) {
               nixbot = {
                 inherit (nixbot) issuer audience;
                 # Discovery at startup would tie the cache's boot to nixbot being up.

@@ -12,6 +12,8 @@ repository list, reconciled everywhere from Nix.
 
 ## Policy
 
+- **Which repositories.** Only enrolled ones: nixbot discovers every repository of
+  the owner but builds a project only once `ci-enrol` enables it.
 - **What builds.** A pull request builds when opened and on every push, drafts
   included; open it when the work should spend CI. Other branch pushes never build.
   A default-branch push whose tree matches a built pull request reuses that build.
@@ -103,10 +105,9 @@ only if the package reads the lockfile (`cargoLock.lockFile`, crane,
 `importNpmLock`, bun2nix); a vendored dependency hash needs a command that
 recomputes it.
 
-`ci.updates.autoMerge` requests auto-merge; where GitHub refuses it because the
-pull request is already mergeable, the helper merges directly. That relies on the
-ruleset `ci-enrol` creates: on a repository without required checks it would merge
-an unchecked proposal.
+`ci.updates.autoMerge` requests auto-merge. Where GitHub refuses it, as it does on a
+repository without required checks, the effect fails and the pull request stays
+open; it is never merged directly.
 
 ## The operator
 
@@ -118,41 +119,60 @@ repository's lock:
 { outputs = _: { lib.instance = { system = "x86_64-linux"; cacheUrl = "…"; writeEndpoint = "…"; }; }; }
 ```
 
-The repository list, `{ "<owner>/<name>" = { branch ? "main"; }; }`, drives three
-consumers and is restated in none:
+Discovery and cache trust are by owner; the list of enrolled repositories,
+`{ "<owner>/<name>" = { branch ? "main"; }; }`, is the only per-repository decision:
 
 ```nix
 imports = [ inputs.nix-fleet.flakeModules.ciFederation ];
 ciFederation = {
   repositories = import ./policy/ci-repositories.nix;
-  appId = …;            # the nixbot App: the integration required checks come from
-  installationId = …;   # null leaves installation to the operator
+  appId = …;      # the nixbot App: the integration required checks come from
   nixbotUrl = "…";
 };
 # NixOS, on the cache host and the controller:
-services.niks3-cache.nixbot = { issuer = "<nixbot URL>"; repositories = …; };
-services.nixbot.github.repoAllowlist = builtins.attrNames repositories;
+services.niks3-cache.nixbot = {
+  issuer = "<nixbot URL>";
+  owners = [ "<owner>" ];
+  repositories = …; # only repositories outside `owners` or retaining another branch
+};
+services.nixbot.github.userAllowlist = [ "<owner>" ];
 ```
 
-`services.niks3-cache.nixbot` renders two rules per repository: a push to
-`refs/heads/<branch>` from `default.cache-retain` may move `<name>-<branch>-*`, and a
-push of `refs/tags/*` from `default.cache-release` may move `<name>-release-*`.
-Overlapping pin namespaces, a missing issuer or a hand-written
-`oidc.providers.nixbot` fail evaluation.
+The App is installed on every repository of the owner, so nixbot discovers all of
+them; a discovered project stays disabled until enrolled.
 
-`nix run .#ci-enrol` reconciles each listed repository: installs the App, allows
-auto-merge, creates or updates the `nixbot` ruleset, and enables the nixbot project
-through `nbo`. It reads before it writes; `--dry-run` prints the changes only. It
-uses `GH_TOKEN` or `gh auth token`, and `NIXBOT_TOKEN` (an admin token from the
-instance's `/settings`) for `nbo`.
+`services.niks3-cache.nixbot.owners` renders two rules per owner: a push to
+`refs/heads/main` from `default.cache-retain` may move `*-main-*` pins, and a push
+of `refs/tags/*` from `default.cache-release` may move `*-release-*`. niks3 pin
+patterns cannot name the token's repository, so any of the owner's repositories
+can move another's pins. That reaches retention only: paths are content-addressed
+and signed by the cache, and nothing resolves a pin by name. Each entry of
+`repositories` renders the same pair scoped to `<name>-<branch>-*` and
+`<name>-release-*`. Overlapping per-repository namespaces, a missing issuer or a
+hand-written `oidc.providers.nixbot` fail evaluation.
+
+`nix run .#ci-enrol` makes nixbot and GitHub follow the list:
+
+| Repository             | nixbot   | GitHub                                                                |
+| ---------------------- | -------- | --------------------------------------------------------------------- |
+| listed                 | enabled  | auto-merge allowed; `nixbot` ruleset requiring the checks on `branch` |
+| enabled but not listed | disabled | `nixbot` ruleset removed                                              |
+
+It reads before it writes, so a rerun changes nothing; `--dry-run` prints the
+changes only. It needs `GH_TOKEN` (or `gh auth token`) with admin on the
+repositories and `NIXBOT_TOKEN`, an instance admin token from `/settings`. Enable
+and disable through `ci-enrol` only: nixbot lists only enabled projects, so a
+project disabled in the UI keeps its ruleset.
 
 ## Enrolling a repository
 
-1. Operator: add it to the list, deploy the cache host and the controller, run
-   `nix run .#ci-enrol`.
-2. Repository: adopt the interface (below) and push to the default branch.
-3. Check: both `<name>-main-<system>` pins point at the current
-   `packages.<system>.cache-root`.
+1. Repository: adopt the interface (below) and push it.
+2. Operator: add it to the list and run `nix run .#ci-enrol`. Enrolling before
+   adopting makes the ruleset require checks the repository does not yet produce.
+3. Check: after the next default-branch push, both `<name>-main-<system>` pins
+   point at the current `packages.<system>.cache-root`.
+
+Removing a repository from the list and rerunning `ci-enrol` withdraws it.
 
 ### A new repository
 
@@ -185,8 +205,6 @@ NIXBOT_URL=<instance> NIXBOT_TOKEN=bnix_... \
 
 - A tag push's token carrying `event = push`; the release rule binds it.
 - The admin-role ruleset bypass on a personal repository.
-- `PUT /user/installations/{id}/repositories/{id}` on a personal account's
-  installation; leave `installationId` null and install by hand if it is refused.
 - Whether GitHub echoes a ruleset in exactly the shape `ci-enrol` sends; a
   difference makes every run report an update, which rewrites the same ruleset.
 

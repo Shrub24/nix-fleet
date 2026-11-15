@@ -3,7 +3,6 @@
   writers,
   writeShellApplication,
   gh,
-  nixbot-cli,
 }:
 plan:
 let
@@ -13,10 +12,7 @@ let
 in
 writeShellApplication {
   name = "ci-enrol";
-  runtimeInputs = [
-    gh
-    nixbot-cli
-  ];
+  runtimeInputs = [ gh ];
   text = ''
     exec ${enrol} "$@" ${plan}
   '';

@@ -33,12 +33,18 @@ else) share the runner's staging: each declares a write set, an out-of-set write
 not adopted, and one pull request carries the result. Lockfile adapters assume the
 build reads the lockfile; a vendored hash needs a command.
 
-### D5 The forge side is reconciled statelessly
+### D5 Owner-wide discovery and trust; one list enrols
 
-`ci-enrol` reads each repository and writes only what differs; there is no state
-file. OpenTofu was rejected: it needs a state backend for a handful of idempotent
-calls, and owning `github_repository` to set one flag makes the tool the owner of
-the whole repository.
+The App is installed on every repository of the owner and `userAllowlist` is the
+owner, so nixbot discovers everything; the cache trusts the owner's retention and
+release effects with one rule pair, since niks3 pin patterns are static and cannot
+name the token's repository. Enrolment is the operator's list alone: `ci-enrol`
+enables listed projects and gives them auto-merge and the `nixbot` ruleset, and
+disables any other enabled project and removes its ruleset, so the list stays
+authoritative. nixbot's API lists only enabled projects, so disabling elsewhere is
+not reconciled. The update helper fails when auto-merge is refused instead of
+merging, so a repository without the ruleset never lands an unchecked proposal.
+OpenTofu was rejected: it needs a state backend for a handful of idempotent calls.
 
 ### D6 No `nixbot.toml`
 

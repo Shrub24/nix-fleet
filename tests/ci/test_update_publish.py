@@ -98,22 +98,14 @@ class Publish(unittest.TestCase):
         self.assertIn("Updated pull request #7", out)
         self.assertIn("Enabled auto-merge", out)
 
-    def test_unavailable_auto_merge_merges_directly(self):
-        self.transport = Transport(auto_merge_error=[{"message": "auto-merge disabled"}])
-        publish.send = self.transport
-        code, out = self.run_main("--auto-merge")
-        self.assertEqual(code, 0)
-        self.assertIn("merged #7 directly", out)
-        self.assertIn("/merge", self.merges()[-1][1])
-
-    def test_an_unmergeable_pull_request_fails_loudly(self):
-        self.transport = Transport(
-            pull={"number": 7, "mergeable": False},
-            auto_merge_error=[{"message": "auto-merge disabled"}],
-        )
+    def test_refused_auto_merge_fails_and_never_merges(self):
+        # A mergeable pull request is what a repository without required checks
+        # shows; merging it would land an unchecked proposal.
+        self.transport = Transport(auto_merge_error=[{"message": "clean status"}])
         publish.send = self.transport
         code, _ = self.run_main("--auto-merge")
         self.assertEqual(code, 1)
+        self.assertFalse(any("/merge" in call[1] for call in self.merges()))
 
 
 if __name__ == "__main__":
