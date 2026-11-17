@@ -1,8 +1,9 @@
 # Repository-local operator shell; the formatter itself is the published
 # flakeModules.tooling.
-_: {
+{ inputs, ... }:
+{
   perSystem =
-    { pkgs, ... }:
+    { pkgs, system, ... }:
     {
       devShells.default = pkgs.mkShell {
         packages = with pkgs; [
@@ -13,7 +14,7 @@ _: {
           nixfmt
           treefmt
           nix-output-monitor
-          (callPackage ../../pkgs/jactionlint { })
+          inputs.nixpkgs-jactionlint.legacyPackages.${system}.jactionlint
           (python3.withPackages (pythonPackages: [ pythonPackages.pyyaml ]))
         ];
         NIX_CONFIG = "experimental-features = nix-command flakes";

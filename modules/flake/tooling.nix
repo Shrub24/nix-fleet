@@ -1,13 +1,16 @@
 # Shared treefmt base: Nix, markdown, YAML, JSON, TOML and GitHub Actions.
 # Import flakeModules.tooling; extend perSystem.treefmt for consumer languages.
-_:
+{ inputs, ... }:
 let
+  # Closed over, not read from the importing flake: consumers get the linter
+  # without declaring an input for it.
+  fleetInputs = inputs;
   toolingModule =
     { inputs, ... }:
     {
       imports = [ inputs.treefmt-nix.flakeModule ];
 
-      perSystem = { pkgs, ... }: {
+      perSystem = { system, ... }: {
         treefmt = {
           projectRootFile = "flake.nix";
 
@@ -38,7 +41,7 @@ let
             statix.priority = 2;
             nixfmt.priority = 3;
             jactionlint = {
-              command = "${pkgs.callPackage ../../pkgs/jactionlint { }}/bin/jactionlint";
+              command = "${fleetInputs.nixpkgs-jactionlint.legacyPackages.${system}.jactionlint}/bin/jactionlint";
               options = [
                 "--profile"
                 "correctness"

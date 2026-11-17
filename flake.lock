@@ -155,6 +155,22 @@
         "type": "github"
       }
     },
+    "nixpkgs-jactionlint": {
+      "locked": {
+        "lastModified": 1794915055,
+        "narHash": "sha256-n6bpcv38678S54OWL5MLlYlXYaqjXdClgdj6K3oGEvc=",
+        "owner": "Shrub24",
+        "repo": "nixpkgs",
+        "rev": "78ed469919747faa9da7afa083fe60f30a68cb27",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Shrub24",
+        "ref": "jactionlint-fix",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "fast-nix-gc": "fast-nix-gc",
@@ -164,6 +180,7 @@
         "niks3": "niks3",
         "nixbot": "nixbot",
         "nixpkgs": "nixpkgs",
+        "nixpkgs-jactionlint": "nixpkgs-jactionlint",
         "sops-nix": "sops-nix",
         "treefmt-nix": "treefmt-nix_2"
       }
