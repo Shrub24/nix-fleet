@@ -211,6 +211,19 @@
       description = "Canonical cross-fleet endpoint facts; exposure, credentials, and ingress policy remain consumer-owned.";
     };
 
+    ci = {
+      controller = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "fleet.hosts ID of the nixbot controller: the system it evaluates and runs effects on.";
+      };
+      githubAppId = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = null;
+        description = "The nixbot GitHub App's id, the integration a repository's required checks come from. Public.";
+      };
+    };
+
     buildProfiles = lib.mkOption {
       type = lib.types.attrsOf (
         lib.types.submodule {

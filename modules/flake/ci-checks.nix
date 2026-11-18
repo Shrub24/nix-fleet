@@ -25,6 +25,8 @@ in
               inherit system;
               cacheUrl = "https://cache.example";
               writeEndpoint = "http://writer.example";
+              nixbotUrl = "https://bot.example";
+              appId = 1;
             };
             retention.generations = 2;
           };

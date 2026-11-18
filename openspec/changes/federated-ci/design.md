@@ -10,11 +10,15 @@ repository disables or replaces one with module priority instead of a bespoke
 collision rule. A function returning null skips the effect for that push, which is
 how branch and tag gating are expressed.
 
-### D2 The instance is a descriptor the operator publishes
+### D2 The instance is a canonical fleet fact
 
-`ci.instance = { system; cacheUrl; writeEndpoint; }` is bound from a zero-input
-flake the operator publishes (`<repo>?dir=ci`, `lib.instance`). Zero inputs keep it
-out of every consumer's lock graph; nix-fleet stays free of endpoints.
+`ci.instance = { system; cacheUrl; writeEndpoint; nixbotUrl; appId; }` defaults to
+`lib.ci.instance`, resolved from nix-fleet's inventory: the `niks3-write` and
+`nixbot` service records, `fleet.ci.controller` and `fleet.ci.githubAppId`. Cache
+coordinates were already canonical service facts here, so a descriptor in the
+operator repository only restated them and made every repository depend on the
+operator's. `packages.ci-enrol` bakes the same facts, so an operator workstation
+installs it from the nix-fleet input it already has.
 
 ### D3 Retention is pins; history shifts, never deletes
 

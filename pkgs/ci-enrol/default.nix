@@ -1,4 +1,4 @@
-# Enrols repositories in a nixbot instance; flakeModules.ciFederation bakes the plan.
+# Enrols repositories in a nixbot instance; modules/flake/ci-enrol.nix bakes the plan.
 {
   writers,
   writeShellApplication,

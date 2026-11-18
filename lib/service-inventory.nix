@@ -26,6 +26,8 @@
   # substituter clients and cache checks use; the write API above stays private.
   niks3-write.endpoints.cache.publicUrl = "https://cache.shrublab.xyz";
   niks3-write.publicKeys = [ "nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A=" ];
+  # The CI controller's web and API route, where `ci-enrol` enables projects.
+  nixbot.endpoints.web.publicUrl = "https://nixbot.shrublab.xyz";
   bifrost.endpoints.embeddings.tailnet = {
     host = "oci-melb-1";
     port = 7411;

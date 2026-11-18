@@ -4,10 +4,17 @@
 # repository extends or disables them with ordinary module semantics.
 #
 # Contract: docs/contracts/federated-ci.md.
-{ config, inputs, ... }:
+{
+  config,
+  inputs,
+  lib,
+  ...
+}:
 let
-  claims = import ../../lib/ci.nix;
+  claims = import ../../lib/ci.nix lib;
   fleetModules = config.flake.flakeModules;
+  # nix-fleet's own inventory, so a repository binds the instance without restating it.
+  canonicalInstance = claims.resolveInstance config.fleet;
 
   ciModule =
     args@{
@@ -21,7 +28,7 @@ let
       cfg = config.ci;
       inherit (cfg) retention;
       inherit (cfg) updates;
-      need = value: option: if value == null then throw "ci: ${option} must be set" else value;
+      inherit (cfg) instance;
 
       # The repository-relative directory of the partition this module is evaluated in, if any.
       partitionLock =
@@ -37,7 +44,6 @@ let
           lib.removePrefix root (toString source.value)
         else
           throw "ci: partition ${lib.last stack} reads its inputs from outside this repository";
-      instance = need cfg.instance "ci.instance";
 
       effectType = lib.types.attrsOf (lib.types.functionTo (lib.types.nullOr lib.types.raw));
 
@@ -87,7 +93,7 @@ let
           # niks3 queries the closure through the runner's daemon proxy with the Nix CLI.
           inputs = [
             cfg.niks3Package
-            (need cfg.nixPackage "ci.nixPackage")
+            cfg.nixPackage
             pkgs.jq
           ]
           ++ lib.attrValues roots;
@@ -126,7 +132,7 @@ let
               pkgs.git
               pkgs.jq
               pkgs.jujutsu
-              (need cfg.nixPackage "ci.nixPackage")
+              cfg.nixPackage
               perSystem.apps.update-packages.program
               publish
             ];
@@ -184,38 +190,40 @@ let
     in
     {
       key = "nix-fleet#flakeModules.ci";
-      imports = [
-        fleetModules.cacheRoot
-        fleetModules.packageUpdates
-      ];
 
       options.ci = {
         instance = lib.mkOption {
-          type = lib.types.nullOr (
-            lib.types.submodule {
-              options = {
-                system = lib.mkOption {
-                  type = lib.types.str;
-                  description = "System the controller evaluates and runs effects on.";
-                };
-                cacheUrl = lib.mkOption {
-                  type = lib.types.str;
-                  description = "Public read URL of the cache; also the token audience.";
-                };
-                writeEndpoint = lib.mkOption {
-                  type = lib.types.str;
-                  description = "niks3 server URL effects push and pin through.";
-                };
+          type = lib.types.submodule {
+            options = {
+              system = lib.mkOption {
+                type = lib.types.str;
+                description = "System the controller evaluates and runs effects on.";
               };
-            }
-          );
-          default = null;
-          description = "The instance descriptor its operator publishes; bind it, do not restate it.";
+              cacheUrl = lib.mkOption {
+                type = lib.types.str;
+                description = "Public read URL of the cache; also the token audience.";
+              };
+              writeEndpoint = lib.mkOption {
+                type = lib.types.str;
+                description = "niks3 server URL effects push and pin through.";
+              };
+              nixbotUrl = lib.mkOption {
+                type = lib.types.str;
+                description = "The controller's public URL.";
+              };
+              appId = lib.mkOption {
+                type = lib.types.ints.positive;
+                description = "The nixbot GitHub App's id.";
+              };
+            };
+          };
+          default = canonicalInstance;
+          defaultText = lib.literalExpression "nix-fleet's lib.ci.instance";
+          description = "The fleet's nixbot instance, resolved from nix-fleet's canonical inventory.";
         };
         nixPackage = lib.mkOption {
-          type = lib.types.nullOr lib.types.package;
-          default =
-            if cfg.instance == null then null else inputs.nixpkgs.legacyPackages.${cfg.instance.system}.nix;
+          type = lib.types.package;
+          default = inputs.nixpkgs.legacyPackages.${cfg.instance.system}.nix;
           defaultText = lib.literalMD "nix-fleet's nixpkgs `nix` for the instance system";
           description = "Nix CLI the effects call.";
         };
@@ -372,6 +380,16 @@ let
     };
 in
 {
-  flake.flakeModules.ci = ciModule;
-  flake.lib.ci = claims;
+  # Self-application: this repository is a consumer too (modules/flake/ci-adoption.nix).
+  # Its dependencies are self-applied by their own files, and imports cannot read config.
+  imports = [ ciModule ];
+
+  flake.flakeModules.ci.imports = [
+    fleetModules.cacheRoot
+    fleetModules.packageUpdates
+    ciModule
+  ];
+  flake.lib.ci = builtins.removeAttrs claims [ "resolveInstance" ] // {
+    instance = canonicalInstance;
+  };
 }

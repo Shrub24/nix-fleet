@@ -1,14 +1,14 @@
 # Federated CI
 
 One nixbot instance is the CI for every enrolled repository. A repository
-implements one interface, `flakeModules.ci`; the instance's operator keeps one
-repository list, reconciled everywhere from Nix.
+implements one interface, `flakeModules.ci`. The instance itself is a canonical fleet
+fact, so no repository restates its coordinates and none depends on the operator's.
 
-| Owner                 | Owns                                                                                                          |
-| --------------------- | ------------------------------------------------------------------------------------------------------------- |
-| nix-fleet             | `flakeModules.ci`, `flakeModules.ciFederation`, `services.niks3-cache.nixbot`, `lib.ci`, the nixbot input pin |
-| the instance operator | the nixbot service and App, the cache, the instance descriptor, the repository list                           |
-| each repository       | its `checks`, packages and update registrations, its own `ci.*` values and effects                            |
+| Owner                 | Owns                                                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| nix-fleet             | `flakeModules.ci`, `packages.ci-enrol`, `services.niks3-cache.nixbot`, `lib.ci`, the instance facts, the nixbot input pin |
+| the instance operator | the nixbot service and App, the cache, and which repositories are enrolled                                                |
+| each repository       | its `checks`, packages and update registrations, its own `ci.*` values and effects                                        |
 
 ## Policy
 
@@ -39,11 +39,15 @@ repository list, reconciled everywhere from Nix.
 
 ```nix
 imports = [ inputs.nix-fleet.flakeModules.ci ];
-ci.instance = inputs.ci-instance.lib.instance;
 ```
 
-A repository other flakes consume keeps `nix-fleet` and the descriptor out of its
-public lock by evaluating this in a flake-parts partition (`templates.ci` does):
+`ci.instance` defaults to `lib.ci.instance`, which nix-fleet resolves from its
+inventory: `cacheUrl` and `writeEndpoint` from the `niks3-write` service, `nixbotUrl`
+from the `nixbot` service, `system` from `fleet.ci.controller`'s host, and `appId`
+from `fleet.ci.githubAppId`. Moving the instance is an inventory edit here, reaching
+every repository on its next nix-fleet bump.
+
+A repository other flakes consume keeps `nix-fleet` out of its public lock by evaluating this in a flake-parts partition (`templates.ci` does):
 `partitions.ci.extraInputsFlake = ./ci` names an inputs-only `ci/flake.nix` with its
 own `ci/flake.lock`, and `partitionedAttrs` routes `checks` and `herculesCI` to it.
 The partition re-evaluates the whole flake, so it sees every package; consumers
@@ -58,19 +62,19 @@ on nix-fleet (nix-homelab, nix-dotfiles) imports the module directly.
 | `herculesCI`                    | `ci.effects.*`                                                                         |
 | `apps.<system>.update-packages` | `packageUpdates.*` (`flakeModules.packageUpdates`); the update effect runs it directly |
 
-| Option                                           | Default                                  | Meaning                                                                      |
-| ------------------------------------------------ | ---------------------------------------- | ---------------------------------------------------------------------------- |
-| `ci.instance`                                    | required                                 | `{ system; cacheUrl; writeEndpoint; }`, bound from the operator's descriptor |
-| `ci.nixPackage`, `ci.niks3Package`               | nix-fleet's, for `instance.system`       | the clients effects call                                                     |
-| `ci.retention.enable`                            | `true`                                   | retain the branch's roots                                                    |
-| `ci.retention.branch`                            | `"main"`                                 | must match the repository's entry in the operator's list                     |
-| `ci.retention.systems`                           | the flake's `systems`                    | roots pushed and pinned                                                      |
-| `ci.retention.generations`                       | `0`                                      | earlier roots kept as `<pin>-1` … `<pin>-<n>`                                |
-| `ci.retention.releases`                          | `true`                                   | pin each pushed tag's roots                                                  |
-| `ci.updates.enable`                              | `true`                                   | the scheduled update transaction                                             |
-| `ci.updates.when`                                | Monday 04:43                             | nixbot `onSchedule` `when`                                                   |
-| `ci.updates.branch`, `.title`, `.autoMerge`      | `automation/package-updates`, …, `false` | the proposal                                                                 |
-| `ci.effects.onPush.<name>`, `.onSchedule.<name>` | the fleet's entries                      | effects, each a function returning an effect (or a schedule job) or null     |
+| Option                                           | Default                                  | Meaning                                                                  |
+| ------------------------------------------------ | ---------------------------------------- | ------------------------------------------------------------------------ |
+| `ci.instance`                                    | `lib.ci.instance`                        | `{ system; cacheUrl; writeEndpoint; nixbotUrl; appId; }`                 |
+| `ci.nixPackage`, `ci.niks3Package`               | nix-fleet's, for `instance.system`       | the clients effects call                                                 |
+| `ci.retention.enable`                            | `true`                                   | retain the branch's roots                                                |
+| `ci.retention.branch`                            | `"main"`                                 | another branch also needs an exception in the cache's `repositories`     |
+| `ci.retention.systems`                           | the flake's `systems`                    | roots pushed and pinned                                                  |
+| `ci.retention.generations`                       | `0`                                      | earlier roots kept as `<pin>-1` … `<pin>-<n>`                            |
+| `ci.retention.releases`                          | `true`                                   | pin each pushed tag's roots                                              |
+| `ci.updates.enable`                              | `true`                                   | the scheduled update transaction                                         |
+| `ci.updates.when`                                | Monday 04:43                             | nixbot `onSchedule` `when`                                               |
+| `ci.updates.branch`, `.title`, `.autoMerge`      | `automation/package-updates`, …, `false` | the proposal                                                             |
+| `ci.effects.onPush.<name>`, `.onSchedule.<name>` | the fleet's entries                      | effects, each a function returning an effect (or a schedule job) or null |
 
 ### Effects
 
@@ -121,23 +125,12 @@ open; it is never merged directly.
 
 ## The operator
 
-The instance descriptor is a flake with no inputs, so it adds nothing to a
-repository's lock:
+The instance's facts live in nix-fleet's inventory, so the operator repository
+derives its service from them and asserts its own routes agree. Discovery and cache
+trust are by owner, so nothing about a repository's enrolment is instance
+configuration:
 
 ```nix
-# <operator repository>/ci/flake.nix
-{ outputs = _: { lib.instance = { system = "x86_64-linux"; cacheUrl = "…"; writeEndpoint = "…"; }; }; }
-```
-
-Discovery and cache trust are by owner, so nothing about a repository's enrolment
-is instance configuration:
-
-```nix
-imports = [ inputs.nix-fleet.flakeModules.ciFederation ];
-ciFederation = {
-  appId = …;      # the nixbot App: the integration required checks come from
-  nixbotUrl = "…";
-};
 # NixOS, on the cache host and the controller:
 services.niks3-cache.nixbot = {
   issuer = "<nixbot URL>";
@@ -160,11 +153,13 @@ and signed by the cache, and nothing resolves a pin by name. Each entry of
 `<name>-release-*`. Overlapping per-repository namespaces, a missing issuer or a
 hand-written `oidc.providers.nixbot` fail evaluation.
 
-Enrolment is the state nixbot and GitHub already hold, changed by one command from
-the operator repository, so enrolling a repository needs no deploy:
+Enrolment is the state nixbot and GitHub already hold, changed by one command, so
+enrolling a repository needs no deploy. `packages.<system>.ci-enrol` carries the
+instance facts already; an operator installs it on a workstation (nix-dotfiles)
+beside `nbo`:
 
 ```console
-nix run .#ci-enrol -- [--dry-run] [--withdraw] [OWNER/REPO ...]
+ci-enrol [--dry-run] [--withdraw] [OWNER/REPO ...]
 ```
 
 | Command      | nixbot   | GitHub                                                                          |
@@ -182,7 +177,7 @@ nothing will post.
 ## Enrolling a repository
 
 1. Repository: adopt the interface (below) and push it.
-2. Operator: `nix run <operator repository>#ci-enrol -- <owner>/<name>`. Enrolling
+2. Operator: `ci-enrol <owner>/<name>`, or `ci-enrol` from its checkout. Enrolling
    before adopting makes the ruleset require checks the repository does not yet
    produce.
 3. Check: after the next default-branch push, both `<name>-main-<system>` pins
@@ -196,8 +191,7 @@ nothing will post.
 nix flake init -t github:Shrub24/nix-fleet#ci
 ```
 
-Replace the `ci-instance` placeholder in `ci/flake.nix` with the operator's
-descriptor, `packages.default` with the project, and lock both flakes
+Replace `packages.default` with the project and lock both flakes
 (`nix flake lock --flake ./ci`, then `nix flake lock`).
 
 ### An existing repository

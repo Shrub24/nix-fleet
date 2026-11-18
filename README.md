@@ -227,8 +227,9 @@ same types.
 ## CI
 
 CI is nixbot, federated across repositories through one interface,
-`flakeModules.ci`, which this repository also adopts (`modules/flake/ci-adoption.nix`,
-with its CI-only inputs in the `ci/` partition). See
+`flakeModules.ci`, which this repository also adopts (`modules/flake/ci-adoption.nix`).
+The instance is a canonical fact here (`lib.ci.instance`), and `packages.ci-enrol`
+enrols a repository in it. See
 [docs/contracts/federated-ci.md](docs/contracts/federated-ci.md).
 
 ## Binary cache

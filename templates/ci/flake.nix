@@ -25,7 +25,6 @@
           { inputs, ... }:
           {
             imports = [ inputs.nix-fleet.flakeModules.ci ];
-            ci.instance = inputs.ci-instance.lib.instance;
             # Updates beyond the two locks, proposed in the same pull request:
             # perSystem.packageUpdates.lockfiles.cargo.ecosystem = "cargo";
           };

@@ -4,13 +4,13 @@
 
 ### Requirement: One interface builds, retains and updates a repository
 
-A repository importing `flakeModules.ci` and binding `ci.instance` MUST get
+A repository importing `flakeModules.ci` MUST get
 retention, release pins and the update transaction with no further CI code, and
 pull requests MUST build the root retention pins.
 
 #### Scenario: A new repository from the template
 
-- **WHEN** a repository is created from `templates.ci` with a descriptor bound
+- **WHEN** a repository is created from `templates.ci`
 - **THEN** its `herculesCI` defines `cache-retain` for a default-branch push and
   `package-updates` on schedule, and its `checks` include `cache-root`
 

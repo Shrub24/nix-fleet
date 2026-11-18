@@ -85,6 +85,11 @@ _: {
       metered = true;
     };
 
+    ci = {
+      controller = "home-forge";
+      githubAppId = 5492536;
+    };
+
     # Canonical cross-fleet profiles. A profile is a scheduling policy: which
     # builders a workload class may use, and the per-relationship parameters.
     buildProfiles.ci = {

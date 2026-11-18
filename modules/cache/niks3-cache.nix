@@ -9,7 +9,7 @@ _: {
       secretHelpers = import ../../lib/secrets.nix { inherit lib; };
 
       cfg = config.services.niks3-cache;
-      claims = import ../../lib/ci.nix;
+      claims = import ../../lib/ci.nix lib;
       inherit (cfg) nixbot;
       repositories = builtins.attrNames nixbot.repositories;
       nameOf = repository: lib.last (lib.splitString "/" repository);
