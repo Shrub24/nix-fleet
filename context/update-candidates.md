@@ -1,10 +1,52 @@
+## The candidate lifecycle is retired; nixbot builds and GitHub merges
+
+**Id:** 96903ada-82b9-463b-a5e5-eec3eafed9be
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** dated conversation, 2026-11-18
+
+The whole GitHub Actions stack is deleted rather than kept as a fallback:
+workflows, bundled actions, the coordinator projection, the candidate
+lifecycle, cache verification and pin jobs, their checks and their contract
+docs. Downstream adoption was partial and broken (dotfiles pinned workflows at
+`ddd024ab`, agent-radar at `v2`), so it was debt, not a safety net.
+
+nixbot is the only build path: pull requests build `checks`, every admitted
+build publishes through the instance's uploader, GitHub merges on required
+checks, and the `cache-retain` effect pushes and pins after a default-branch
+push. The two historical reasons for the lifecycle — Renovate owned its
+branch, and a pull-request run on a hosted runner could not publish — are
+requirements of that path alone.
+
+What each invariant family became:
+
+- The producer's credential boundary: the `package-updates` effect unsets the
+  write credential before the batch runs; `ci-updates` guards it.
+- Promotion, acceptance and revision binding: GitHub's `nixbot` ruleset requires
+  `nixbot/nix-eval` and `nixbot/nix-build`; nothing merges a revision nixbot
+  has not built.
+- Cache verification and pinning: `cache-retain` proves the pinned root
+  substitutes after pushing; `niks3 pins create` refuses a root the cache does
+  not hold, which is the presence check.
+- The coordinator's builder and cache configuration: nixbot's controller,
+  dispatched through the `ci` profile.
+
+Accepted gaps: whole-flake build-free evaluation with import-from-derivation
+disabled served the Actions evaluator; nixbot evaluates and builds `checks` per
+system, so outputs no check touches are no longer evaluated anywhere. The
+coordinator's Tailscale federated identity and runner-owned builder key are
+gone with the ephemeral runners, with no replacement mechanism — nothing
+dials builders from outside the tailnet.
+
 # Update candidates
 
 ## Promotion is a fast-forward push of the validated commit, with no bypass
 
 **Id:** 459403bf-13ee-4f9b-b441-c0c545d3a3d3
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `docs/contracts/update-candidates.md`, `.github/workflows/promote-candidate.yml`, 2026-10-11
 
@@ -32,7 +74,8 @@ merge mode that lands an arbitrary commit with its status.
 
 **Id:** 361fb9f1-f058-40a1-92f7-8a58502098d6
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** inferred
 **Source:** `.github/workflows/candidate.yml` (job `prepare`), 2026-10-11
 
@@ -62,7 +105,8 @@ the documented rule on this repository.
 
 **Id:** a2ecda30-bb52-40af-9663-050aeabc322e
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** inferred
 **Source:** `.github/workflows/promote-candidate.yml`, 2026-10-11
 
@@ -80,7 +124,8 @@ candidate workflow (runs pull-request code next to the push credential).
 
 **Id:** f6602c25-d3c6-4eff-8364-3b7c230bff2d
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `.github/workflows/verify-cache.yml`, 2026-10-11 (extracted from
 `build-push-cache.yml`, where it was a job, so a caller can tell a build failure
@@ -121,7 +166,8 @@ read it from the environment.
 
 **Id:** 8f4c2a91-6d3e-4a7b-9c05-2f1b6e0d5a44
 **Type:** constraint
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** inferred
 **Source:** `.github/workflows/pipeline.yml`, `candidate.yml` (job `status`), `promote-candidate.yml`, 2026-10-11
 
@@ -170,7 +216,8 @@ the diagnostic.
 
 **Id:** b7d5e0c4-2f81-4a63-9e07-5c8b1d3a7f62
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** inferred
 **Source:** `.github/workflows/validate.yml`, `ci.yml` (job `validate`), `pipeline.yml` (job `validate`), 2026-10-11
 
@@ -201,7 +248,8 @@ alternative, and they leave the reader interpreting a job graph to learn what ra
 
 **Id:** 1c6a4b83-9d24-45f7-8a10-3e5d7b2f8c19
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** inferred
 **Source:** `.github/workflows/candidate.yml` (jobs `prepare`, `publish`), 2026-10-11
 
@@ -225,7 +273,8 @@ data, and a foreign commit does not descend from the source head.
 
 **Id:** 4d9f2e51-8c37-4b60-a5e2-7f1c9d0b6a38
 **Type:** constraint
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** inferred
 **Source:** `.github/workflows/pipeline.yml` (job `resolve`), 2026-10-11
 
@@ -243,7 +292,8 @@ access can create.
 
 **Id:** 9a02d7be-5c14-4e83-b0f6-2d8e1a4c7b05
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** inferred
 **Source:** `.github/workflows/pipeline.yml` (job `refresh-open`), 2026-10-11
 
@@ -260,7 +310,8 @@ proposals wait for an operator.
 
 **Id:** 395d11c4-e8ba-4882-a963-1c8f120d63e6
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** inferred
 **Source:** `.github/workflows/candidate.yml` (job `prepare`, step `Decide whether the closure changes`), 2026-10-11
 
@@ -275,7 +326,8 @@ a generated input.
 
 **Id:** 767afc58-c7d7-4620-9055-2221823eac87
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `.github/workflows/package-updates-refresh.yml` (jobs `update` and `publish`), 2026-10-11
 
@@ -307,7 +359,8 @@ move to a sandbox that cannot reach a token even by accident.
 
 **Id:** b8945c0b-efc5-4bba-8181-4c41c10c25e7
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** inferred
 **Source:** `.github/workflows/accept.yml`, `.github/scripts/promote-candidate.sh`, 2026-10-19
 
@@ -338,7 +391,8 @@ mechanism GitHub supplies directly (a deployment, an environment approval).
 
 **Id:** aec2198f-19fd-4e27-a684-b7340647e901
 **Type:** constraint
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `.github/workflows/package-updates-refresh.yml` (job `update`, step
 `Refresh flake inputs and registered packages`), 2026-10-19
@@ -367,7 +421,8 @@ artifacts and the status agreeing is a smaller contract.
 
 **Id:** 2ce67dc1-76e4-42b6-be18-d0deb73821ff
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `.github/scripts/prepare-candidate.sh`, 2026-10-19
 
@@ -386,7 +441,8 @@ preparation: narrow, declared, and refused by name when exceeded.
 
 **Id:** 111e5096-4ca4-4626-855b-68d939ed8875
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** inferred
 **Source:** `.github/workflows/pipeline.yml` (now `workflow_call`),
 `docs/contracts/update-candidates.md`, 2026-10-19
@@ -415,7 +471,8 @@ until a consumer calls it (tracked as the live gate).
 
 **Id:** 69f3fda1-424c-409b-88e7-c3aa6c10489f
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `.github/workflows/verify-cache.yml`, `docs/contracts/ci.md`, `.github/workflows/candidate.yml`, 2026-10-19
 
@@ -483,7 +540,8 @@ have made every cache question depend on an identity it did not need
 
 **Id:** 9c41d0a2-6e57-4b3f-8f2a-3d5b0e7c1f84
 **Type:** constraint
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `nix-homelab` `modules/cache/niks3-cache.nix`, the deployed `niks3-oidc.json` on `oci-melb-1`, 2026-10-21
 
@@ -508,7 +566,8 @@ mistake that hid this).
 
 **Id:** 671962a5-673a-4386-9b98-40ec5e9ea4d7
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `.github/workflows/pin-cache.yml`, `.github/workflows/verify-cache.yml`, `.github/workflows/promote-candidate.yml`, 2026-10-19
 
@@ -586,7 +645,8 @@ revisiting per consumer.
 
 **Id:** 4a7e2d91-c3b8-4c6f-9a41-7e5d02b6f138
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** inferred
 **Source:** `docs/runbooks/cache-pins.md`, `nix-homelab` `modules/cache/niks3-cache.nix`, 2026-10-21
 
@@ -618,7 +678,8 @@ the fleet trusts.
 
 **Id:** 0b7f3c25-9d64-4a18-b0e2-8c1a45d9e7b3
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `docs/runbooks/consumer-adoption.md`, 2026-10-21
 
@@ -646,7 +707,8 @@ is published so a consumer can pin and verify its own closure.
 
 **Id:** 5c1e7a48-2f36-4d90-9b57-03e6f1c9a24d
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `.github/workflows/pin-cache.yml`, `.github/workflows/verify-cache.yml`, 2026-10-21
 
@@ -676,7 +738,8 @@ default aggregate for consumers that want it.
 
 **Id:** 10df9272-d503-4b8f-85c5-5b1e4ed9c4ca
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `.github/actions/`, `.github/workflows/validate.yml`, 2026-10-22
 
@@ -699,7 +762,8 @@ required throughout.
 
 **Id:** a870f2bc-4ea9-4ecb-950c-31b3d4a9cb18
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `.github/workflows/promote-candidate.yml`, 2026-10-22
 
@@ -721,7 +785,8 @@ Actions permission; swallowing pin failure. Reusable call jobs cannot use
 
 **Id:** f20b0985-0872-46cd-9a65-cd1fdf75ec35
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 96903ada-82b9-463b-a5e5-eec3eafed9be
 **Evidence:** confirmed
 **Source:** `pkgs/jactionlint/`, `modules/flake/tooling.nix`, 2026-10-22
 

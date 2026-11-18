@@ -34,7 +34,7 @@
 
 ## F
 
-- [flake-checks.md](flake-checks.md) — fixture integration boundary, canonical policy-check architecture and named contract diagnostics
+- [flake-checks.md](flake-checks.md) — canonical policy-check architecture and named contract diagnostics; the coordinator-era entries are superseded
 
 ## G
 
@@ -68,13 +68,15 @@
 
 ## S
 
+- [substituter-order.md](substituter-order.md) — ordering the substituter catalog by measured substitution cost
+
 ## T
 
 - [telemetry-composition.md](telemetry-composition.md) — lane selection is explicit; registrations and credentials may remain dormant; routes carry their own listener and destination policy
 
 ## U
 
-- [update-candidates.md](update-candidates.md) — how dependency proposals become validated commits on main: promotion, merge-not-rebase, the status event, and cache verification
+- [update-candidates.md](update-candidates.md) — the retired Actions candidate lifecycle and what each of its invariants became under nixbot; the cache's public read route and artefact promise are still current
 
 ## V
 

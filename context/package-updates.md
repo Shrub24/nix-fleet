@@ -93,7 +93,8 @@ the runner keeps reading only the derivation.
 
 **Id:** 192140f2-3972-473e-ae59-d91a92c1de70
 **Type:** constraint
-**Status:** active
+**Status:** superseded
+**Superseded by:** https://github.com/Shrub24/nix-fleet — 96903ada-82b9-463b-a5e5-eec3eafed9be — as of 2026-11-18
 **Evidence:** confirmed
 **Source:** GitHub Actions permissions API and workflow-trigger documentation, 2026-10-10
 

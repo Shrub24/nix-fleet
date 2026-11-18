@@ -46,7 +46,6 @@ _: {
     {
       packages = {
         inherit bifrost;
-        inherit (pkgs) nix-fast-build;
         bifrost-voyage-plugin = bifrostVoyagePlugin;
         notify = pkgs.callPackage ../../pkgs/notify { };
         sops-bootstrap = pkgs.callPackage ../../pkgs/sops-bootstrap { };

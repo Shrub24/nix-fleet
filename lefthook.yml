@@ -17,4 +17,4 @@ pre-commit:
 pre-push:
   commands:
     flake-check:
-      run: bash .github/actions/validate-flake/validate-flake.sh .
+      run: nix flake check --no-build --all-systems

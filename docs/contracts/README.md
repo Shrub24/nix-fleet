@@ -20,7 +20,6 @@ ships no aspect live in [fleet patterns](../patterns/systemd-lifecycle.md).
 | ------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Machine identity + trust | [hosts.md](hosts.md)                   | `fleet.hosts.*` (canonical), known-hosts, ssh Host blocks                                                                                                                                                                                                                                                                                                                                                                            |
 | Builders + scheduling    | [builders.md](builders.md)             | `fleet.hosts.*.capabilities`, `fleet.externalBuilders.*`, `fleet.buildProfiles.*`, `lib.buildProfile`                                                                                                                                                                                                                                                                                                                                |
-| CI builds + cache push   | [ci.md](ci.md)                         | `packages.<profile>`, `.github/workflows/build-push-cache.yml`                                                                                                                                                                                                                                                                                                                                                                       |
 | Service endpoints        | [services.md](services.md)             | `fleet.services.*`, `lib.serviceEndpoints` (resolver + pure canonical data), `lib.localEndpoint` (host-local loopback endpoint shape, aspect-published)                                                                                                                                                                                                                                                                              |
 | Fleet observability      | [observability.md](observability.md)   | Required host lanes, agent → home-forge gateway model, selected-unit journal shipping, notification/alerting policy and deployment acceptance                                                                                                                                                                                                                                                                                        |
 | Telemetry (host-local)   | [telemetry.md](telemetry.md)           | `services.telemetry` vocabulary (scrape registration, local OTLP endpoint, typed destinations with required `signals` + per-signal fanout, explicit `routes` with route-local pipelines and listeners, explicit `journald` source with a typed bounded sink); contract aspect `modules.nixos.telemetry`, selectable lanes `telemetry-metrics`, `telemetry-logs`, `telemetry-otlp`, and producer aspect `modules.nixos.node-exporter` |
@@ -46,14 +45,10 @@ secrets downstream.
 [pu]: package-updates.md
 
 All fleet surfaces hang off one import: `flakeModules.fleet` (schema +
-canonical inventory + validation + CI bundles) plus the pure projection API
+canonical inventory + validation) plus the pure projection API
 `lib.buildProfile` and `lib.serviceEndpoints`. There is deliberately no NixOS realization module — the
 consumer's own flake-level module closes over its `config.fleet` and calls
 `resolveBuildProfile` (builders.md carries the pattern).
-
-Operator procedures that are not consumer contracts live in
-[docs/runbooks/](../runbooks/): [cache-pins.md](../runbooks/cache-pins.md) for cache
-pinning, retention and pin retrieval.
 
 ## Reading order for a new consumer
 
@@ -64,4 +59,4 @@ pinning, retention and pin retrieval.
 3. [observability.md](observability.md) — host monitoring, selected journals,
    trace agents/gateway and notification policy; [telemetry.md](telemetry.md)
    supplies the implementation contract.
-4. [ci.md](ci.md) — to let GitHub Actions build against the same builders.
+4. [federated-ci.md](federated-ci.md) — to build, cache and update through nixbot.

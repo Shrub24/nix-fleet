@@ -54,5 +54,7 @@ silently reverts to them, so a generated file would add a drift check for nothin
 
 ## Out of scope
 
-The nixbot service aspect; retiring the GitHub Actions stack (per repository, after
-an observed cycle); a vendored-hash recompute adapter.
+The nixbot service aspect; retiring other repositories' Actions callers and the
+cache's Actions rules (per repository, after an observed cycle); a vendored-hash
+recompute adapter. nix-fleet's own Actions stack was wiped at adoption: its
+callers were pinned to broken revisions, so it was debt, not a fallback.

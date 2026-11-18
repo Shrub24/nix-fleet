@@ -14,5 +14,5 @@
 
 - [ ] 2.1 nix-homelab: descriptor subflake, `flakeModules.ci`, `ciFederation`, first
       `ci-enrol`; observe a main cycle, a tag release and a scheduled update
-- [ ] 2.2 nix-fleet, nix-dotfiles, then application repositories adopt the interface
+- [x] 2.2 nix-fleet adopts the interface (`modules/flake/ci-adoption.nix`, `ci/` partition); its legacy Actions stack is wiped in the same change
 - [ ] 2.3 Per repository after its first observed cycle: drop its Actions rules

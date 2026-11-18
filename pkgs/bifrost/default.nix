@@ -3,7 +3,7 @@
 #
 # The Go module is built the way the project's own release builders build it.
 # transports/go.mod pins published versions of bifrost/core, bifrost/framework
-# and bifrost/plugins/*, and both .github/workflows/scripts/build-executables.sh
+# and bifrost/plugins/*, and bifrost/plugins/*
 # (`GOWORK=off`) and transports/Dockerfile resolve exactly those — with no local
 # module replaces. The build graph is therefore the published release graph for
 # this revision, not this checkout's sibling module sources.

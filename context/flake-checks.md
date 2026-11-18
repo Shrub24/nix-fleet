@@ -41,7 +41,8 @@ Platform-independent policy checks are registered once under `checks.x86_64-linu
 
 **Id:** 50eb5125-a863-46f9-b9cb-e75a30538782
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** https://github.com/Shrub24/nix-fleet — 96903ada-82b9-463b-a5e5-eec3eafed9be — as of 2026-11-18
 **Evidence:** confirmed
 **Source:** maintainer decision and `.github/workflows/ci.yml`, 2026-10-11
 
@@ -71,7 +72,8 @@ When a module rejects invalid input, the error names its owning aspect and the s
 
 **Id:** 7d1f0a44-6a3c-4f3b-9d2e-1c5b8a90e6f2
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** https://github.com/Shrub24/nix-fleet — 96903ada-82b9-463b-a5e5-eec3eafed9be — as of 2026-11-18
 **Evidence:** confirmed
 **Source:** `.github/workflows/build-push-cache.yml`, `modules/fleet/feature.nix`, 2026-10-11
 
@@ -98,7 +100,8 @@ the one defining the workflow — for example a staged fleet rollout.
 
 **Id:** 3f2a6c18-9b47-4e51-8c0a-5d9e7b41c283
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** https://github.com/Shrub24/nix-fleet — 96903ada-82b9-463b-a5e5-eec3eafed9be — as of 2026-11-18
 **Evidence:** confirmed
 **Source:** `modules/fleet/feature.nix` (`ciCoordinator`), `docs/contracts/ci.md`, 2026-10-11
 
@@ -124,7 +127,8 @@ setting drift).
 
 **Id:** 0c6b8e57-2f19-4a83-b7d5-6f2c1e934a08
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** https://github.com/Shrub24/nix-fleet — 96903ada-82b9-463b-a5e5-eec3eafed9be — as of 2026-11-18
 **Evidence:** confirmed
 **Source:** `.github/workflows/build-push-cache.yml` (step `Report builders and realisations`), 2026-10-11
 
@@ -151,7 +155,8 @@ the cache stops warming — then the signal needs to be a metric, not a refusal.
 
 **Id:** b9097fc6-67c6-4751-9616-b7b48ca380b3
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** https://github.com/Shrub24/nix-fleet — 96903ada-82b9-463b-a5e5-eec3eafed9be — as of 2026-11-18
 **Evidence:** confirmed
 **Source:** cold-store reproduction against `Shrub24/nix-dotfiles` at `3b8d99f8`, 2026-10-22
 
@@ -191,7 +196,8 @@ output kind the prime does not force starts failing cold.
 
 **Id:** 3d9a41c2-7b58-4e06-a1f3-92c8d05e6b17
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** https://github.com/Shrub24/nix-fleet — 96903ada-82b9-463b-a5e5-eec3eafed9be — as of 2026-11-18
 **Evidence:** confirmed
 **Source:** `.github/workflows/build-push-cache.yml` (step `Install the builder SSH identity`)
 

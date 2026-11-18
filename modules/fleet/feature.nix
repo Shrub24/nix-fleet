@@ -258,136 +258,6 @@ let
     in
     !(builtins.tryEval (builtins.deepSeq (resolve.resolveBuildProfile leak "trust-leak") true)).success;
 
-  ciArtifacts =
-    { pkgs }:
-    profileName:
-    let
-      specs = resolve.resolveBuildProfile config.fleet profileName;
-    in
-    assert resolve.assertNonEmpty profileName specs;
-    pkgs.runCommand "ci-builders-${profileName}"
-      rec {
-        machines = resolve.machinesFile specs;
-        sshConfig = resolve.sshConfig specs;
-        knownHosts = builtins.toJSON (resolve.knownHosts specs);
-        passAsFile = [
-          "machines"
-          "sshConfig"
-          "knownHosts"
-        ];
-      }
-      ''
-        mkdir -p $out
-        cp "$machinesPath" $out/machines
-        cp "$sshConfigPath" $out/ssh_config
-        # JSON entries -> /etc/ssh/ssh_known_hosts line format.
-        ${pkgs.jq}/bin/jq -r 'to_entries[] | .value.hostNames[] as $n | "\($n) \(.value.publicKey)"' \
-          "$knownHostsPath" > $out/known_hosts
-      '';
-
-  # The coordinator projection: the configuration an ephemeral CI client installs,
-  # rendered from the artifacts above so there is no second authority for builder
-  # or cache facts. Conventional install paths, never this derivation's own path,
-  # so the file can name where it will live without referencing itself.
-  ciCoordinator =
-    { pkgs }:
-    profileName:
-    let
-      bundle = ciArtifacts { inherit pkgs; } profileName;
-      substituterUrl = serviceEndpoints.cacheSubstituterUrl config.fleet;
-      publicKeys = serviceEndpoints.cachePublicKeys config.fleet;
-      apiUrl = serviceEndpoints.cacheApiUrl config.fleet;
-      tailscale = config.fleet.ci.tailscale;
-      nixConf = ''
-        # Written by the nix-fleet CI coordinator; owned by the fleet, not by a caller.
-        # Additive on purpose: the runner's installer and the publishing action also
-        # configure Nix, and a scalar here would shadow them.
-        extra-substituters = ${substituterUrl}
-        extra-trusted-public-keys = ${lib.concatStringsSep " " publicKeys}
-        builders = @/etc/nix/machines
-        builders-use-substitutes = true
-      '';
-    in
-    pkgs.runCommand "ci-coordinator-${profileName}"
-      {
-        passAsFile = [ "nixConf" ];
-        inherit nixConf;
-      }
-      ''
-        mkdir -p $out
-        cp ${bundle}/machines $out/machines
-        cp ${bundle}/known_hosts $out/known_hosts
-        cp "$nixConfPath" $out/nix.conf
-        cat > $out/ssh_config <<'EOF'
-        Host *
-          IdentityFile /etc/nix/builder_ed25519
-          IdentitiesOnly yes
-        EOF
-        cat ${bundle}/ssh_config >> $out/ssh_config
-        printf '%s\n' '${substituterUrl}' > $out/cache-substituter-url
-        printf '%s\n' ${lib.escapeShellArg apiUrl} > $out/cache-api-url
-        printf '{"clientId":"%s","audience":"%s"}\n' ${lib.escapeShellArg tailscale.clientId} ${lib.escapeShellArg tailscale.audience} > $out/tailscale.json
-
-        # One writer per setting: these belong to the installer and the publishing
-        # action, and overriding either silently breaks substitution or uploads.
-        for forbidden in trusted-users post-build-hook sandbox experimental-features; do
-          if grep -qE "^[[:space:]]*($forbidden|extra-$forbidden)[[:space:]]*=" $out/nix.conf; then
-            echo "fleet: coordinator nix.conf must not set $forbidden" >&2
-            exit 1
-          fi
-        done
-        if grep -qE '^[[:space:]]*substituters[[:space:]]*=' $out/nix.conf; then
-          echo "fleet: coordinator nix.conf must use extra-substituters, not substituters" >&2
-          exit 1
-        fi
-        grep -qx 'builders = @/etc/nix/machines' $out/nix.conf \
-          || { echo "fleet: coordinator nix.conf lost its builders line" >&2; exit 1; }
-        grep -q 'IdentityFile /etc/nix/builder_ed25519' $out/ssh_config \
-          || { echo "fleet: coordinator ssh_config lacks the key reference" >&2; exit 1; }
-
-        cat > $out/install.sh <<'EOF'
-        #!/bin/sh
-        # Install the coordinator as this machine's Nix client configuration. Run as
-        # root; the SSH identity is written by the caller, not by this artifact.
-        set -eu
-        src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-        install -d /etc/nix /etc/ssh/ssh_config.d
-        install -m 0644 "$src/nix.conf" /etc/nix/coordinator.conf
-        install -m 0644 "$src/machines" /etc/nix/machines
-        install -m 0644 "$src/ssh_config" /etc/ssh/ssh_config.d/00-coordinator.conf
-        install -m 0644 "$src/known_hosts" /etc/ssh/ssh_known_hosts
-        grep -qxF 'include /etc/nix/coordinator.conf' /etc/nix/nix.conf 2>/dev/null \
-          || echo 'include /etc/nix/coordinator.conf' >> /etc/nix/nix.conf
-        EOF
-        chmod 0755 $out/install.sh
-      '';
-
-  ciMetadataCheck =
-    let
-      evaluate =
-        extra:
-        (lib.evalModules {
-          modules = [
-            ./schema.nix
-            ./inventory.nix
-            extra
-          ];
-        }).config.fleet.ci.tailscale;
-      defaults = evaluate { };
-      overridden = evaluate { fleet.ci.tailscale.clientId = "consumer-ci"; };
-      customAudience = evaluate {
-        fleet.ci.tailscale = {
-          clientId = "consumer-ci";
-          audience = "consumer-audience";
-        };
-      };
-    in
-    defaults.clientId != ""
-    && defaults.audience == "api.tailscale.com/${defaults.clientId}"
-    && overridden.clientId == "consumer-ci"
-    && overridden.audience == "api.tailscale.com/consumer-ci"
-    && customAudience.audience == "consumer-audience";
-
   fleetModule = {
     imports = [
       ./schema.nix
@@ -397,33 +267,7 @@ let
     config = {
       perSystem =
         { pkgs, ... }:
-        let
-          ciTailscale = pkgs.writeText "ci-tailscale.json" (builtins.toJSON config.fleet.ci.tailscale);
-        in
         {
-          checks.ci-tailscale =
-            pkgs.runCommand "ci-tailscale-check"
-              {
-                nativeBuildInputs = [
-                  (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
-                  pkgs.bash
-                  pkgs.jq
-                  pkgs.openssh
-                  pkgs.procps
-                ];
-                coordinatorPublicKey = config.fleet.ci.sshPublicKey;
-                passAsFile = [ "coordinatorPublicKey" ];
-                # The workflow's bootstrap cache must be the fleet's, not a second
-                # source: the check compares the two rather than trusting both.
-                BOOTSTRAP_SUBSTITUTER = serviceEndpoints.cacheSubstituterUrl config.fleet;
-                BOOTSTRAP_PUBLIC_KEY = lib.concatStringsSep " " (serviceEndpoints.cachePublicKeys config.fleet);
-              }
-              ''
-                ssh-keygen -lf "$coordinatorPublicKeyPath"
-                python ${../../tests/ci/build_workflow_check.py} ${../../.github/workflows/build-push-cache.yml} ${ciTailscale}
-                touch "$out"
-              '';
-
           # Selector claims only: the pair contract is what catches a daemon
           # dialing a different endpoint than the option form advertises.
           checks.fleet-render =
@@ -431,7 +275,6 @@ let
             assert assertRegistry config.fleet;
             assert schedulingRejection;
             assert serviceCheck;
-            assert ciMetadataCheck;
             let
               specs = sampleSpecs;
               trustSpecs = resolve.resolveHosts sample {
@@ -476,29 +319,6 @@ let
 
                 cat "$machinesPath" > "$out"
               '';
-
-          # Builder bundles per profile, plus the cache coordinates a caller needs
-          # without one. build-push-cache.yml installs these.
-          packages =
-            builtins.mapAttrs (name: _: ciArtifacts { inherit pkgs; } name) config.fleet.buildProfiles
-            // {
-              cache-api-url = pkgs.writeText "cache-api-url" (serviceEndpoints.cacheApiUrl config.fleet);
-              # The read side, for checks that only need to ask whether the cache
-              # serves something: public route plus key, so such a check needs no
-              # tailnet identity and no credential.
-              cache-substituter-url = pkgs.writeText "cache-substituter-url" (
-                serviceEndpoints.cacheSubstituterUrl config.fleet
-              );
-              cache-public-key = pkgs.writeText "cache-public-key" (
-                lib.concatStringsSep "\n" (serviceEndpoints.cachePublicKeys config.fleet)
-              );
-              ci-tailscale = ciTailscale;
-            }
-            # Named ci-coordinator-<profile>: the bare profile name stays the builder
-            # bundle callers already install; this wraps it rather than replacing it.
-            // lib.mapAttrs' (
-              name: _: lib.nameValuePair "ci-coordinator-${name}" (ciCoordinator { inherit pkgs; } name)
-            ) config.fleet.buildProfiles;
         };
     };
   };
@@ -509,8 +329,7 @@ in
   flake.lib.buildProfile = resolve;
   flake.lib.serviceEndpoints = serviceEndpoints;
 
-  # Self-application (dogfood): the published module's perSystem pieces (render
-  # check, CI bundles) only land when the module is imported into this
-  # evaluation too.
+  # Self-application (dogfood): the published module's render check only lands
+  # when the module is imported into this evaluation too.
   imports = [ fleetModule ];
 }

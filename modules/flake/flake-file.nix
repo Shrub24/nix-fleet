@@ -27,9 +27,6 @@
   flake-file.inputs = {
     flake-file.url = "github:denful/flake-file";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    # Trial of nixpkgs PR #585974 (jactionlint 2.4.0 -> 2.6.0); drop it and
-    # use pkgs.jactionlint once that merges.
-    nixpkgs-jactionlint.url = "github:Shrub24/nixpkgs/jactionlint-fix";
 
     flake-parts = {
       url = "github:hercules-ci/flake-parts";

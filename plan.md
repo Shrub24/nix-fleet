@@ -41,9 +41,7 @@ supportedFeatures; endpoint.{protocol,user}; }`. Delete host-backed
 - [x] **5. Two-stage pure resolution API**: hosts/externals + profile →
       normalized `BuilderSpec[]` (`resolveBuildProfile`), then renderers
       (`renderMachinesFile`, `renderSshConfig`, `renderKnownHosts`,
-      nix.buildMachines form). Single public API; `packages.<profile>`
-      CI bundles keep the same artifact shape (workflow contract
-      unchanged: `builder_attr` input, v1+).
+      nix.buildMachines form). Single public API.
 - [x] **6. Trust by projection**: `renderKnownHosts` renders exactly the
       selected hosts/resources — kills the current "inventory membership ⇒
       trusted everywhere" flaw (fixture renders all entries today).
@@ -186,11 +184,6 @@ on the contract change; none conflict with it.
 - [ ] **`nix-gc` consumer migration**: dotfiles and homelab still set
       `services.nix-gc.*`; both move to the upstream options (dotfiles:
       `services.fast-nix-optimise.enable = false`).
-- [ ] **Reusable-workflow adoption notes**: consumers call
-      `build-push-cache.yml@v1` (tag cut at 0180d5ec) — stub + inputs in
-      docs/contracts/ci.md; renovate bumps via tags. The candidate lifecycle
-      needs a newer tag (see the pipeline section above), and
-      `docs/contracts/update-candidates.md` lists the files a consumer owns.
 - [ ] **`nix-baseline` adoption in both consumers** so the substituter
       catalog has one owner.
 - [x] **`sops-bootstrap` package**: homelab's `scripts/secrets-bootstrap.py`
@@ -207,46 +200,6 @@ on the contract change; none conflict with it.
 - [ ] **Dotfiles adoption**: same shape; drop the stale
       `oci-melb-1.system = "x86_64-linux"` from topology (canonical says
       aarch64); topology loses per-machine `system`.
-
-## Update-candidate pipeline (open, before the live gate)
-
-Ordered. The first is an operator step for consumers, and the second is the
-evidence that retires the assumptions in `docs/contracts/update-candidates.md`.
-
-- [ ] **Consumer tag** (operator, adoption). `pipeline.yml`, `promote-candidate.yml`,
-      `candidate-sweep.yml` and `accept.yml` are callable, `validate.yml` is one
-      definition called from two places, and a consumer's interface is now a thin
-      trigger per event plus variables, an environment, a permission grant and
-      `secrets: inherit` (`docs/contracts/update-candidates.md`). What is left is
-      a tag containing the pipeline files: `v1` (the line consumers already use
-      for `build-push-cache.yml`) predates them, so cut the next tag once this
-      lands on `main`. Impact: until then a consumer can build and verify through
-      nix-fleet but cannot use the candidate lifecycle, so its updates stay
-      manual, and the call boundary itself is untested.
-- [ ] **Live gate** (evidence). Every trust claim in the contract is currently an
-      assumption about GitHub — environment deployment-branch rules, App-pinned
-      required status, `status`-event triggers, indirect PR merge, a
-      `pull_request_target` label payload supplying the accepted revision,
-      whether repository `vars` resolve inside a called workflow, the seven-day
-      window on a required status, artifact major pairing, niks3 OIDC claims.
-      Impact: the runner-label/Nix-system mismatch was found by review, not by any
-      local gate, which is the precedent for how this class of fault behaves.
-      Runs in the runbook's order; the ruleset and automatic promotion stay off
-      until it passes.
-
-Landed since the pipeline was first written: validation diagnostics are three
-jobs, the producer's status and report must agree before it proposes,
-preparation stages only the two files it owns, and acceptance is bound to a
-revision by an `update-accepted` marker instead of a commit timestamp.
-
-## CI live-run prerequisites (user-side)
-
-- [ ] Set secret `FLEET_BUILDER_SSH_KEY`; authorize the key for the
-      `nixbuild` account on builders using `fleet.ci.sshPublicKey`; authorize the
-      shared Tailscale federated identity declared by `fleet.ci.tailscale`
-      (writable `auth_keys` scope, tag `tag:ci`, claims narrowed to the repos
-      and reusable workflow). No cache coordinate: an empty `cache_api_url`
-      resolves the canonical `fleet.services."niks3-write"` record.
 
 ## Deferred / future waves
 

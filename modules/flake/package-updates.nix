@@ -306,23 +306,6 @@ in
             touch "$out"
           '';
 
-      # The producer's decision step and credential boundary: a missing report or
-      # nothing-to-propose fails the step, and the job that runs updaters holds
-      # no credential.
-      checks.package-updates-producer =
-        pkgs.runCommand "package-updates-producer-check"
-          {
-            nativeBuildInputs = [
-              pkgs.bash
-              pkgs.jq
-              (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
-            ];
-          }
-          ''
-            python ${../../tests/ci/producer_check.py} ${../../.github/workflows/package-updates-refresh.yml}
-            touch "$out"
-          '';
-
       # Minimal-consumer contract: the exported module gives a consumer its own
       # registry, and its app binds the consumer's evaluated updater — never
       # this repository's pin.

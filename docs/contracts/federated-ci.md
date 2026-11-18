@@ -230,10 +230,11 @@ nbo schedule run package-updates update -f
 
 - A tag push's token carrying `event = push`; the release rule binds it.
 - The admin-role ruleset bypass on a personal repository.
-- Whether GitHub echoes a ruleset in exactly the shape `ci-enrol` sends; a
-  difference makes every run report an update, which rewrites the same ruleset.
+- Whether GitHub echoes a ruleset in exactly the shape `ci-enrol` sends beyond
+  `do_not_enforce_on_create`; a difference makes every run rewrite the same ruleset.
 
-## Retiring the Actions path
+## No Actions path
 
-The cache's GitHub Actions rules stay until a repository has had one observed
-nixbot default-branch cycle; removing a rule revokes that repository's write.
+nix-fleet ships no GitHub Actions workflows. A cache rule an operator still holds for
+Actions tokens serves only workflows outside this repository, and is the operator's
+to remove.

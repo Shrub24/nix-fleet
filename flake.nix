@@ -31,7 +31,6 @@
       };
     };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    nixpkgs-jactionlint.url = "github:Shrub24/nixpkgs/jactionlint-fix";
     sops-nix = {
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";

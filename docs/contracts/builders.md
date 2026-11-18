@@ -2,7 +2,7 @@
 
 Canonical build capability and scheduling policy live in nix-fleet; consumers
 derive and add local policy. Built on the host identity from
-[hosts.md](hosts.md); consumed by CI via [ci.md](ci.md).
+[hosts.md](hosts.md); the nixbot controller dispatches through the `ci` profile.
 
 ## Model
 
@@ -75,10 +75,6 @@ fleet.buildProfiles.ci = {
   hosts.la-admin-1 = { };
   hosts.oci-melb-1 = { };
 };                        # canonical ci = the free fleet
-fleet.buildProfiles.arm-expensive = {
-  hosts.oci-melb-1 = { };
-  external.nixbuild.maxJobs = 4;  # metered-cost knob, per-relationship
-};                        # nixbuild only via explicit profile
 ```
 
 ## Consumer adoption (tier 3)
@@ -100,7 +96,7 @@ with it; consumers do not repeat it.
 Nix daemon trust is effectively root-level authority, even though the account
 has no sudo membership. Selecting the aspect grants that authority; consumers
 control host selection and SSH/Tailscale authorization. Restrict access to
-trusted coordinators and workflows. Cache signatures remain required for
+trusted coordinators. Cache signatures remain required for
 substitution; the cache's private signing key does not belong on coordinators.
 
 Wire scheduling in your own flake-level module — this replaces
@@ -172,5 +168,4 @@ unchanged.
 | `fleet.builderSets.<name>` (list of names) | `fleet.buildProfiles.<name>` (members + per-member overrides) |
 | `config.fleet.realization` import          | consumer wiring via `flake.lib.buildProfile` (above)          |
 | `services.fleet-builders.activeSet`        | the consumer's own resolve → `nix.buildMachines` wiring       |
-| `packages.<set>` CI bundles                | `packages.<profile>` (same artifact shape, profile-driven)    |
 | `services.fleet-builders.createBuildUser`  | `modules.nixos.build-account` aspect                          |

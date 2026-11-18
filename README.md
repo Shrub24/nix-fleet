@@ -1,6 +1,5 @@
 # nix-fleet — fleet control plane
 
-[![ci](https://github.com/Shrub24/nix-fleet/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Shrub24/nix-fleet/actions/workflows/ci.yml)
 [![cache](https://img.shields.io/badge/cache-cache.shrublab.xyz-2f81f7)](https://cache.shrublab.xyz)
 
 A dendritic flake-parts repository that is the **shared fleet control-plane contract + mechanisms** for saurabhj's machines (nix-homelab fleet, dotfiles, future hosts): canonical cross-fleet facts, shared policy, pure projections, and the implementation packages of the mechanisms it owns. Consumers import this flake as a flake input and select its aspects and projections by name.
@@ -18,7 +17,7 @@ A dendritic flake-parts repository that is the **shared fleet control-plane cont
 - No secrets or `.sops.yaml` — consumers bind secret paths through typed option contracts.
 - No service policy data (recipients, topics, publisher lists, ingress/auth) — those are consumer concerns. Cross-fleet service coordinates (`fleet.services.*`) are tier-1 facts; public routes exist only when explicitly bound.
 
-The boundary in one line: **nix-fleet owns the canonical facts, the shared policy, the projection API, the mechanism, and its code; consumers own placement, recipients/topics, consumer-local endpoint policy, and secrets.** Per-contract reference docs for onboarding other repos live in [docs/contracts/](docs/contracts/README.md) — hosts (identity + trust), builders (capabilities + profiles + scheduling), ci (builder artifacts + workflow template).
+The boundary in one line: **nix-fleet owns the canonical facts, the shared policy, the projection API, the mechanism, and its code; consumers own placement, recipients/topics, consumer-local endpoint policy, and secrets.** Per-contract reference docs for onboarding other repos live in [docs/contracts/](docs/contracts/README.md) — hosts (identity + trust), builders (capabilities + profiles + scheduling), federated CI.
 
 ## Pattern (dendritic, non-negotiable)
 
@@ -80,7 +79,6 @@ tests/
 .envrc               # direnv: use flake
 justfile             # fmt / fmt-check / check / lock
 lefthook.yml         # pre-commit fmt+statix+deadnix, pre-push flake check
-renovate.json        # weekly GitHub Actions updates
 ```
 
 ````
@@ -89,7 +87,7 @@ renovate.json        # weekly GitHub Actions updates
 
 1. **`tailscale`** — Tailscale baseline: enable, Tailscale SSH, MTU debug option, and auth-key autoconnect ordered after the systemd SOPS installer. Binding `secretFiles.auth` requires `sops-nix` and `sops-systemd-activation`; unbound or missing files leave auth unconfigured. Follows upstream restart-on-change behavior. Registers the daemon's local metrics without enabling its web client or selecting metrics delivery.
 2. **`beszel-agent`** — agent enrollment (the hub stays in nix-homelab). The KEY the agent holds is the hub's PUBLIC key (hub→agent SSH auth): policy data, bound via `services.beszel-agent.key`, no sops involved. TOKEN is deliberately not wired — WebSocket registration needs plain-HTTP reachability of the hub URL, but the hub sits behind Cloudflare Access and agents reach it over tailnet SSH, so the hub-issued token path can never work here. No host secrets remain for beszel.
-3. **`fleet`** — the fleet authority feature: canonical machine identity with build capabilities (`fleet.hosts.*.capabilities`), external build resources (`fleet.externalBuilders`), named scheduling profiles (`fleet.buildProfiles`), and the pure projection API `lib.buildProfile` (`resolveBuildProfile` → renderers). No NixOS realization is published; the consumer's own flake-level module resolves a profile and wires trust + scheduling. Includes the `build-account` dispatch-account aspect. Full contract: [docs/contracts/builders.md](docs/contracts/builders.md) (hosts: [hosts.md](docs/contracts/hosts.md), CI: [ci.md](docs/contracts/ci.md)).
+3. **`fleet`** — the fleet authority feature: canonical machine identity with build capabilities (`fleet.hosts.*.capabilities`), external build resources (`fleet.externalBuilders`), named scheduling profiles (`fleet.buildProfiles`), and the pure projection API `lib.buildProfile` (`resolveBuildProfile` → renderers). No NixOS realization is published; the consumer's own flake-level module resolves a profile and wires trust + scheduling. Includes the `build-account` dispatch-account aspect. Full contract: [docs/contracts/builders.md](docs/contracts/builders.md) (hosts: [hosts.md](docs/contracts/hosts.md)).
 The same fleet feature publishes the typed `fleet.services.*.endpoints.*` endpoint catalog and pure `lib.serviceEndpoints` resolver (`resolveEndpoint` returns URL, canonical host ID, hostname, and port for a tailnet route). Its raw canonical data is `lib.serviceEndpoints.canonicalServices`. See [docs/contracts/services.md](docs/contracts/services.md) for selection and ownership. Telemetry is host-local instead. The `telemetry` aspect owns the `services.telemetry` vocabulary, the signal lanes (`telemetry-metrics`, `telemetry-logs`, `telemetry-otlp`) compose the fleet's default realization for one signal each, and the realizations (`telemetry-vmagent`, `telemetry-vector`, `telemetry-otel-collector-scrape`, `telemetry-otel-collector-otlp`) are aspects of their own — see [telemetry.md](docs/contracts/telemetry.md). Service aspects register sources and read the local endpoint; registering never activates a realization.
 
 4. **`niks3-cache`** — niks3 binary-cache *server*. S3 coordinates, cache URL, secret paths are options; fails closed when unbound.
@@ -173,9 +171,6 @@ in {
 }
 ```
 
-CI artifacts (`packages.<profile>`, e.g. `packages.ci`) render from the same
-inventory; see [docs/contracts/ci.md](docs/contracts/ci.md).
-
 NixOS aspects (including `build-account`) are host modules: they land in a
 host composition's NixOS module list, never in the consumer's flake-level
 imports.
@@ -190,7 +185,7 @@ mechanism, its code.
 - `treefmt` via `nix fmt` (prettier for md/yaml/json, taplo for TOML, plus the pinned Nix trio in `modules/flake/tooling.nix`); `nix flake check` runs the same formatter as a check, so unformatted files fail CI. Same tooling shape as dotfiles' `modules/flake/tooling.nix`.
 - Secrets enter through `/lib/secrets.nix` helpers only: `mkSecretFileOption` for consumer-bound paths, `mkRequiredSecretAssertion` for the named fail-closed gate, `mkSecretsFromMap` for `sops.secrets` registration. Byte-identical to nix-homelab's helper; consumers of these aspects do not need their own copy.
 - Every aspect declares its options; every option has a type; fail closed with named errors, never raw `builtins.head`/null derefs.
-- Input pins: this repository's `flake.lock` is the fleet's shared-input authority, and its `renovate.json` covers Actions only — flake inputs are moved by this repository's own updater (`update-packages`), not Renovate. A consumer shares the fleet's nixpkgs by following it (`inputs.nixpkgs.follows = "nix-fleet/nixpkgs"`), which also shares its bump cadence.
+- Input pins: this repository's `flake.lock` is the fleet's shared-input authority, moved by this repository's own scheduled update (`update-packages`). A consumer shares the fleet's nixpkgs by following it (`inputs.nixpkgs.follows = "nix-fleet/nixpkgs"`), which also shares its bump cadence.
 - Provenance discipline: no secrets, no private keys, no absolute paths in this repo. The canonical inventory carries public fleet facts only (machine IDs, systems, Tailscale hostnames, host *public* keys once harvested); consumer-local inventory lives downstream, additive only. The fixture is a consumer-shaped integration test and must never resemble or feed the canonical inventory.
 
 ## Pointers into nix-homelab (read-only reference)
@@ -231,55 +226,10 @@ same types.
 
 ## CI
 
-`.github/workflows/build-push-cache.yml` is a reusable workflow
-(`workflow_call`) with a direct-dispatch entry point. Consumers call it with
-`uses:` and pin a full commit SHA; `.github/workflows/ci.yml` calls it for this
-repository. The full interface lives in [docs/contracts/ci.md](docs/contracts/ci.md).
-
-One coordinator runs `nix-fast-build` against `.#checks`. `runner_system`
-selects its architecture (ARM by default); `systems` selects the workload
-architectures (x86_64 and ARM by default). `profile` selects the fleet builder
-profile (`ci` by default); the workflow resolves the matching coordinator
-configuration from its own revision, so a consumer declares only what to build.
-An x86-only consumer sets both `runner_system` and `systems` to `x86_64-linux`.
-
-Remote builders publish through their native niks3 post-build-hooks. The GHA
-coordinator uses `Mic92/niks3-action` for cache configuration and local build
-publication with GitHub OIDC. There is no separate coordinator uploader or
-custom token refresher. Both direct dispatch and reusable callers require
-`contents: read` and `id-token: write`; cache authorization remains consumer
-policy in `services.niks3-cache.oidc.providers`.
-
-The build workflow resolves its **own** configuration, so a consumer needs no
-fleet input and holds no builder coordinates: it reads the fleet revision that
-defines the executing workflow (`job.workflow_repository` / `job.workflow_sha`),
-substitutes `packages.<runner_system>.ci-coordinator-<profile>` from that revision,
-and installs it — `nix.conf`, `machines`, `ssh_config` and `known_hosts` rendered
-from the inventory at fleet eval time. The same revision supplies the public
-`ci-tailscale` metadata for the tailnet join, so there are no repository variables
-and no long-lived OAuth secret. Importing `flakeModules.fleet` still yields the
-same artefacts in a consumer's own flake (`packages.ci`, per-profile
-`packages.<profile>`), but that is for a repository that also composes fleet
-aspects, not a requirement of the workflow. Only the coordinator private key is a repository
-secret; its public half is `fleet.ci.sshPublicKey`. The join reuses the same
-`id-token: write` grant niks3 needs. Full contract:
-[docs/contracts/ci.md](docs/contracts/ci.md).
-
-CI-capable cache setup consumer-side:
-
-```nix
-services.niks3-cache = {
-  s3.endpoint = "...";
-  cacheUrl = "https://cache.example.com";
-  secretFiles = { host = ...; apiToken = ...; };
-  oidc.providers.github = {
-    issuer = "https://token.actions.githubusercontent.com";
-    audience = "https://cache.example.com";
-    boundClaims.repository_owner = [ "Shrub24" ];
-    scopes = [ "write" ];
-  };
-};
-```
+CI is nixbot, federated across repositories through one interface,
+`flakeModules.ci`, which this repository also adopts (`modules/flake/ci-adoption.nix`,
+with its CI-only inputs in the `ci/` partition). See
+[docs/contracts/federated-ci.md](docs/contracts/federated-ci.md).
 
 ## Binary cache
 
@@ -287,38 +237,20 @@ The fleet publishes its build outputs to a [niks3](https://github.com/Mic92/niks
 cache. Substitution is **public and ungated**; only the write API is private, so a
 reader needs no tailnet identity and no credential.
 
-|                         |                                                                                              |
-| ----------------------- | -------------------------------------------------------------------------------------------- |
-| Substituter             | `https://cache.shrublab.xyz`                                                                 |
-| Public key              | `nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A=`                                   |
-| Write API               | `fleet.services."niks3-write".endpoints.api` — tailnet only                                  |
-| Canonical coordinates   | `packages.<system>.cache-substituter-url`, `.cache-public-key`, `.cache-api-url`             |
-| Pins                    | server-side GC protection, listed with `niks3 pins list` against the API                     |
-| Cache status per commit | [verify-cache runs](https://github.com/Shrub24/nix-fleet/actions/workflows/verify-cache.yml) |
+|             |                                                                          |
+| ----------- | ------------------------------------------------------------------------ |
+| Substituter | `https://cache.shrublab.xyz`                                             |
+| Public key  | `nix-cache-1:FW0bJll9BP5ch0mHI+bXOImcD0RKLrH117WfQC+CU4A=`               |
+| Write API   | `fleet.services."niks3-write".endpoints.api` — tailnet only              |
+| Pins        | server-side GC protection, listed with `niks3 pins list` against the API |
 
 These are one record, not four literals: `fleet.services."niks3-write"` carries both
 routes and `publicKeys`, and `lib.serviceEndpoints` resolves them
 (`cacheSubstituterUrl`, `cachePublicKeys`, `cacheApiUrl`). The `nix-baseline` aspect
-adds the substituter and its key to a host's `nix.conf` from that record, and the CI
-workflows read the rendered `packages.<system>.cache-*` artifacts, so nothing
-restates a hostname.
-
-`verify-cache` runs on every push to `main`: it asks `nix path-info` about the
-pinned root of each system (`.#packages.<system>.cache-root`, not `.#checks` — a verdict
-changes whenever its inputs do) and publishes the counts. It reports and never fails
-on a miss; presence is enforced by the pin. A promoted revision was built, so an
-unserved pinned root there is a publication that did not complete. A
-revision that was built and then promoted also moves a rolling `last-known-good` pin
-per system, whose closure covers every published package; that is `pin-cache.yml`,
-owned by the promotion path rather than by verification.
-
-Turning pins on (and what caching guarantees them) is an operator procedure:
-[docs/runbooks/cache-pins.md](docs/runbooks/cache-pins.md). Bringing a repository
-onto fleet CI — build only, or with the update lifecycle — is
-[docs/runbooks/consumer-adoption.md](docs/runbooks/consumer-adoption.md). Moving the
-repositories themselves to an organisation — what it buys, what it breaks and why the
-merge queue is a separate change — is
-[docs/runbooks/github-org-migration.md](docs/runbooks/github-org-migration.md).
+adds the substituter and its key to a host's `nix.conf` from that record, so nothing
+restates a hostname. What the cache keeps is decided by pins, which each repository's
+retention effect moves after a push to its default branch or a tag
+([federated-ci.md](docs/contracts/federated-ci.md)).
 
 Using the cache without this flake:
 

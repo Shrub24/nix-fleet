@@ -176,36 +176,20 @@ nonzero.
 
 The JSON report gains `inputs` (each moved input with its old and new revision,
 last-modified date, source, and a comparison link) and `inputFailure`. The pull
-request body lists moved inputs in their own table above the packages. The
-scheduled workflow's pull request is a source for the update-candidate pipeline
-([update-candidates.md](update-candidates.md)); it is not acceptance.
+request body lists moved inputs in their own table above the packages.
 
-### The producer's two jobs
+### The scheduled producer
 
-The scheduled workflow (`.github/workflows/package-updates-refresh.yml`) splits
-the run, because `nix-update` executes the update scripts of the packages it
-updates and must not hold a credential that can propose or push:
-
-- **`update`** runs the batch, evaluates the refreshed tree, and records the
-  proposal as a git patch plus the report files. It holds no App key and selects
-  no environment. A patch is recorded only when the batch reported 0 or 1 _and_
-  the evaluation passed, so `publish` is empty unless something valid exists.
-- **`publish`** holds the App key (through the `automation` environment), applies
-  that patch to a clean checkout of the base the refresh ran on, and opens or
-  updates the pull request with the report as its body. It runs no repository
-  code: the patch and the reports cross as artifact data.
-
-The publisher refuses to apply a patch against a moved base, because a wholesale
-lock rewrite taken from an older revision would revert whatever landed in
-between; the next scheduled run redoes the refresh instead. `git apply` is
-all-or-nothing, so a partial proposal is never published.
+`flakeModules.ci`'s `package-updates` effect runs the batch on a schedule and
+publishes its result as one pull request; the write credential is unset before the
+batch runs ([federated-ci.md](federated-ci.md)).
 
 ## Refresh is not acceptance
 
 The app edits package pins, and in a producer run the moving inputs of
 `flake.lock`. It does not update OCI references, run repository checks, or
-merge. A candidate is accepted only after the requested updates complete **and**
-the repository's declared acceptance checks pass; a hash-prefetch build is not an
+merge. A proposal is accepted only after the requested updates complete **and**
+the repository's checks pass on its pull request; a hash-prefetch build is not an
 acceptance build. Refreshing again against the same recorded release targets
 must produce no further changes.
 
@@ -224,16 +208,9 @@ embedded UI npm hash through
 and idempotence runs. A missing or unsupported candidate fails visibly rather
 than silently selecting an older release.
 
-Acceptance for an updated candidate is the existing native gates: the
+Acceptance for an updated proposal is the repository's checks: the
 gateway/UI startup check, the Voyage-hook check against the real binary, the
-governance/CEL module check, formatting, all-system evaluation, and
-fresh-store evaluation with import-from-derivation disabled. The production
-pin moves only when every gate passes. See the
+governance/CEL module check and formatting, built on every system nixbot
+schedules. The production pin moves only when every gate passes. See the
 [recorded Bifrost update](../validation/bifrost-package-update.md) for the first
 candidate, gate results and limitations.
-
-## Deferred
-
-Consumer migration and consumer promotion policy are separate adoption work.
-Renovate keeps tagged flake inputs (no tagged input exists yet), OCI references and
-Actions references. Renovate does not own `flake.lock`.

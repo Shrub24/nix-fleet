@@ -108,11 +108,8 @@ restores the declarative path:
    contradictory; they mean "I own this one", and flake-edit already skips
    ignored paths.
 
-## Preparation depends on this policy
+## The drift check depends on this policy
 
-The bundled `prepare-candidate` action regenerates `flake.nix` with `write-flake`
-and then runs `nix flake lock` without an update. A second run must change
-nothing: that is the fixed-point check the update-candidate pipeline and the
-human-pull-request check both enforce. Because auto-follow is disabled, the
-generated file is a function of the declarations alone, which is what makes the
-fixed point hold. Enabling auto-follow would break it.
+`check-flake-file` requires `write-flake` to change nothing. Because auto-follow is
+disabled, the generated file is a function of the declarations alone, which is what
+makes that fixed point hold. Enabling auto-follow would break it.
