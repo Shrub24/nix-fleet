@@ -74,6 +74,27 @@ class Reconcile(unittest.TestCase):
         self.run_with(fleet)
         self.assertEqual(fleet.writes, [])
 
+    def github_shaped(self, checks):
+        """The ruleset as GitHub returns it: the sent fields plus its own."""
+        wanted = enrol.ruleset(PLAN, "main")
+        rule = wanted["rules"][0]
+        # Stated independently of ci-enrol's payload: GitHub always returns this default.
+        parameters = dict(rule["parameters"], required_status_checks=checks, do_not_enforce_on_create=False)
+        rule = dict(rule, parameters=parameters)
+        return dict(wanted, rules=[rule], id=9, source="owner/listed", source_type="Repository")
+
+    def test_a_ruleset_as_github_returns_it_is_not_rewritten(self):
+        current = self.github_shaped(enrol.ruleset(PLAN, "main")["rules"][0]["parameters"]["required_status_checks"])
+        fleet = Fleet(enabled={"owner/listed"}, auto_merge={"owner/listed"}, rulesets={"owner/listed": current})
+        self.run_with(fleet)
+        self.assertEqual(fleet.writes, [])
+
+    def test_a_changed_required_check_is_rewritten(self):
+        current = self.github_shaped([{"context": "nixbot/nix-eval", "integration_id": 1}])
+        fleet = Fleet(enabled={"owner/listed"}, auto_merge={"owner/listed"}, rulesets={"owner/listed": current})
+        self.run_with(fleet)
+        self.assertEqual(fleet.writes, [("PUT", "/repos/owner/listed/rulesets/9")])
+
     def test_a_drifted_ruleset_is_updated_in_place(self):
         fleet = Fleet(
             enabled={"owner/listed"},

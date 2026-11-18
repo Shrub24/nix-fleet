@@ -207,11 +207,23 @@ imports, and move packages and checks under `perSystem`. Then:
 - Don't partition `apps`: a partitioned attribute is replaced wholesale, and running
   a public app would then fetch the CI inputs.
 
-To run the update now rather than on its schedule:
+## The operator's client
+
+`nbo` is nixbot's CLI; nothing in CI runs it. Install it from a flake that follows
+nix-fleet's pin, so it matches the server the instance runs:
+
+```nix
+inputs.nixbot.follows = "nix-fleet/nixbot";
+home.packages = [ inputs.nixbot.packages.${pkgs.system}.nixbot-cli ];
+home.sessionVariables.NIXBOT_URL = "<instance>";
+```
+
+The token stays out of Nix: export `NIXBOT_TOKEN`, an admin token from the
+instance's `/settings`, when running it. To run a repository's update now rather
+than on its schedule, from its checkout:
 
 ```console
-NIXBOT_URL=<instance> NIXBOT_TOKEN=bnix_... \
-  nix run github:Mic92/nixbot#nixbot-cli -- schedule run package-updates update -f
+nbo schedule run package-updates update -f
 ```
 
 ## Not yet observed

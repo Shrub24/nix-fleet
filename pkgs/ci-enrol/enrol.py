@@ -71,6 +71,8 @@ def ruleset(plan: dict, branch: str) -> dict:
                     # Auto-merge never brings a branch up to date, so strict
                     # checks would stall every automated pull request.
                     "strict_required_status_checks_policy": False,
+                    # GitHub returns this default; omitting it reads back as drift.
+                    "do_not_enforce_on_create": False,
                     "required_status_checks": [
                         {"context": check, "integration_id": plan["appId"]}
                         for check in plan["requiredChecks"]
