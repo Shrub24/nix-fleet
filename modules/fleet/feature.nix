@@ -263,64 +263,66 @@ let
       ./schema.nix
       ./inventory.nix
     ];
+  };
 
-    config = {
-      perSystem =
-        { pkgs, ... }:
-        {
-          # Selector claims only: the pair contract is what catches a daemon
-          # dialing a different endpoint than the option form advertises.
-          checks.fleet-render =
-            assert assertRegistry sample;
-            assert assertRegistry config.fleet;
-            assert schedulingRejection;
-            assert serviceCheck;
-            let
-              specs = sampleSpecs;
-              trustSpecs = resolve.resolveHosts sample {
-                sample-nonbuilder = { };
-                sample-host = { }; # scheduling specs render trust too
-              };
-            in
-            pkgs.runCommand "fleet-render-check"
-              rec {
-                machines = resolve.machinesFile specs;
-                sshConfig = resolve.sshConfig specs;
-                knownHosts = builtins.toJSON (resolve.knownHosts trustSpecs);
-                optionForm = builtins.toJSON (resolve.buildMachines specs);
-                trustSshConfig = resolve.sshConfig trustSpecs;
-                passAsFile = [
-                  "machines"
-                  "sshConfig"
-                  "knownHosts"
-                  "optionForm"
-                  "trustSshConfig"
-                ];
-              }
-              ''
-                grep -qx 'ssh-ng://nixbuild@fleet-host x86_64-linux - 2 1 big-parallel,nixos-test -' "$machinesPath" \
-                  || { echo "fleet: profile override did not reach the machines line"; cat "$machinesPath"; exit 1; }
-                grep -qx 'ssh-ng://root@eu.nixbuild.net aarch64-linux - 4 1 - -' "$machinesPath" \
-                  || { echo "fleet: external builder line wrong"; cat "$machinesPath"; exit 1; }
-                grep -qx '  User root' "$sshConfigPath" \
-                  || { echo "fleet: external sshUser override missing"; cat "$sshConfigPath"; exit 1; }
+  # nix-fleet's own check, not the published module's: a consumer would only
+  # rebuild this fixture.
+  renderCheck = {
+    perSystem =
+      { pkgs, ... }:
+      {
+        # Selector claims only: the pair contract is what catches a daemon
+        # dialing a different endpoint than the option form advertises.
+        checks.fleet-render =
+          assert assertRegistry sample;
+          assert assertRegistry config.fleet;
+          assert schedulingRejection;
+          assert serviceCheck;
+          let
+            specs = sampleSpecs;
+            trustSpecs = resolve.resolveHosts sample {
+              sample-nonbuilder = { };
+              sample-host = { }; # scheduling specs render trust too
+            };
+          in
+          pkgs.runCommand "fleet-render-check"
+            rec {
+              machines = resolve.machinesFile specs;
+              sshConfig = resolve.sshConfig specs;
+              knownHosts = builtins.toJSON (resolve.knownHosts trustSpecs);
+              optionForm = builtins.toJSON (resolve.buildMachines specs);
+              trustSshConfig = resolve.sshConfig trustSpecs;
+              passAsFile = [
+                "machines"
+                "sshConfig"
+                "knownHosts"
+                "optionForm"
+                "trustSshConfig"
+              ];
+            }
+            ''
+              grep -qx 'ssh-ng://nixbuild@fleet-host x86_64-linux - 2 1 big-parallel,nixos-test -' "$machinesPath" \
+                || { echo "fleet: profile override did not reach the machines line"; cat "$machinesPath"; exit 1; }
+              grep -qx 'ssh-ng://root@eu.nixbuild.net aarch64-linux - 4 1 - -' "$machinesPath" \
+                || { echo "fleet: external builder line wrong"; cat "$machinesPath"; exit 1; }
+              grep -qx '  User root' "$sshConfigPath" \
+                || { echo "fleet: external sshUser override missing"; cat "$sshConfigPath"; exit 1; }
 
-                ${pkgs.jq}/bin/jq -r '.[] | "\(.protocol)://\(.sshUser)@\(.hostName)"' "$optionFormPath" > option-form
-                awk 'NF > 0 { print $1 }' "$machinesPath" > machines-form
-                paste option-form machines-form | awk '$1 != $2 { print "fleet: option form says " $1 " but machines-file form says " $2; exit 1 }'
+              ${pkgs.jq}/bin/jq -r '.[] | "\(.protocol)://\(.sshUser)@\(.hostName)"' "$optionFormPath" > option-form
+              awk 'NF > 0 { print $1 }' "$machinesPath" > machines-form
+              paste option-form machines-form | awk '$1 != $2 { print "fleet: option form says " $1 " but machines-file form says " $2; exit 1 }'
 
-                for host in host-sample-host host-sample-nonbuilder; do
-                  grep -q "\"$host\"" "$knownHostsPath" \
-                    || { echo "fleet: resolveHosts omitted $host"; cat "$knownHostsPath"; exit 1; }
-                done
-                # managementUser = null must not inherit the dispatch login.
-                grep -q 'User' "$trustSshConfigPath" \
-                  && { echo "fleet: sshConfig emitted a User line for managementUser = null"; cat "$trustSshConfigPath"; exit 1; }
+              for host in host-sample-host host-sample-nonbuilder; do
+                grep -q "\"$host\"" "$knownHostsPath" \
+                  || { echo "fleet: resolveHosts omitted $host"; cat "$knownHostsPath"; exit 1; }
+              done
+              # managementUser = null must not inherit the dispatch login.
+              grep -q 'User' "$trustSshConfigPath" \
+                && { echo "fleet: sshConfig emitted a User line for managementUser = null"; cat "$trustSshConfigPath"; exit 1; }
 
-                cat "$machinesPath" > "$out"
-              '';
-        };
-    };
+              cat "$machinesPath" > "$out"
+            '';
+      };
   };
 in
 {
@@ -329,7 +331,8 @@ in
   flake.lib.buildProfile = resolve;
   flake.lib.serviceEndpoints = serviceEndpoints;
 
-  # Self-application (dogfood): the published module's render check only lands
-  # when the module is imported into this evaluation too.
-  imports = [ fleetModule ];
+  imports = [
+    fleetModule
+    renderCheck
+  ];
 }
