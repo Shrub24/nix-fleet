@@ -1,4 +1,4 @@
-"""ci-enrol's reconcile decisions, with GitHub and nixbot replaced by one stub."""
+"""ci-enrol's enrol and withdraw decisions, with GitHub and nixbot replaced by one stub."""
 
 import importlib.util
 import os
@@ -14,8 +14,8 @@ PLAN = {
     "appId": 42,
     "nixbotUrl": NIXBOT,
     "requiredChecks": ["nixbot/nix-eval"],
-    "repositories": {"owner/listed": {"branch": "main"}},
 }
+REPO = "owner/repo"
 
 
 class Fleet:
@@ -47,84 +47,68 @@ class Fleet:
         return {"allow_auto_merge": repository in self.auto_merge}
 
 
-class Reconcile(unittest.TestCase):
+class Enrol(unittest.TestCase):
     def setUp(self):
-        self.original = enrol.send
-        self.addCleanup(setattr, enrol, "send", self.original)
+        self.addCleanup(setattr, enrol, "send", enrol.send)
 
-    def run_with(self, fleet, dry_run=False):
+    def reconciler(self, fleet, dry_run=False):
         enrol.send = fleet
-        return enrol.Reconciler(PLAN, "gh", "bot", dry_run).run()
-
-    def test_a_newly_listed_repository_is_enabled_allowed_and_ruled(self):
-        fleet = Fleet()
-        self.run_with(fleet)
-        self.assertEqual(
-            fleet.writes,
-            [
-                ("POST", "/api/repos/github/owner/listed/enable"),
-                ("PATCH", "/repos/owner/listed"),
-                ("POST", "/repos/owner/listed/rulesets"),
-            ],
-        )
-
-    def test_a_reconciled_repository_gets_no_writes(self):
-        wanted = dict(enrol.ruleset(PLAN, "main"), id=9)
-        fleet = Fleet(enabled={"owner/listed"}, auto_merge={"owner/listed"}, rulesets={"owner/listed": wanted})
-        self.run_with(fleet)
-        self.assertEqual(fleet.writes, [])
+        return enrol.Reconciler(PLAN, "gh", "bot", dry_run)
 
     def github_shaped(self, checks):
         """The ruleset as GitHub returns it: the sent fields plus its own."""
-        wanted = enrol.ruleset(PLAN, "main")
+        wanted = enrol.ruleset(PLAN)
         rule = wanted["rules"][0]
         # Stated independently of ci-enrol's payload: GitHub always returns this default.
         parameters = dict(rule["parameters"], required_status_checks=checks, do_not_enforce_on_create=False)
         rule = dict(rule, parameters=parameters)
-        return dict(wanted, rules=[rule], id=9, source="owner/listed", source_type="Repository")
+        return dict(wanted, rules=[rule], id=9, source=REPO, source_type="Repository")
 
-    def test_a_ruleset_as_github_returns_it_is_not_rewritten(self):
-        current = self.github_shaped(enrol.ruleset(PLAN, "main")["rules"][0]["parameters"]["required_status_checks"])
-        fleet = Fleet(enabled={"owner/listed"}, auto_merge={"owner/listed"}, rulesets={"owner/listed": current})
-        self.run_with(fleet)
-        self.assertEqual(fleet.writes, [])
+    def enrolled(self):
+        checks = enrol.ruleset(PLAN)["rules"][0]["parameters"]["required_status_checks"]
+        return Fleet(enabled={REPO}, auto_merge={REPO}, rulesets={REPO: self.github_shaped(checks)})
 
-    def test_a_changed_required_check_is_rewritten(self):
-        current = self.github_shaped([{"context": "nixbot/nix-eval", "integration_id": 1}])
-        fleet = Fleet(enabled={"owner/listed"}, auto_merge={"owner/listed"}, rulesets={"owner/listed": current})
-        self.run_with(fleet)
-        self.assertEqual(fleet.writes, [("PUT", "/repos/owner/listed/rulesets/9")])
-
-    def test_a_drifted_ruleset_is_updated_in_place(self):
-        fleet = Fleet(
-            enabled={"owner/listed"},
-            auto_merge={"owner/listed"},
-            rulesets={"owner/listed": {"id": 9, "name": "nixbot", "rules": []}},
-        )
-        self.run_with(fleet)
-        self.assertEqual(fleet.writes, [("PUT", "/repos/owner/listed/rulesets/9")])
-
-    def test_an_enabled_unlisted_repository_is_disabled_and_unruled(self):
-        fleet = Fleet(
-            enabled={"owner/listed", "owner/gone"},
-            auto_merge={"owner/listed"},
-            rulesets={"owner/listed": dict(enrol.ruleset(PLAN, "main"), id=9), "owner/gone": {"id": 9}},
-        )
-        self.run_with(fleet)
+    def test_enrolling_enables_allows_and_rules(self):
+        fleet = Fleet()
+        self.reconciler(fleet).enrol(REPO)
         self.assertEqual(
             fleet.writes,
             [
-                ("POST", "/api/repos/github/owner/gone/disable"),
-                ("DELETE", "/repos/owner/gone/rulesets/9"),
+                ("POST", f"/api/repos/github/{REPO}/enable"),
+                ("PATCH", f"/repos/{REPO}"),
+                ("POST", f"/repos/{REPO}/rulesets"),
             ],
         )
 
-    def test_a_dry_run_writes_nothing(self):
-        fleet = Fleet(enabled={"owner/gone"})
-        changes = self.run_with(fleet, dry_run=True)
+    def test_an_enrolled_repository_as_github_returns_it_gets_no_writes(self):
+        fleet = self.enrolled()
+        self.assertEqual(self.reconciler(fleet).enrol(REPO), [])
         self.assertEqual(fleet.writes, [])
-        self.assertIn("enable in nixbot", changes["owner/listed"])
-        self.assertIn("disable in nixbot", changes["owner/gone"])
+
+    def test_a_changed_required_check_is_rewritten_in_place(self):
+        fleet = self.enrolled()
+        fleet.rulesets[REPO] = self.github_shaped([{"context": "nixbot/nix-eval", "integration_id": 1}])
+        self.reconciler(fleet).enrol(REPO)
+        self.assertEqual(fleet.writes, [("PUT", f"/repos/{REPO}/rulesets/9")])
+
+    def test_withdrawing_removes_the_ruleset_before_disabling(self):
+        fleet = self.enrolled()
+        self.reconciler(fleet).withdraw(REPO)
+        self.assertEqual(
+            fleet.writes,
+            [("DELETE", f"/repos/{REPO}/rulesets/9"), ("POST", f"/api/repos/github/{REPO}/disable")],
+        )
+
+    def test_withdrawing_a_withdrawn_repository_gets_no_writes(self):
+        fleet = Fleet(auto_merge={REPO})
+        self.assertEqual(self.reconciler(fleet).withdraw(REPO), [])
+        self.assertEqual(fleet.writes, [])
+
+    def test_a_dry_run_writes_nothing(self):
+        fleet = Fleet()
+        changes = self.reconciler(fleet, dry_run=True).enrol(REPO)
+        self.assertEqual(fleet.writes, [])
+        self.assertIn("enable in nixbot", changes)
 
 
 if __name__ == "__main__":

@@ -53,21 +53,22 @@ refresh `flake.lock` rather than refuse.
 - **WHEN** nothing is registered and the scheduled run refreshes inputs
 - **THEN** the run completes with only the lock changed
 
-### Requirement: The operator's list is the only enrolment
+### Requirement: One command enrols and withdraws
 
-`ci-enrol` MUST enable each listed repository in nixbot and give it auto-merge and
-the `nixbot` ruleset, MUST disable every other enabled project and remove its
-ruleset, and MUST NOT write where nothing differs.
+`ci-enrol` MUST enable a named repository, or the current checkout's, in nixbot and
+give it auto-merge and the `nixbot` ruleset on its default branch; `--withdraw` MUST
+remove that ruleset before disabling the project; neither MUST write where nothing
+differs.
 
-#### Scenario: A reconciled repository
+#### Scenario: An enrolled repository
 
-- **WHEN** a listed repository is enabled, allows auto-merge and carries the current ruleset
-- **THEN** a run makes no writes
+- **WHEN** a repository is enabled, allows auto-merge and carries the current ruleset
+- **THEN** enrolling it again makes no writes
 
-#### Scenario: A repository leaves the list
+#### Scenario: Withdrawal
 
-- **WHEN** an enabled repository is not listed
-- **THEN** it is disabled and its `nixbot` ruleset removed
+- **WHEN** an enrolled repository is withdrawn
+- **THEN** its `nixbot` ruleset is removed, then it is disabled
 
 ### Requirement: Auto-merge never falls back to merging
 

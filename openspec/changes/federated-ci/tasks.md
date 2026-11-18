@@ -8,7 +8,8 @@
 - [x] 1.4 `flakeModules.ciFederation` and `ci-enrol`
 - [x] 1.5 `templates.ci`; contract doc
 - [x] 1.7 Partition support: the partition's lock refreshes as `ci-inputs`; template partitioned
-- [x] 1.6 Owner-wide cache rules; `ci-enrol` enables and withdraws by the list; publish fails closed
+- [x] 1.6 Owner-wide cache rules; publish fails closed
+- [x] 1.8 `ci-enrol [--withdraw] [REPO ...]`, defaulting to the current checkout; no enrolment list
 
 ## 2. Consumers (each its own change)
 

@@ -1,7 +1,6 @@
-# The federation plane: the instance operator's list of enrolled repositories,
-# reconciled onto nixbot (enabled) and GitHub (auto-merge, the `nixbot` ruleset) by
-# `nix run .#ci-enrol`. Discovery and cache trust are by owner, so the list is the
-# only per-repository decision.
+# The federation plane: the instance's facts that `nix run .#ci-enrol -- [OWNER/REPO]`
+# needs to enrol a repository in nixbot and require its checks on GitHub. Which
+# repositories are enrolled is nixbot's and GitHub's own state, not Nix's.
 #
 # Contract: docs/contracts/federated-ci.md.
 _:
@@ -15,22 +14,6 @@ let
       key = "nix-fleet#flakeModules.ciFederation";
 
       options.ciFederation = {
-        repositories = lib.mkOption {
-          type = lib.types.attrsOf (
-            lib.types.submodule {
-              options.branch = lib.mkOption {
-                type = lib.types.str;
-                default = "main";
-                description = "The repository's retained branch, where its checks are required.";
-              };
-            }
-          );
-          default = { };
-          example = {
-            "owner/repo" = { };
-          };
-          description = "Enrolled repositories, `owner/name`; every other enabled nixbot project is withdrawn.";
-        };
         appId = lib.mkOption {
           type = lib.types.nullOr lib.types.int;
           default = null;
@@ -52,7 +35,7 @@ let
         bypassAdmins = lib.mkOption {
           type = lib.types.bool;
           default = true;
-          description = "Let repository admins push to the retained branch without the checks.";
+          description = "Let repository admins push to the default branch without the checks.";
         };
       };
 
@@ -62,11 +45,7 @@ let
           need = value: option: if value == null then throw "ciFederation: ${option} must be set" else value;
           plan = pkgs.writeText "ci-enrol-plan.json" (
             builtins.toJSON {
-              inherit (cfg)
-                repositories
-                requiredChecks
-                bypassAdmins
-                ;
+              inherit (cfg) requiredChecks bypassAdmins;
               appId = need cfg.appId "appId";
               nixbotUrl = need cfg.nixbotUrl "nixbotUrl";
             }

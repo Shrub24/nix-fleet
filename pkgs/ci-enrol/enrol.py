@@ -1,10 +1,9 @@
-"""Make nixbot and GitHub follow the operator's list of enrolled repositories.
+"""Enrol repositories in the nixbot instance, or withdraw them.
 
-Listed repositories are enabled in nixbot, allow auto-merge, and carry a
-`nixbot` ruleset requiring the instance's checks. Every other enabled project is
-disabled and loses that ruleset, so a stale required check never blocks merges on
-a repository nixbot no longer builds. Every step reads
-before it writes, so a rerun on a reconciled fleet changes nothing.
+Enrolling enables the project in nixbot, allows auto-merge and gives the default
+branch a `nixbot` ruleset requiring the instance's checks. Withdrawing removes
+the ruleset before disabling, so a required check is never left that nothing will
+post. Every step reads before it writes, so a rerun changes nothing.
 """
 
 import json
@@ -52,12 +51,12 @@ def set_enabled(nixbot_url: str, token: str, repository: str, enabled: bool) -> 
     send(f"{nixbot_url.rstrip('/')}/api/repos/github/{repository}/{action}", token, "POST")
 
 
-def ruleset(plan: dict, branch: str) -> dict:
+def ruleset(plan: dict) -> dict:
     return {
         "name": RULESET,
         "target": "branch",
         "enforcement": "active",
-        "conditions": {"ref_name": {"include": [f"refs/heads/{branch}"], "exclude": []}},
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
         # The owner keeps direct pushes; everyone else lands through the checks.
         "bypass_actors": (
             [{"actor_id": ADMIN_ROLE, "actor_type": "RepositoryRole", "bypass_mode": "always"}]
@@ -86,6 +85,7 @@ def ruleset(plan: dict, branch: str) -> dict:
 class Reconciler:
     def __init__(self, plan: dict, github: str, nixbot: str, dry_run: bool):
         self.plan, self.github, self.nixbot, self.dry_run = plan, github, nixbot, dry_run
+        self.enabled = enabled_projects(plan["nixbotUrl"], nixbot)
 
     def write(self, changes: list[str], description: str, url: str, method: str, payload=None) -> None:
         changes.append(description)
@@ -96,9 +96,9 @@ class Reconciler:
         found = [r for r in send(f"{API}/repos/{repository}/rulesets", self.github) if r["name"] == RULESET]
         return found[0] if found else None
 
-    def enrol(self, repository: str, entry: dict, enabled: bool) -> list[str]:
+    def enrol(self, repository: str) -> list[str]:
         changes = []
-        if not enabled:
+        if repository not in self.enabled:
             changes.append("enable in nixbot")
             if not self.dry_run:
                 try:
@@ -108,7 +108,7 @@ class Reconciler:
         repo = send(f"{API}/repos/{repository}", self.github)
         if not repo.get("allow_auto_merge"):
             self.write(changes, "allow auto-merge", f"{API}/repos/{repository}", "PATCH", {"allow_auto_merge": True})
-        wanted = ruleset(self.plan, entry.get("branch", "main"))
+        wanted = ruleset(self.plan)
         existing = self.existing_ruleset(repository)
         if existing is None:
             self.write(changes, "create the nixbot ruleset", f"{API}/repos/{repository}/rulesets", "POST", wanted)
@@ -120,46 +120,50 @@ class Reconciler:
         return changes
 
     def withdraw(self, repository: str) -> list[str]:
-        changes = ["disable in nixbot"]
-        if not self.dry_run:
-            set_enabled(self.plan["nixbotUrl"], self.nixbot, repository, False)
+        changes = []
         existing = self.existing_ruleset(repository)
         if existing is not None:
-            self.write(
-                changes,
-                "remove the nixbot ruleset",
-                f"{API}/repos/{repository}/rulesets/{existing['id']}",
-                "DELETE",
-            )
+            url = f"{API}/repos/{repository}/rulesets/{existing['id']}"
+            self.write(changes, "remove the nixbot ruleset", url, "DELETE")
+        if repository in self.enabled:
+            changes.append("disable in nixbot")
+            if not self.dry_run:
+                set_enabled(self.plan["nixbotUrl"], self.nixbot, repository, False)
         return changes
 
-    def run(self) -> dict[str, list[str]]:
-        enabled = enabled_projects(self.plan["nixbotUrl"], self.nixbot)
-        listed = self.plan["repositories"]
-        return {
-            repository: (
-                self.enrol(repository, listed[repository], repository in enabled)
-                if repository in listed
-                else self.withdraw(repository)
-            )
-            for repository in sorted(set(listed) | enabled)
-        }
+
+def current_repository() -> str:
+    """The GitHub repository of the working directory's checkout."""
+    try:
+        return subprocess.run(
+            ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except subprocess.CalledProcessError as error:
+        raise Failed(f"no repository given and none found here: {error.stderr.strip()}") from error
+
+
+USAGE = "usage: ci-enrol [--dry-run] [--withdraw] [OWNER/REPO ...]"
 
 
 def main(argv: list[str]) -> int:
-    dry_run = "--dry-run" in argv
-    argv = [argument for argument in argv if argument != "--dry-run"]
-    if len(argv) != 2:
-        print("usage: ci-enrol [--dry-run] PLAN", file=sys.stderr)
+    flags = {argument for argument in argv[1:] if argument.startswith("-")}
+    repositories = [argument for argument in argv[1:] if not argument.startswith("-")]
+    if flags - {"--dry-run", "--withdraw"}:
+        print(USAGE, file=sys.stderr)
         return 2
+    dry_run, withdraw = "--dry-run" in flags, "--withdraw" in flags
     try:
-        with open(argv[1], encoding="utf-8") as handle:
+        with open(os.environ["CI_ENROL_PLAN"], encoding="utf-8") as handle:
             plan = json.load(handle)
         github = os.environ.get("GH_TOKEN") or subprocess.run(
             ["gh", "auth", "token"], check=True, capture_output=True, text=True
         ).stdout.strip()
-        nixbot = os.environ["NIXBOT_TOKEN"]
-        for repository, changes in Reconciler(plan, github, nixbot, dry_run).run().items():
+        reconciler = Reconciler(plan, github, os.environ["NIXBOT_TOKEN"], dry_run)
+        for repository in repositories or [current_repository()]:
+            changes = reconciler.withdraw(repository) if withdraw else reconciler.enrol(repository)
             summary = ", ".join(changes) or "up to date"
             print(f"{repository}: {summary}{' (dry run)' if dry_run and changes else ''}")
     except KeyError as error:

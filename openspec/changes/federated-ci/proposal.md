@@ -18,9 +18,8 @@ operator's side derived from one list.
 - **Updates**: `packageUpdates.commands` and `packageUpdates.lockfiles` (cargo,
   bun, npm) run in the same transaction as packages; an empty registry refreshes
   `flake.lock` instead of refusing.
-- **`flakeModules.ciFederation`** and `ci-enrol`: the operator's repository list
-  reconciled on the forge (App installation, auto-merge, `nixbot` ruleset, project
-  enablement).
+- **`flakeModules.ciFederation`** and `ci-enrol`: enrol or withdraw a repository
+  (project enablement, auto-merge, `nixbot` ruleset) without an instance deploy.
 - **`services.niks3-cache`**: a release rule per repository beside the retention
   rule; `gc.olderThan` becomes an option.
 - **`templates.ci`**: a new repository's starting flake, CI inputs in a flake-parts

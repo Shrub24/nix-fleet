@@ -129,13 +129,12 @@ repository's lock:
 { outputs = _: { lib.instance = { system = "x86_64-linux"; cacheUrl = "…"; writeEndpoint = "…"; }; }; }
 ```
 
-Discovery and cache trust are by owner; the list of enrolled repositories,
-`{ "<owner>/<name>" = { branch ? "main"; }; }`, is the only per-repository decision:
+Discovery and cache trust are by owner, so nothing about a repository's enrolment
+is instance configuration:
 
 ```nix
 imports = [ inputs.nix-fleet.flakeModules.ciFederation ];
 ciFederation = {
-  repositories = import ./policy/ci-repositories.nix;
   appId = …;      # the nixbot App: the integration required checks come from
   nixbotUrl = "…";
 };
@@ -161,28 +160,35 @@ and signed by the cache, and nothing resolves a pin by name. Each entry of
 `<name>-release-*`. Overlapping per-repository namespaces, a missing issuer or a
 hand-written `oidc.providers.nixbot` fail evaluation.
 
-`nix run .#ci-enrol` makes nixbot and GitHub follow the list:
+Enrolment is the state nixbot and GitHub already hold, changed by one command from
+the operator repository, so enrolling a repository needs no deploy:
 
-| Repository             | nixbot   | GitHub                                                                |
-| ---------------------- | -------- | --------------------------------------------------------------------- |
-| listed                 | enabled  | auto-merge allowed; `nixbot` ruleset requiring the checks on `branch` |
-| enabled but not listed | disabled | `nixbot` ruleset removed                                              |
+```console
+nix run .#ci-enrol -- [--dry-run] [--withdraw] [OWNER/REPO ...]
+```
 
-It reads before it writes, so a rerun changes nothing; `--dry-run` prints the
-changes only. It needs `GH_TOKEN` (or `gh auth token`) with admin on the
-repositories and `NIXBOT_TOKEN`, an instance admin token from `/settings`. Enable
-and disable through `ci-enrol` only: nixbot lists only enabled projects, so a
-project disabled in the UI keeps its ruleset.
+| Command      | nixbot   | GitHub                                                                          |
+| ------------ | -------- | ------------------------------------------------------------------------------- |
+| `ci-enrol`   | enabled  | auto-merge allowed; `nixbot` ruleset requiring the checks on the default branch |
+| `--withdraw` | disabled | `nixbot` ruleset removed first                                                  |
+
+With no repository it acts on the current checkout's GitHub repository. It reads
+before it writes, so a rerun changes nothing; `--dry-run` prints the changes only.
+It needs `GH_TOKEN` (or `gh auth token`) with admin on the repository and
+`NIXBOT_TOKEN`, an instance admin token from `/settings`. Disable through
+`--withdraw`, not the UI toggle: the toggle leaves the ruleset requiring checks
+nothing will post.
 
 ## Enrolling a repository
 
 1. Repository: adopt the interface (below) and push it.
-2. Operator: add it to the list and run `nix run .#ci-enrol`. Enrolling before
-   adopting makes the ruleset require checks the repository does not yet produce.
+2. Operator: `nix run <operator repository>#ci-enrol -- <owner>/<name>`. Enrolling
+   before adopting makes the ruleset require checks the repository does not yet
+   produce.
 3. Check: after the next default-branch push, both `<name>-main-<system>` pins
    point at the current `packages.<system>.cache-root`.
 
-Removing a repository from the list and rerunning `ci-enrol` withdraws it.
+`ci-enrol --withdraw <owner>/<name>` withdraws it.
 
 ### A new repository
 

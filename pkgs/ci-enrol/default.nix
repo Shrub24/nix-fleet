@@ -1,4 +1,4 @@
-# Reconciles enrolled repositories' forge side; flakeModules.ciFederation bakes the plan.
+# Enrols repositories in a nixbot instance; flakeModules.ciFederation bakes the plan.
 {
   writers,
   writeShellApplication,
@@ -14,6 +14,6 @@ writeShellApplication {
   name = "ci-enrol";
   runtimeInputs = [ gh ];
   text = ''
-    exec ${enrol} "$@" ${plan}
+    CI_ENROL_PLAN=${plan} exec ${enrol} "$@"
   '';
 }
