@@ -1,0 +1,28 @@
+{
+  "nodes": {
+    "ci-instance": {
+      "locked": {
+        "dir": "ci",
+        "lastModified": 1794974817,
+        "narHash": "sha256-niB52mwo8pHs0G5Bc+XaRmawm2QovrNJ9f1KUON3Taw=",
+        "owner": "Shrub24",
+        "repo": "nix-homelab",
+        "rev": "7337b800d5938ac736810a03fe3f04ffec6db9dc",
+        "type": "github"
+      },
+      "original": {
+        "dir": "ci",
+        "owner": "Shrub24",
+        "repo": "nix-homelab",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "ci-instance": "ci-instance"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
