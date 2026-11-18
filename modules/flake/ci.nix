@@ -265,10 +265,14 @@ let
           };
           when = lib.mkOption {
             type = lib.types.attrsOf lib.types.raw;
+            # After nix-fleet's own 03:43 run, so a consumer picks up its merged lock.
             default = {
               minute = 43;
-              hour = [ 4 ];
-              dayOfWeek = [ "Mon" ];
+              hour = [ 7 ];
+              dayOfWeek = [
+                "Mon"
+                "Thu"
+              ];
             };
             description = "nixbot `onSchedule` `when` for the update run.";
           };

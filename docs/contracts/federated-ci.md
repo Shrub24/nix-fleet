@@ -72,7 +72,7 @@ on nix-fleet (nix-homelab, nix-dotfiles) imports the module directly.
 | `ci.retention.generations`                       | `0`                                      | earlier roots kept as `<pin>-1` … `<pin>-<n>`                            |
 | `ci.retention.releases`                          | `true`                                   | pin each pushed tag's roots                                              |
 | `ci.updates.enable`                              | `true`                                   | the scheduled update transaction                                         |
-| `ci.updates.when`                                | Monday 04:43                             | nixbot `onSchedule` `when`                                               |
+| `ci.updates.when`                                | Monday and Thursday 07:43 UTC            | nixbot `onSchedule` `when`                                               |
 | `ci.updates.branch`, `.title`, `.autoMerge`      | `automation/package-updates`, …, `false` | the proposal                                                             |
 | `ci.effects.onPush.<name>`, `.onSchedule.<name>` | the fleet's entries                      | effects, each a function returning an effect (or a schedule job) or null |
 

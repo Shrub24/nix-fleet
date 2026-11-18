@@ -2,9 +2,13 @@
 _: {
   ci = {
     retention.generations = 3;
-    updates.when = {
-      minute = 43;
-      hour = [ 4 ];
+    # Daily, ahead of the consumers: this lock is the shared inputs they follow.
+    updates = {
+      when = {
+        minute = 43;
+        hour = [ 3 ];
+      };
+      autoMerge = true;
     };
   };
 }
