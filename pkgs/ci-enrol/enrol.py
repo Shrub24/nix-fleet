@@ -27,6 +27,8 @@ class Failed(Exception):
 def send(url: str, token: str, method: str = "GET", payload: dict | None = None):
     data = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(url, data=data, method=method)
+    # Cloudflare's bot rules refuse urllib's default agent (error 1010) in front of nixbot.
+    request.add_header("User-Agent", "nix-fleet-ci-enrol")
     request.add_header("Authorization", f"Bearer {token}")
     request.add_header("Accept", "application/vnd.github+json")
     if data is not None:
