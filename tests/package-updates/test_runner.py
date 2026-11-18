@@ -31,6 +31,7 @@ printf '%s\\n' "$*" >> "$FIXTURE_CALLS"
 name="${{!#}}"
 printf '%s\\n' "$name" >> "$FIXTURE_EDITS"
 printf 'target=%s\\n' "${{BIFROST_UPDATE_VERSION:-}}" >> "$FIXTURE_ENV"
+printf '%s' "${{NIX_CONFIG:-}}" > "$FIXTURE_NIX_CONFIG"
 if [ "$name" = "${{FIXTURE_FAIL:-}}" ]; then
   echo "fixture: $name refused" >&2
   exit 7
@@ -57,6 +58,7 @@ class BatchTestCase(unittest.TestCase):
         self.calls = self.root / "calls"
         self.edits = self.root / "edits"
         self.env_file = self.root / "env"
+        self.nix_config = self.root / "nix-config"
 
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
@@ -71,6 +73,7 @@ class BatchTestCase(unittest.TestCase):
             FIXTURE_CALLS=str(self.calls),
             FIXTURE_EDITS=str(self.edits),
             FIXTURE_ENV=str(self.env_file),
+            FIXTURE_NIX_CONFIG=str(self.nix_config),
         )
 
     def restore_environ(self):
@@ -267,6 +270,18 @@ class BatchTestCase(unittest.TestCase):
         os.environ["BIFROST_UPDATE_VERSION"] = "2.2.6"
         self.assertEqual(cli.main([]), 0)
         self.assertEqual(self.env_file.read_text().splitlines(), ["target=2.2.6"])
+
+    def test_an_ambient_nix_config_survives_the_feature_merge(self):
+        # An effect sandbox carries no nix.conf; the batch must supply the
+        # features its nix calls and nix-update's internals require, without
+        # dropping configuration the caller already set.
+        self.register(["alpha"])
+        os.environ["NIX_CONFIG"] = "allow-import-from-derivation = false"
+        self.addCleanup(os.environ.pop, "NIX_CONFIG", None)
+        self.assertEqual(cli.main([]), 0)
+        lines = self.nix_config.read_text().splitlines()
+        self.assertEqual(lines[0], "experimental-features = nix-command flakes")
+        self.assertIn("allow-import-from-derivation = false", lines)
 
     def test_empty_registry_is_refused_before_any_update(self):
         self.register([])

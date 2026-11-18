@@ -258,6 +258,15 @@ def update(
     deferred_inputs: dict[str, str] | None = None,
     commands: dict[str, tuple[str, tuple[str, ...]]] | None = None,
 ) -> int:
+    # The batch's own nix calls (lock refresh, version evals) and the updaters
+    # it spawns need features the ambient environment may not carry: an effect
+    # sandbox has no nix.conf, and nix-update offers no flag for its internal
+    # nix-instantiate. A caller's NIX_CONFIG still applies, later lines win.
+    previous = os.environ.get("NIX_CONFIG")
+    os.environ["NIX_CONFIG"] = "experimental-features = nix-command flakes" + (
+        f"\n{previous}" if previous else ""
+    )
+
     """Refresh the lock when asked, then run selected updaters in jj workspaces.
 
     ``inputs`` None refreshes nothing; a list refreshes exactly those names
