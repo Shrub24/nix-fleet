@@ -128,12 +128,14 @@ let
             # One producer: an overlapping run would refresh from a moved base.
             lock = "package-updates";
             secretsMap.token.type = "GitToken";
+            # Entries must be derivations: stdenv sources any regular file it
+            # finds among an input's paths as a setup hook. The app is reached
+            # by its absolute program path in the script, which carries it in.
             inputs = [
               pkgs.git
               pkgs.jq
               pkgs.jujutsu
               cfg.nixPackage
-              perSystem.apps.update-packages.program
               publish
             ];
             passthru = { inherit publish; };
