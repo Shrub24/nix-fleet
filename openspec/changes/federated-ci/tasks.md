@@ -7,6 +7,7 @@
 - [x] 1.3 `services.niks3-cache`: release rules, `gc.olderThan`
 - [x] 1.4 `flakeModules.ciFederation` and `ci-enrol`
 - [x] 1.5 `templates.ci`; contract doc
+- [x] 1.7 Partition support: the partition's lock refreshes as `ci-inputs`; template partitioned
 - [x] 1.6 Owner-wide cache rules; `ci-enrol` enables and withdraws by the list; publish fails closed
 
 ## 2. Consumers (each its own change)

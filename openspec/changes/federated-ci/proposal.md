@@ -23,7 +23,8 @@ operator's side derived from one list.
   enablement).
 - **`services.niks3-cache`**: a release rule per repository beside the retention
   rule; `gc.olderThan` becomes an option.
-- **`templates.ci`**: a new repository's starting flake.
+- **`templates.ci`**: a new repository's starting flake, CI inputs in a flake-parts
+  partition so consumers never lock them.
 - **No `nixbot.toml`**: nixbot's defaults are the policy.
 
 ## Impact

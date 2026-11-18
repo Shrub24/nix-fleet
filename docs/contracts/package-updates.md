@@ -61,11 +61,23 @@ unknown with the reason, never guessed. Checking never edits files.
 ## Selection and refusal
 
 `perSystem.packageUpdates.packages` is the typed registry of owned output
-names; it defaults to empty. The app refuses, with a named `package-updates:`
-error and before any updater runs, when the effective selection is empty,
-duplicated, unregistered, or registered but absent from that system's
-`packages`. Valid packages run in lexical order. No arguments selects the
-whole registry.
+names; it defaults to empty. Beside it, `perSystem.packageUpdates.commands.NAME`
+registers an update that is not a nix-update run: `program` runs from the
+checkout root and may change only its non-empty `paths`.
+`perSystem.packageUpdates.lockfiles.NAME = { ecosystem; directory; }` registers
+a command per ecosystem lockfile: `cargo update` (`Cargo.lock`), `bun update`
+(`bun.lock`, `package.json`) or `npm update --package-lock-only`
+(`package-lock.json`, `package.json`), run in `directory`. A lockfile refresh
+builds only if the package reads the lockfile; a vendored dependency hash needs a
+command that recomputes it. A name registered as both a package and a command is
+refused.
+
+The app refuses, with a named `package-updates:` error and before any updater
+runs, when the effective selection is duplicated, unregistered, or registered but
+absent from that system's `packages`, or when nothing is registered and no lock
+refresh was requested. With nothing registered, `--refresh-inputs` refreshes
+`flake.lock` alone. Packages and commands run in lexical order. No arguments
+selects the whole registry.
 
 A package family with shared pins has exactly one registered owner. Derived
 outputs (for example a plugin built from the same upstream revision) inherit

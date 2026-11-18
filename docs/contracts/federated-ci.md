@@ -42,12 +42,21 @@ imports = [ inputs.nix-fleet.flakeModules.ci ];
 ci.instance = inputs.ci-instance.lib.instance;
 ```
 
-| Output                          | From                                                           |
-| ------------------------------- | -------------------------------------------------------------- |
-| `packages.<system>.cache-root`  | every other package (`flakeModules.cacheRoot`)                 |
-| `checks.<system>.cache-root`    | the same root, so a pull request builds what the merge retains |
-| `herculesCI`                    | `ci.effects.*`                                                 |
-| `apps.<system>.update-packages` | `packageUpdates.*` (`flakeModules.packageUpdates`)             |
+A repository other flakes consume keeps `nix-fleet` and the descriptor out of its
+public lock by evaluating this in a flake-parts partition (`templates.ci` does):
+`partitions.ci.extraInputsFlake = ./ci` names an inputs-only `ci/flake.nix` with its
+own `ci/flake.lock`, and `partitionedAttrs` routes `checks` and `herculesCI` to it.
+The partition re-evaluates the whole flake, so it sees every package; consumers
+evaluate only the public outputs and never fetch the CI inputs. `cache-root` and the
+update app then exist only inside the partition. A repository that already depends
+on nix-fleet (nix-homelab, nix-dotfiles) imports the module directly.
+
+| Output                          | From                                                                                   |
+| ------------------------------- | -------------------------------------------------------------------------------------- |
+| `packages.<system>.cache-root`  | every other package (`flakeModules.cacheRoot`)                                         |
+| `checks.<system>.cache-root`    | the same root, so a pull request builds what the merge retains                         |
+| `herculesCI`                    | `ci.effects.*`                                                                         |
+| `apps.<system>.update-packages` | `packageUpdates.*` (`flakeModules.packageUpdates`); the update effect runs it directly |
 
 | Option                                           | Default                                  | Meaning                                                                      |
 | ------------------------------------------------ | ---------------------------------------- | ---------------------------------------------------------------------------- |
@@ -96,6 +105,7 @@ unchanged tree publishes nothing.
 | Registration                                               | Updates                                                                         |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | none                                                       | `flake.lock` only                                                               |
+| (automatic, inside a partition)                            | the partition's lock, as the `ci-inputs` update                                 |
 | `packageUpdates.packages = [ "<package>" ]`                | the package through nix-update and its `passthru.updateScript`                  |
 | `packageUpdates.lockfiles.<n> = { ecosystem; directory; }` | `cargo update`, `bun update` or `npm update --package-lock-only` in `directory` |
 | `packageUpdates.commands.<n> = { program; paths; }`        | anything else: `program` runs at the root and may change only `paths`           |
@@ -180,19 +190,22 @@ Removing a repository from the list and rerunning `ci-enrol` withdraws it.
 nix flake init -t github:Shrub24/nix-fleet#ci
 ```
 
-Replace the `ci-instance` placeholder with the operator's descriptor and
-`packages.default` with the project.
+Replace the `ci-instance` placeholder in `ci/flake.nix` with the operator's
+descriptor, `packages.default` with the project, and lock both flakes
+(`nix flake lock --flake ./ci`, then `nix flake lock`).
 
 ### An existing repository
 
-Convert the flake to flake-parts, add the template's inputs and imports, and move
-packages and checks under `perSystem`. Then:
+Convert the flake to flake-parts, add the template's `ci/` flake, partition and
+imports, and move packages and checks under `perSystem`. Then:
 
 - Build from lockfiles, not vendored hashes, and register each lockfile.
 - Keep `checks` to what a pull request should pay for on every push; heavy suites
   (VM tests, every-architecture fixtures) belong behind a smaller `checks` set or in
   a separate attribute set nixbot does not build.
 - Remove any `herculesCI` and any `nixbot.toml` that only restates the defaults.
+- Don't partition `apps`: a partitioned attribute is replaced wholesale, and running
+  a public app would then fetch the CI inputs.
 
 To run the update now rather than on its schedule:
 

@@ -10,9 +10,10 @@ let
   fleetModules = config.flake.flakeModules;
 
   ciModule =
-    {
+    args@{
       config,
       lib,
+      self,
       withSystem,
       ...
     }:
@@ -21,6 +22,21 @@ let
       inherit (cfg) retention;
       inherit (cfg) updates;
       need = value: option: if value == null then throw "ci: ${option} must be set" else value;
+
+      # The repository-relative directory of the partition this module is evaluated in, if any.
+      partitionLock =
+        let
+          # flake-parts passes it as a special argument, so only `args` sees it.
+          stack = args.partitionStack or [ ];
+          source = builtins.tryEval config.partitions.${lib.last stack}.extraInputsFlake;
+          root = "${builtins.unsafeDiscardStringContext self.outPath}/";
+        in
+        if stack == [ ] || !source.success || builtins.typeOf source.value != "path" then
+          null
+        else if lib.hasPrefix root (toString source.value) then
+          lib.removePrefix root (toString source.value)
+        else
+          throw "ci: partition ${lib.last stack} reads its inputs from outside this repository";
       instance = need cfg.instance "ci.instance";
 
       effectType = lib.types.attrsOf (lib.types.functionTo (lib.types.nullOr lib.types.raw));
@@ -130,7 +146,7 @@ let
               [ -d .jj ] || jj git init --colocate >/dev/null
 
               status=0
-              nix run .#update-packages -- --refresh-inputs --json "$report" --markdown "$body" || status=$?
+              ${perSystem.apps.update-packages.program} --refresh-inputs --json "$report" --markdown "$body" || status=$?
               if [ ! -f "$report" ]; then
                 echo "package-updates: the batch wrote no report (exit $status)" >&2
                 exit 1
@@ -318,9 +334,18 @@ let
 
         # Pull requests build the root retention pins, so the merge reuses it.
         perSystem =
-          { config, ... }:
+          { config, pkgs, ... }:
           {
             checks = lib.mkIf retention.enable { cache-root = config.packages.cache-root; };
+            # Inside a partition the CI inputs have their own lock; refresh it with the rest.
+            packageUpdates.commands = lib.mkIf (partitionLock != null) {
+              ci-inputs = {
+                program = toString (
+                  pkgs.writeShellScript "update-ci-inputs" "exec nix flake update --flake ./${partitionLock}"
+                );
+                paths = [ "${partitionLock}/flake.lock" ];
+              };
+            };
           };
 
         flake.herculesCI =

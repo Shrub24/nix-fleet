@@ -32,6 +32,8 @@ in
             { pkgs, ... }:
             {
               packages.alpha = pkgs.runCommand "alpha" { } "touch $out";
+              # The batch is the runner's own contract; the effect is checked around it.
+              apps.update-packages.program = lib.mkForce (toString batchStub);
             };
         }).config.flake;
       repo = {
@@ -59,6 +61,19 @@ in
       script =
         name: effect: pkgs.writeText name (builtins.unsafeDiscardStringContext effect.effectScript);
       root = s: builtins.unsafeDiscardStringContext (toString probe.packages.${s}.cache-root);
+      batchStub = pkgs.writeShellScript "update-packages" ''
+        set -euo pipefail
+        [[ -z "''${HERCULES_CI_SECRETS_JSON:-}" ]] || { echo 'the batch inherited the secret file' >&2; exit 7; }
+        printf 'batch\n' >> "$CALLS"
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --json) cp "$REPORT_SRC" "$2"; shift 2 ;;
+            --markdown) : > "$2"; shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        exit "''${BATCH_EXIT:-0}"
+      '';
       niks3Stub = pkgs.writeShellScript "niks3" ''
         set -euo pipefail
         case "$1 $2" in
@@ -144,23 +159,10 @@ in
               pkgs.jq
             ];
             effectScript = script "package-updates" update;
+            inherit batchStub; # the script's reference to it lost its context
           }
           ''
             mkdir -p bin checkout
-            cat > bin/nix <<'SH'
-            #!${pkgs.runtimeShell}
-            set -euo pipefail
-            [[ -z "''${HERCULES_CI_SECRETS_JSON:-}" ]] || { echo 'the batch inherited the secret file' >&2; exit 7; }
-            printf 'batch\n' >> "$CALLS"
-            while [[ $# -gt 0 ]]; do
-              case "$1" in
-                --json) cp "$REPORT_SRC" "$2"; shift 2 ;;
-                --markdown) : > "$2"; shift 2 ;;
-                *) shift ;;
-              esac
-            done
-            exit "''${BATCH_EXIT:-0}"
-            SH
             cat > bin/jj <<'SH'
             #!${pkgs.runtimeShell}
             printf 'jj %s\n' "$*" >> "$CALLS"
