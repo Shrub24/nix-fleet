@@ -183,7 +183,10 @@ let
               fi
 
               jj describe -m ${lib.escapeShellArg updates.title} -r @
-              jj bookmark set ${lib.escapeShellArg updates.branch} -r @
+              # A previous proposal may still hold the branch; the fresh clone
+              # leaves it untracked, and jj refuses to push over an untracked one.
+              jj bookmark track ${lib.escapeShellArg "${updates.branch}@origin"}
+              jj bookmark set ${lib.escapeShellArg updates.branch} -r @ --allow-backwards
               jj git push --bookmark ${lib.escapeShellArg updates.branch}
 
               TOKEN="$token" ${lib.getExe publish} ${lib.optionalString updates.autoMerge "--auto-merge"} \

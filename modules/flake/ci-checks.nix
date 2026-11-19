@@ -172,10 +172,19 @@ in
             [[ -n "''${JJ_USER:-}" && -n "''${JJ_EMAIL:-}" ]] \
               || { echo "jj: no author identity in the environment" >&2; exit 1; }
             printf 'jj %s\n' "$*" >> "$CALLS"
+            # Like jj over a fresh clone: an existing remote branch stays
+            # untracked, and pushing over an untracked one is refused.
+            case "$1 $2" in
+              "bookmark track") touch "$PWD/tracked" ;;
+              "git push")
+                [[ -z "''${STALE_BRANCH:-}" || -e "$PWD/tracked" ]] \
+                  || { echo "Error: Non-tracking remote bookmark exists" >&2; exit 1; }
+                echo pushed >> "$CALLS" ;;
+            esac
             SH
             cat > bin/git <<'SH'
             #!${pkgs.runtimeShell}
-            :
+            [[ "$*" != "status --porcelain" || -z "''${DIRTY:-}" ]] || echo ' M flake.lock'
             SH
             chmod +x bin/*
             export PATH="$PWD/bin:$PATH" CALLS="$PWD/calls"
@@ -195,6 +204,11 @@ in
             if grep -q push "$CALLS"; then
               echo 'an unchanged tree must leave the branch alone' >&2; exit 1
             fi
+
+            # The previous proposal's branch is still open: publishing must replace it.
+            : > "$CALLS"
+            DIRTY=1 STALE_BRANCH=1 REPORT_SRC=$PWD/complete.json bash "$effectScript" 2>/dev/null || true
+            grep -qx pushed "$CALLS" || { echo 'an existing update branch blocked the push' >&2; exit 1; }
             touch "$out"
           '';
 
