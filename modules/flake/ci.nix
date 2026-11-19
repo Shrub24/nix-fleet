@@ -150,6 +150,13 @@ let
               token=$(jq -r '.token.data.token' "$HERCULES_CI_SECRETS_JSON")
               unset HERCULES_CI_SECRETS_JSON
 
+              # The sandbox carries no jj user config, so the transaction's
+              # commits and the publish push need an author from the environment.
+              # The sandbox carries no jj user config, so the transaction's
+              # commits and the publish push need an author from the environment.
+              export JJ_USER=${lib.escapeShellArg updates.identity.name}
+              export JJ_EMAIL=${lib.escapeShellArg updates.identity.email}
+
               # The batch stages through a jj workspace; the clone starts as plain git.
               [ -d .jj ] || jj git init --colocate >/dev/null
 
@@ -292,6 +299,18 @@ let
             type = lib.types.bool;
             default = false;
             description = "Request auto-merge on the update pull request.";
+          };
+          identity = {
+            name = lib.mkOption {
+              type = lib.types.str;
+              default = "nixbot";
+              description = "Author name the effect's commits carry.";
+            };
+            email = lib.mkOption {
+              type = lib.types.str;
+              default = "nixbot@users.noreply.github.com";
+              description = "Author email the effect's commits carry.";
+            };
           };
         };
 

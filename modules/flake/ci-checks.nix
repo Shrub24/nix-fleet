@@ -167,6 +167,10 @@ in
             mkdir -p bin checkout
             cat > bin/jj <<'SH'
             #!${pkgs.runtimeShell}
+            # Like jj in the effect sandbox: with no author in the environment
+            # it will not create commits or push them.
+            [[ -n "''${JJ_USER:-}" && -n "''${JJ_EMAIL:-}" ]] \
+              || { echo "jj: no author identity in the environment" >&2; exit 1; }
             printf 'jj %s\n' "$*" >> "$CALLS"
             SH
             cat > bin/git <<'SH'
