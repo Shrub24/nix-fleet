@@ -1,4 +1,6 @@
-# federated-ci
+## Purpose
+
+The interface a repository implements to be built, cached, retained and kept up to date by the fleet's nixbot instance, and the operator command that enrols it.
 
 ## ADDED Requirements
 

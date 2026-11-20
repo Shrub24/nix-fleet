@@ -4,6 +4,12 @@
 
 A batch SHALL process packages in deterministic order, staging each candidate against the caller's current working-copy change and earlier successes. A failed candidate SHALL be reported and discarded while later packages continue. The batch SHALL exit nonzero if any package fails. It SHALL preserve caller edits outside successful declared write sets and SHALL NOT create user commits, move bookmarks, merge, deploy, publish, or rewrite caller commits.
 
+#### Scenario: Failure cannot become a successful partial batch
+
+- **WHEN** the second updater fails after the first succeeds
+- **THEN** the batch identifies the second package and exits nonzero
+- **AND** the first package's changes remain applied
+
 #### Scenario: Failed package is discarded and later packages continue
 
 - **WHEN** an updater fails after writing candidate files

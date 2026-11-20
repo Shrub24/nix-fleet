@@ -15,5 +15,6 @@
 
 - [ ] 2.1 nix-homelab: `flakeModules.ci`, service derived from the instance facts, first
       `ci-enrol`; observe a main cycle, a tag release and a scheduled update
+      (open at archive: main cycle and scheduled update observed; the tag release is not yet)
 - [x] 2.2 nix-fleet adopts the interface (`modules/flake/ci-adoption.nix`); its legacy Actions stack is wiped in the same change
-- [ ] 2.3 Per repository after its first observed cycle: drop its Actions rules
+- [x] 2.3 Per repository after its first observed cycle: drop its Actions rules (homelab #99 removed the `github` provider and every Actions rule)

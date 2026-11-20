@@ -3,7 +3,7 @@
 ## 1. Write-set contract and package registration
 
 - [x] 1.1 Add an optional write-set to package registration with package-local defaults; verify typed module evaluation covers default and explicit shared-path declarations and rejects invalid paths.
-- [ ] 1.2 Trace Bifrost's updater writes for a recorded target and declare the narrow effective set (or restructure duplicated configuration to derive from the package source); verify a real staged diff is wholly inside the declared set.
+- [ ] 1.2 Trace Bifrost's updater writes for a recorded target and declare the narrow effective set (or restructure duplicated configuration to derive from the package source); verify a real staged diff is wholly inside the declared set. (Open at archive: needs a real Bifrost target, blocked on go ≥ 1.27.4 in nixpkgs.)
 - [x] 1.3 Document package-local ownership, explicit shared exceptions with rationale, and the limits of repository-file rollback in `docs/contracts/package-updates.md`; verify examples match the registration interface.
 
 ## 2. Isolated per-package update transactions
@@ -17,5 +17,5 @@
 ## 3. Integration and acceptance
 
 - [x] 3.1 Run formatting, focused package-update runner/consumer checks, `nix flake check`, and `nix flake check --no-build --all-systems`; record results and verify no check or output is dropped.
-- [ ] 3.2 Run the Bifrost updater in an isolated checkout for a recorded target and repeat for idempotence; verify success retains only declared changes and an induced mid-update failure leaves no partial repository changes.
+- [ ] 3.2 Run the Bifrost updater in an isolated checkout for a recorded target and repeat for idempotence; verify success retains only declared changes and an induced mid-update failure leaves no partial repository changes. (Open at archive: needs a real Bifrost target, blocked on go ≥ 1.27.4 in nixpkgs.)
 - [x] 3.3 Review the final diff and strict OpenSpec validation; verify no automatic jj commit/reset/publish behavior and no claim of rollback for external side effects.

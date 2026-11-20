@@ -1,3 +1,7 @@
+## Purpose
+
+One shared update engine every fleet repository uses to refresh the packages it owns, with explicit ownership, per-package release policy and transactional staging.
+
 ## ADDED Requirements
 
 ### Requirement: Shared package-update entry point
