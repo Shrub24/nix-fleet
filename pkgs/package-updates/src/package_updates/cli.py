@@ -13,7 +13,7 @@ from .transaction import TransactionError
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="update-packages",
+        prog="update-all",
         description="Update this repository's registered package outputs, optionally refreshing flake inputs first.",
     )
     parser.add_argument(
@@ -28,12 +28,12 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         metavar="INPUT",
-        help="refresh this flake input before the packages (repeatable; overrides deferral)",
+        help="move this flake input before the packages (repeatable; moves a fixed input too)",
     )
     parser.add_argument(
         "--refresh-inputs",
         action="store_true",
-        help="refresh every flake input not deferred before the packages (the producer run)",
+        help="move every flake input by its version policy before the packages (the scheduled run)",
     )
     parser.add_argument(
         "--json",
@@ -68,8 +68,9 @@ def main(argv: list[str] | None = None) -> int:
             write_sets=registry.write_sets,
             package_paths=registry.package_paths,
             inputs=lock_refresh(args.inputs, args.refresh_inputs),
-            deferred_inputs=registry.deferred_inputs,
+            input_overrides=registry.input_overrides,
             commands=registry.commands,
+            write_flake=registry.write_flake,
         )
     except (UpdateError, TransactionError, OSError) as error:
         # Nothing was proposed and nothing can be. A run that completed with

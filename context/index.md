@@ -60,7 +60,7 @@
 
 ## P
 
-- [package-updates.md](package-updates.md) — update reporting and lock ownership, refresh pull-request prerequisites, and why package staging bundles jj
+- [package-updates.md](package-updates.md) — update reporting and lock ownership, refresh pull-request prerequisites, why package staging bundles jj, the one CI namespace, input version policy and the patched flake-edit
 
 ## Q
 

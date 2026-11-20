@@ -59,7 +59,7 @@ class Entry:
 
 @dataclass(frozen=True)
 class InputEntry:
-    """One flake input whose locked revision moved in this refresh."""
+    """One flake input that moved: its locked revision, or its release tag."""
 
     name: str
     before: str
@@ -67,6 +67,7 @@ class InputEntry:
     date: str
     source: str
     compare: str | None
+    release: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,13 +75,15 @@ class Report:
     """The batch's entries in selection order, for the evaluated system.
 
     ``inputs`` lists only the flake inputs that moved; ``input_failure`` names
-    the refresh that did not complete, or is None.
+    the refresh that did not complete, or is None; ``failed_inputs`` pairs each
+    input that could not move with its reason.
     """
 
     system: str
     entries: tuple[Entry, ...]
     inputs: tuple[InputEntry, ...] = ()
     input_failure: str | None = None
+    failed_inputs: tuple[tuple[str, str], ...] = ()
     aborted: bool = False
 
     @property
@@ -88,7 +91,8 @@ class Report:
         """Whether the batch is proposable, proposable with failures, or not at all."""
         if self.aborted:
             return ABORTED
-        return PARTIAL if self.failed or self.input_failure is not None else COMPLETE
+        failures = self.failed or self.failed_inputs or self.input_failure is not None
+        return PARTIAL if failures else COMPLETE
 
     @property
     def updated(self) -> list[Entry]:
@@ -119,10 +123,12 @@ class Report:
                     "date": entry.date,
                     "source": entry.source,
                     "compare": entry.compare,
+                    "release": entry.release,
                 }
                 for entry in self.inputs
             ],
             "inputFailure": self.input_failure,
+            "failedInputs": [{"name": name, "reason": reason} for name, reason in self.failed_inputs],
             "packages": [
                 {
                     "name": entry.name,
@@ -146,7 +152,9 @@ class Report:
                 "| --- | --- | --- | --- |",
             ]
             for entry in self.inputs:
-                link = f"[compare]({entry.compare})" if entry.compare else MISSING
+                links = [f"[compare]({entry.compare})"] if entry.compare else []
+                links += [f"[release]({entry.release})"] if entry.release else []
+                link = " · ".join(links) or MISSING
                 rows.append(f"| `{entry.name}` | {entry.before} | {entry.after} | {link} |")
             rows.append("")
         if self.updated:
@@ -161,7 +169,7 @@ class Report:
                     f"| {entry.after or MISSING} | {link} |"
                 )
             rows.append("")
-        elif not self.inputs and not self.failed:
+        elif not self.inputs and not self.failed and not self.failed_inputs:
             rows.append(_CURRENT)
         if self.updated and self.unchanged:
             current = ", ".join(f"`{entry.name}` {entry.version}" for entry in self.unchanged)
@@ -169,9 +177,13 @@ class Report:
         if self.failed:
             names = ", ".join(f"`{entry.name}`" for entry in self.failed)
             rows += [f"Not updated, the updater failed: {names}. Their pins are unchanged.", ""]
+        if self.failed_inputs:
+            rows += ["Not updated, the input could not move; its pin is unchanged:", ""]
+            rows += [f"- `{name}`: {reason}" for name, reason in self.failed_inputs]
+            rows.append("")
         if self.input_failure is not None:
             rows += [f"Flake input refresh did not complete: {self.input_failure}", ""]
-        if self.inputs or self.updated or self.failed or self.input_failure is not None:
+        if self.inputs or self.updated or self.failed or self.failed_inputs or self.input_failure is not None:
             rows.append(_FOOTER)
         return "\n".join(rows) + "\n"
 

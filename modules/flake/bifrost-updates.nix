@@ -1,11 +1,10 @@
 _: {
+  ci.updates.packages.bifrost = { };
+
   perSystem =
     { pkgs, ... }:
     {
-      # Which packages this repo hands the shared updater is stated by the
-      # registration itself; the check owns the release policy, not a second
-      # copy of that list.
-      packageUpdates.packages = [ "bifrost" ];
+      # The check owns the release policy, not a second copy of the registration.
       checks.bifrost-update-policy =
         pkgs.runCommand "bifrost-update-policy-check" { nativeBuildInputs = [ pkgs.python3 ]; }
           ''

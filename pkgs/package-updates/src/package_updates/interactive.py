@@ -152,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.parse_args(argv)
     try:
         if not sys.stdin.isatty():
-            raise UpdateError("update is interactive; use update-flake or update-packages")
+            raise UpdateError("update is interactive; use update-all")
         repo = Path.cwd()
         registry = load_registry()
         found = flake_update.changes(flake_update.read_lock(repo), flake_update.candidate(repo))

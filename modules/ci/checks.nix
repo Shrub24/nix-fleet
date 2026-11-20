@@ -35,7 +35,7 @@ in
             {
               packages.alpha = pkgs.runCommand "alpha" { } "touch $out";
               # The batch is the runner's own contract; the effect is checked around it.
-              apps.update-packages.program = lib.mkForce (toString batchStub);
+              apps.update-all.program = lib.mkForce (toString batchStub);
             };
         }).config.flake;
       repo = {
@@ -63,9 +63,12 @@ in
       script =
         name: effect: pkgs.writeText name (builtins.unsafeDiscardStringContext effect.effectScript);
       root = s: builtins.unsafeDiscardStringContext (toString probe.packages.${s}.cache-root);
-      batchStub = pkgs.writeShellScript "update-packages" ''
+      batchStub = pkgs.writeShellScript "update-all" ''
         set -euo pipefail
         [[ -z "''${HERCULES_CI_SECRETS_JSON:-}" ]] || { echo 'the batch inherited the secret file' >&2; exit 7; }
+        # The batch gets the read-only token, for its updaters and for nix, and never the push token.
+        [[ "''${GITHUB_TOKEN:-}" == read-only && "''${NIX_CONFIG:-}" == *"access-tokens = github.com=read-only"* ]] || { echo 'the batch got no read-only token' >&2; exit 8; }
+        env | grep -q push-token && { echo 'the batch saw the push token' >&2; exit 9; }
         printf 'batch\n' >> "$CALLS"
         while [[ $# -gt 0 ]]; do
           case "$1" in
@@ -190,7 +193,7 @@ in
             export PATH="$PWD/bin:$PATH" CALLS="$PWD/calls"
             export NIXBOT_EFFECT_CHECKOUT="$PWD/checkout"
             export HERCULES_CI_SECRETS_JSON="$PWD/secrets.json"
-            printf '{"token":{"data":{"token":"fixture"}}}' > "$HERCULES_CI_SECRETS_JSON"
+            printf '{"token":{"data":{"token":"push-token"}},"forge":{"data":{"token":"read-only"}}}' > "$HERCULES_CI_SECRETS_JSON"
             printf '{"outcome":"aborted"}' > aborted.json
             printf '{"outcome":"complete"}' > complete.json
 

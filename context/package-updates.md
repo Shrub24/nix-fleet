@@ -184,7 +184,8 @@ Plain `update-packages` stays scriptable and never prompts. There is no `update-
 
 **Id:** ff7db418-75dc-41b9-b8b0-a4b019125ba7
 **Type:** decision
-**Status:** active
+**Status:** superseded
+**Superseded by:** 21713763-f5e2-4d43-8a61-7db01a6756b1
 **Evidence:** confirmed
 **Source:** `openspec/changes/update-candidate-pipeline/design.md` (decisions 6 and 7), `docs/contracts/package-updates.md` (producer run), 2026-10-11
 
@@ -234,3 +235,99 @@ rolled-back one, so it would publish a half-updated checkout.
 
 **Revisit when:** a caller appears that needs the failing updater's raw code as the
 process exit status.
+
+## One CI module, one namespace, each policy beside what it governs
+
+**Id:** fc822977-5a0e-4e88-bb64-a28570b7bff1
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** design conversation, 2026-11-19; `openspec/changes/unify-ci-surface/design.md`
+
+`flakeModules.ci` is the only CI module and `ci` its only namespace; the update
+registry (`ci.updates.packages`, `.lockfiles`, `.commands`) is flake-level. A
+repository's CI policy sits in one `modules/flake/ci.nix`, a package is registered
+by the feature that owns it, a package's version policy is its
+`passthru.updateScript`, and an input's is its flake-file declaration.
+
+**Reason:** the feature had spread across `flakeModules.ci`, `flakeModules.packageUpdates`
+and `flakeModules.cacheRoot`, two namespaces and two scopes, and consumers imported
+modules `ci` already imported. What a repository updates does not vary by system, so
+a per-system registry only invited per-system drift. A policy kept beside what it
+governs cannot name something that no longer exists.
+
+**Rejected alternative:** package version policy as `ci.updates.packages.<name>.version`.
+`passthru.updateScript` is nixpkgs' convention and travels with the package when it is
+upstreamed; a second field would restate it.
+
+**Rejected alternative:** keeping `packageUpdates` as a standalone module for repositories
+without CI. None exists, and the update effect is what runs it.
+
+## Flake inputs move by a policy on their declaration
+
+**Id:** 21713763-f5e2-4d43-8a61-7db01a6756b1
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** design conversation, 2026-11-19; `openspec/changes/unify-ci-surface/design.md`
+**See:** package-updates.md#the-producer-owns-the-flake-lock-and-the-package-pins — ff7db418-75dc-41b9-b8b0-a4b019125ba7 — as of 2026-11-20
+**Revisit when:** flake-file declares an update policy of its own, or flake-edit gains release selection and `version_regex` upstream
+
+The scheduled run moves every flake input by one of four policies — `stable`,
+`unstable`, `branch`, `fixed` — derived from its locked ref unless its flake-file
+declaration sets `update.*`. A `fixed` input needs a reason; that replaces the
+deferral list. Release-tag pins move in the same transaction as the lock and the
+packages, so the producer still owns everything the build reads.
+
+**Reason:** tag-pinned inputs are the large rebuilds (vicinae, noctalia, Pi-Bolt), and
+Renovate could not move them: its nix manager does not bump refs, a regex manager edits
+only the file it matched while flake-file needs `flake.nix` regenerated and the input
+relocked, and hosted Renovate runs no post-upgrade command. Three of dotfiles' five
+tag inputs had never moved. The declaration is the one place the input already lives,
+and `write-flake` renders only flake reference attributes, so the policy never reaches
+`flake.nix`.
+
+**Rejected alternative:** a `ci.updates.inputs.<name>` table. It is a second list keyed
+by input name that drifts from the inputs and needs an unknown-input check.
+
+**Rejected alternative:** a comment marker in the declaration, Renovate-style. It is a
+grammar of our own, unevaluated and untyped, and flake-file would have to emit it into
+the generated `flake.nix`.
+
+**Rejected alternative:** following a release branch. Most upstreams have none, and it
+builds unreleased code.
+
+**Consequence:** a repository without flake-file has no declaration to carry an
+override and follows the derived default. Tag-vs-branch is asked of the remote
+because a name such as `nixos-25.11` looks like a version and is a branch.
+
+## flake-edit chooses tag moves, patched here until upstream
+
+**Id:** 7f402e09-af33-4f10-8591-eda851edf704
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** design conversation, 2026-11-19; `pkgs/flake-edit/`
+**See:** package-updates.md#flake-inputs-move-by-a-policy-on-their-declaration — 21713763-f5e2-4d43-8a61-7db01a6756b1 — as of 2026-11-20
+**Revisit when:** both patches are released upstream, at which point the package is nixpkgs' unchanged
+
+flake-edit picks the new tag on a scratch copy of `flake.nix`; the runner writes the
+result back to the declaring file. nix-fleet packages nixpkgs' flake-edit with two
+patches: a per-input `version_regex` with nix-update's semantics, and selection that
+prefers the forge's latest release, else the highest same-prefix tag, excluding
+pre-releases unless admitted.
+
+**Reason:** flake-file already invokes flake-edit inside `write-flake`, so it is a tool
+the fleet carries anyway. Unpatched, it chose `rc.13-v0.23.2` for hermes-agent over the
+`v0.23.3` release, because it strips any non-digit prefix and ranks the result
+`13.0.0`; it never consults the latest-release marker, which was right for every
+input that publishes releases.
+
+**Rejected alternative:** a resolver inside the update runner. It would be a second
+implementation of what flake-edit does, maintained here alone.
+
+**Rejected alternative:** updatecli, which needs a manifest per input restating
+`flake.lock`; nvchecker, which only discovers versions.
+
+**Consequence:** flake-edit edits only `flake.nix`, so the write-back into a module file,
+the `write-flake` regeneration and its comparison stay in the runner.

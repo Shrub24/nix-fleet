@@ -60,8 +60,8 @@ relocking. Input update policy belongs next to the input it governs.
 - flake-edit, carried as patches over nixpkgs' package until upstream releases them:
   per-input `version_regex`, and release selection by the forge's latest-release
   marker with standard pre-release exclusion.
-- The update effect reads tags through a read-only forge token, a new nixbot effect
-  secret on the instance.
+- The update effect runs the batch with the instance's read-only `forge-read`
+  secret as `GITHUB_TOKEN` and a Nix access token; the runner holds no credentials.
 - Consumers (nix-homelab, nix-dotfiles): one PR each to migrate to `ci.updates`,
   move overrides onto their input declarations, and drop Renovate's tag managers.
   Renovate keeps image digests and Actions pins.

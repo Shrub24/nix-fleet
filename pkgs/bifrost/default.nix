@@ -157,7 +157,7 @@ in
 bifrost.overrideAttrs (old: {
   passthru = (old.passthru or { }) // {
     inherit mkPlugin ui;
-    # Cheap newest-release lookup for `update-packages --check`: prints the
+    # Cheap newest-release lookup for `update-all --check`: prints the
     # highest stable transports/v<X.Y.Z> tag on stdout, owned here beside the
     # updater rather than inferred by the runner.
     checkUpdate = writeShellApplication {

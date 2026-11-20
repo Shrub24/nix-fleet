@@ -300,7 +300,7 @@ class JsonReportTest(ReportTestCase):
         self.assertEqual(code, 0)
         document = self.document()
         self.assertEqual(
-            set(document), {"outcome", "system", "inputs", "inputFailure", "packages"}
+            set(document), {"outcome", "system", "inputs", "inputFailure", "failedInputs", "packages"}
         )
         self.assertEqual(document["outcome"], "complete")
         self.assertEqual(document["system"], "aarch64-linux")

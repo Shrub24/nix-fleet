@@ -185,7 +185,7 @@ mechanism, its code.
 - `treefmt` via `nix fmt` (prettier for md/yaml/json, taplo for TOML, plus the pinned Nix trio in `modules/flake/tooling.nix`); `nix flake check` runs the same formatter as a check, so unformatted files fail CI. Same tooling shape as dotfiles' `modules/flake/tooling.nix`.
 - Secrets enter through `/lib/secrets.nix` helpers only: `mkSecretFileOption` for consumer-bound paths, `mkRequiredSecretAssertion` for the named fail-closed gate, `mkSecretsFromMap` for `sops.secrets` registration. Byte-identical to nix-homelab's helper; consumers of these aspects do not need their own copy.
 - Every aspect declares its options; every option has a type; fail closed with named errors, never raw `builtins.head`/null derefs.
-- Input pins: this repository's `flake.lock` is the fleet's shared-input authority, moved by this repository's own scheduled update (`update-packages`). A consumer shares the fleet's nixpkgs by following it (`inputs.nixpkgs.follows = "nix-fleet/nixpkgs"`), which also shares its bump cadence.
+- Input pins: this repository's `flake.lock` is the fleet's shared-input authority, moved by this repository's own scheduled update (`update-all`). A consumer shares the fleet's nixpkgs by following it (`inputs.nixpkgs.follows = "nix-fleet/nixpkgs"`), which also shares its bump cadence.
 - Provenance discipline: no secrets, no private keys, no absolute paths in this repo. The canonical inventory carries public fleet facts only (machine IDs, systems, Tailscale hostnames, host *public* keys once harvested); consumer-local inventory lives downstream, additive only. The fixture is a consumer-shaped integration test and must never resemble or feed the canonical inventory.
 
 ## Pointers into nix-homelab (read-only reference)
