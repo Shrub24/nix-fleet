@@ -31,11 +31,8 @@ _: {
         tailscale.hostname = "la-admin-1";
         hostNames = [ "la-admin-1" ];
         publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINNXbGpZyizRCUVdjz35hFTmoWLgM8TPwGbQjCvrrcER root@nixos";
-
-        capabilities.nixBuilder = {
-          enable = true;
-          maxJobs = 2;
-        };
+        # No build capacity: a quota-limited 2-vCPU VPS whose 39 GB root also
+        # carries the admin plane.
       };
 
       oci-melb-1 = {
@@ -94,7 +91,6 @@ _: {
     # builders a workload class may use, and the per-relationship parameters.
     buildProfiles.ci = {
       hosts.home-forge = { };
-      hosts.la-admin-1 = { };
       hosts.oci-melb-1 = { };
     };
   };

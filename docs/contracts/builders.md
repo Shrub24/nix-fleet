@@ -72,7 +72,6 @@ fleet.externalBuilders.nixbuild = {
 };
 fleet.buildProfiles.ci = {
   hosts.home-forge = { };
-  hosts.la-admin-1 = { };
   hosts.oci-melb-1 = { };
 };                        # canonical ci = the free fleet
 ```
