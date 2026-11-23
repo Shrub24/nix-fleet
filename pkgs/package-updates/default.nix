@@ -1,7 +1,7 @@
 # Shared batch runner for the fleet package-update contract. It owns
 # selection, ordering and failure reporting only; the updater tool and the
 # package outputs come from the evaluated repository, so the same runner
-# behaves identically in every consumer. See docs/contracts/package-updates.md.
+# behaves identically in every consumer. See docs/contracts/federated-ci.md.
 {
   python3Packages,
 }:
@@ -17,6 +17,6 @@ python3Packages.buildPythonApplication {
 
   meta = {
     description = "Batch runner for the fleet package-update contract";
-    mainProgram = "update-packages";
+    mainProgram = "update-all";
   };
 }

@@ -81,8 +81,9 @@ already runs `flake-edit follow` with a generated config. Two changes to flake-e
   releases, else the highest tag of the current prefix by `semver::VersionReq`
   matching, which excludes pre-releases unless the input is `unstable`.
 
-Both are written on a `Shrub24/flake-edit` branch, offered upstream, and applied in
-nix-fleet as `fetchpatch` over nixpkgs' `flake-edit` until a release carries them. A
+Both are written on a `Shrub24/flake-edit` branch, offered upstream, and carried in
+`pkgs/flake-edit/` as patch files over nixpkgs' `flake-edit` until a release carries
+them. A
 resolver inside the runner was rejected in favour of the upstream tool.
 
 ### Write-back to the declaring file
@@ -104,14 +105,19 @@ A repository without a `write-flake` app takes flake-edit's edit of `flake.nix`
 directly. Every written path joins the input's write set, so the transaction's
 existing ownership check covers it.
 
-### A read-only forge token for tag lookups
+### A read-only token for lookups, held by the effect
 
-flake-edit reads tags and releases through the GitHub API and honours `GITHUB_TOKEN`.
-The update effect gains a secret, `forge-read`, a read-only token the operator
-provides beside the push token, exported only to the flake-edit step. Registered
-commands and update scripts keep their credential-free environment. Without the
-token the lookup is anonymous; a rate-limited input fails by name and the rest of the
-transaction proceeds.
+flake-edit reads tags and releases through the GitHub API, which works anonymously
+at 60 requests an hour per IP; a token only lifts that limit. The update effect
+requests the instance's `forge-read` secret, a read-only token bound once for the
+owner in `services.nixbot.effects.perRepoSecretFiles`, and runs the batch with it as
+`GITHUB_TOKEN` and as a Nix `access-tokens` entry. The runner holds no credential
+logic; flake-edit, nix-update and update scripts read `GITHUB_TOKEN` themselves.
+Because the token cannot write, every updater may see it. The push token stays with
+the publish step.
+
+The host's daemon token does not reach an effect: flake fetches run in the evaluating
+client, and the effect sandbox starts with an empty `/etc`.
 
 ### Package policy stays on the derivation
 
@@ -148,10 +154,10 @@ runner directly and is unaffected.
 
 ## Migration Plan
 
-1. nix-fleet: module, runner, patches, reference and its own adoption land together;
+1. nix-homelab binds `forge-read` for the owner on the nixbot host and deploys, so
+   the effect's secret exists before any effect requests it.
+2. nix-fleet: module, runner, patches, reference and its own adoption land together;
    `nix flake check` green.
-2. The operator adds the `forge-read` secret to the nixbot instance. Until then, tag
-   lookups are anonymous.
 3. nix-homelab and nix-dotfiles, one PR each: bump nix-fleet, migrate to `ci.updates`,
    move overrides onto their input declarations, delete `deferredInputs`, remove
    Renovate's tag managers. Each is accepted after one scheduled run moves a tag.

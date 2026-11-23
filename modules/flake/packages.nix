@@ -47,6 +47,7 @@ _: {
       packages = {
         inherit bifrost;
         bifrost-voyage-plugin = bifrostVoyagePlugin;
+        flake-edit = pkgs.callPackage ../../pkgs/flake-edit { };
         notify = pkgs.callPackage ../../pkgs/notify { };
         sops-bootstrap = pkgs.callPackage ../../pkgs/sops-bootstrap { };
       };

@@ -1,6 +1,7 @@
 """Refresh flake inputs, then run each update as a local file transaction.
 
-An update is a registered package, run through nix-update with its own policy
+An input moves by its version policy (``input_policy``). An update is a
+registered package, run through nix-update with its own policy
 (``passthru.updateScript`` and nix-update's discovery), or a registered command
 that edits only its declared write set, such as a lockfile refresh. Versions and the
 working-copy diff are read outside the updater, so the report never parses its
@@ -16,8 +17,9 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import flake_update
+from . import flake_update, input_policy
 from .flake_update import FlakeUpdateError
+from .input_policy import Override, PolicyError
 from .report import (
     ABORTED,
     COMPLETE,
@@ -25,6 +27,7 @@ from .report import (
     PARTIAL,
     UNCHANGED,
     UPDATED,
+    MISSING,
     Entry,
     InputEntry,
     Report,
@@ -57,9 +60,11 @@ class Registry:
     write_sets: dict[str, tuple[str, ...]]
     root: str
     package_paths: dict[str, str]
-    deferred_inputs: dict[str, str] = field(default_factory=dict)
+    input_overrides: dict[str, Override] = field(default_factory=dict)
     # Command updates: name -> (program, write set).
     commands: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+    # flake-file's renderer, when flake.nix is generated.
+    write_flake: str | None = None
 
 
 def load_registry(environ=os.environ) -> Registry:
@@ -67,7 +72,7 @@ def load_registry(environ=os.environ) -> Registry:
     if not path:
         raise UpdateError(
             "PACKAGE_UPDATES_REGISTRY is not set; "
-            "run update-packages through the module's app"
+            "run update-all through the module's app"
         )
     try:
         data = json.loads(Path(path).read_text())
@@ -82,10 +87,10 @@ def load_registry(environ=os.environ) -> Registry:
             raise UpdateError(f"write set for '{name}' needs a non-empty reason")
         write_sets[name] = tuple(entry["paths"])
 
-    deferred = dict(data.get("deferredInputs", {}))
-    for name, reason in deferred.items():
-        if not str(reason).strip():
-            raise UpdateError(f"deferred input '{name}' needs a non-empty reason")
+    try:
+        overrides = input_policy.load_overrides(data.get("inputs", {}))
+    except PolicyError as error:
+        raise UpdateError(str(error)) from error
 
     commands = {}
     for name, entry in data.get("commands", {}).items():
@@ -103,8 +108,9 @@ def load_registry(environ=os.environ) -> Registry:
         write_sets=write_sets,
         root=data.get("root", "."),
         package_paths=data.get("packagePaths", {}),
-        deferred_inputs=deferred,
+        input_overrides=overrides,
         commands=commands,
+        write_flake=data.get("writeFlake"),
     )
 
 
@@ -120,7 +126,7 @@ def select(registry: Registry, requested: list[str], refresh_inputs: bool = Fals
         if refresh_inputs:
             return []
         raise UpdateError(
-            "nothing registered; set perSystem.packageUpdates.packages or .commands"
+            "nothing registered; set ci.updates.packages or ci.updates.commands"
         )
     selection = requested or sorted(known)
     duplicates = sorted({name for name in selection if selection.count(name) > 1})
@@ -137,29 +143,11 @@ def select(registry: Registry, requested: list[str], refresh_inputs: bool = Fals
     return sorted(selection)
 
 
-def select_inputs(available: list[str], deferred: dict[str, str], requested: list[str]) -> list[str]:
-    """Return the flake inputs to refresh, or refuse by name.
-
-    An explicit request overrides deferral: that is how a deferred input is
-    moved once its upstream is fixed. A deferral that names no input is stale
-    configuration and is refused rather than ignored.
-    """
-    stale = sorted(set(deferred) - set(available))
-    if stale:
-        raise UpdateError(f"deferred input is not a flake input: {', '.join(stale)}")
-    if requested:
-        unknown = sorted(set(requested) - set(available))
-        if unknown:
-            raise UpdateError(f"not a flake input: {', '.join(unknown)}")
-        return sorted(set(requested))
-    return [name for name in sorted(available) if name not in deferred]
-
-
 def lock_refresh(requested_inputs: list[str], refresh_all: bool) -> list[str] | None:
     """Decide which inputs a run refreshes: None means the lock is left alone.
 
-    Explicit inputs refresh exactly those; ``refresh_all`` refreshes every input
-    not deferred. Package-only runs never touch the lock.
+    Explicit inputs move exactly those; ``refresh_all`` moves every input by
+    its policy. Package-only runs never touch the lock.
     """
     if requested_inputs:
         return list(requested_inputs)
@@ -218,32 +206,54 @@ def save(batch: Report, json_path: str | None, markdown_path: str | None) -> Non
 
 
 def _refresh(
-    requested: list[str], deferred: dict[str, str], root: Path
-) -> tuple[list[InputEntry], str | None]:
-    """Refresh the selected inputs; return what moved or the named failure.
+    requested: list[str],
+    overrides: dict[str, Override],
+    root: Path,
+    write_flake: str | None,
+) -> tuple[list[InputEntry], dict[str, str], str | None]:
+    """Move the selected inputs; return what moved, what failed, or the named failure.
 
-    An empty selection is skipped rather than passed on: ``nix flake update``
-    with no names would move every input, deferred ones included.
+    Branch inputs refresh first in one lock update; tag inputs then move one at a
+    time. An empty branch selection is skipped rather than passed on: ``nix flake
+    update`` with no names would move every input, fixed ones included.
     """
     try:
-        available = list(flake_update.top_level_nodes(flake_update.read_lock(root)))
-        wanted = select_inputs(available, deferred, requested)
-        if not wanted:
-            return [], None
-        moved = flake_update.apply(wanted, root)
-    except (UpdateError, FlakeUpdateError) as error:
-        return [], str(error)
-    return [
+        lock = flake_update.read_lock(root)
+        nodes = flake_update.top_level_nodes(lock)
+        policies = input_policy.classify(lock, nodes, overrides, requested)
+    except (PolicyError, FlakeUpdateError) as error:
+        return [], {}, str(error)
+    branches = sorted(name for name, policy in policies.items() if policy == input_policy.BRANCH)
+    entries = []
+    try:
+        if branches:
+            entries = [
+                InputEntry(
+                    name=change.name,
+                    before=change.before,
+                    after=change.after,
+                    date=change.date,
+                    source=change.source,
+                    compare=flake_update.compare_url(change),
+                )
+                for change in flake_update.apply(branches, root)
+            ]
+    except FlakeUpdateError as error:
+        return [], {}, str(error)
+    moves, failed = input_policy.move_tags(root, overrides, policies, lock, nodes, write_flake)
+    entries += [
         InputEntry(
-            name=change.name,
-            before=change.before,
-            after=change.after,
-            date=change.date,
-            source=change.source,
-            compare=flake_update.compare_url(change),
+            name=move.name,
+            before=move.before,
+            after=move.after,
+            date=MISSING,
+            source=f"github:{move.github[0]}/{move.github[1]}" if move.github else "git",
+            compare=move.compare,
+            release=move.release,
         )
-        for change in moved
-    ], None
+        for move in moves
+    ]
+    return sorted(entries, key=lambda entry: entry.name), failed, None
 
 
 def update(
@@ -255,8 +265,9 @@ def update(
     package_paths: dict[str, str] | None = None,
     root_path: str | None = None,
     inputs: list[str] | None = None,
-    deferred_inputs: dict[str, str] | None = None,
+    input_overrides: dict[str, Override] | None = None,
     commands: dict[str, tuple[str, tuple[str, ...]]] | None = None,
+    write_flake: str | None = None,
 ) -> int:
     # The batch's own nix calls (lock refresh, version evals) and the updaters
     # it spawns need features the ambient environment may not carry: an effect
@@ -269,8 +280,8 @@ def update(
 
     """Refresh the lock when asked, then run selected updaters in jj workspaces.
 
-    ``inputs`` None refreshes nothing; a list refreshes exactly those names
-    (empty meaning every input not deferred). The child inherits this process's
+    ``inputs`` None moves no input; a list moves exactly those names (empty
+    meaning every input by its policy). The child inherits this process's
     environment, so package-specific target variables flow through unchanged.
     Successful package diffs are applied in sequence; failed candidates are
     discarded and later packages still run.
@@ -289,13 +300,18 @@ def update(
 
     aborted = False
     input_entries: list[InputEntry] = []
+    failed_inputs: dict[str, str] = {}
     input_failure = None
     if inputs is not None:
-        input_entries, input_failure = _refresh(inputs, deferred_inputs or {}, root)
+        input_entries, failed_inputs, input_failure = _refresh(
+            inputs, input_overrides or {}, root, write_flake
+        )
         if input_failure is not None:
             print(f"✗ Failed flake inputs: {input_failure}", flush=True)
         for entry in input_entries:
             print(input_bullet(entry), flush=True)
+        for name, reason in sorted(failed_inputs.items()):
+            print(f"✗ Failed input '{name}': {reason}", flush=True)
         print(f"flake inputs: {len(input_entries)} moved", flush=True)
 
     entries: list[Entry] = []
@@ -372,6 +388,7 @@ def update(
         entries=tuple(entries),
         inputs=tuple(input_entries),
         input_failure=input_failure,
+        failed_inputs=tuple(sorted(failed_inputs.items())),
         aborted=aborted,
     )
     print(flush=True)

@@ -1,0 +1,409 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Saurabh Jhanjee <jhanjeesaurabh@gmail.com>
+Date: Fri, 20 Nov 2026 19:12:49 +1100
+Subject: [PATCH 2/2] update: follow the latest release; exclude pre-releases
+
+The highest tag by precedence is the wrong answer for a repository that
+tags beside its releases: hermes-agent carries rc.13-v0.23.2, canary
+builds and calendar tags (v2026.9.24) next to its v0.23.3 release, and
+non-digit prefix stripping ranks rc.13-v0.23.2 as 13.0.0.
+
+An input's candidates are now the tags sharing its current scheme
+prefix (or matching its version_regex), without pre-releases unless
+[update.inputs.<id>] prerelease = true, as in semver requirement
+matching. The forge's latest release wins when it is a candidate,
+read from GraphQL's latestRelease in the batch and REST
+releases/latest otherwise; without releases the highest candidate
+wins.
+---
+ flake-edit.log             |   1 +
+ src/app/commands/update.rs |  13 +--
+ src/config.rs              |   5 +
+ src/forge/api.rs           | 206 ++++++++++++++++++++++++++++++++++---
+ src/forge/update.rs        |   4 +-
+ 5 files changed, 204 insertions(+), 25 deletions(-)
+ create mode 100644 flake-edit.log
+
+diff --git a/flake-edit.log b/flake-edit.log
+new file mode 100644
+index 0000000..b6c4397
+--- /dev/null
++++ b/flake-edit.log
+@@ -0,0 +1 @@
++[2m2026-11-20T08:12:04.642388Z[0m [34mDEBUG[0m [2mflake_edit[0m[2m:[0m [2m15:[0m Cli args: CliArgs { flake: Some("/tmp/.tmpUpBCHd/flake.nix"), lock_file: None, diff: false, no_lock: true, non_interactive: false, no_cache: false, cache: None, config: None, subcommand: Toggle { input: None, reference: None, remove: false } }
+diff --git a/src/app/commands/update.rs b/src/app/commands/update.rs
+index 015efb8..d04e522 100644
+--- a/src/app/commands/update.rs
++++ b/src/app/commands/update.rs
+@@ -28,17 +28,18 @@ pub fn update(
+ ) -> Result<()> {
+     let inputs = flake_edit.list().clone();
+     // The config was validated when it was loaded.
++    let mut regexes = state.config.update.version_regexes().unwrap_or_default();
+     let selections: HashMap<String, TagSelection> = state
+         .config
+         .update
+-        .version_regexes()
+-        .unwrap_or_default()
+-        .into_iter()
+-        .map(|(id, regex)| {
++        .inputs
++        .iter()
++        .map(|(id, input)| {
+             let selection = TagSelection {
+-                version_regex: Some(regex),
++                version_regex: regexes.remove(id),
++                prerelease: input.prerelease,
+             };
+-            (id, selection)
++            (id.clone(), selection)
+         })
+         .collect();
+     let new_updater =
+diff --git a/src/config.rs b/src/config.rs
+index 0b3bfa3..e00aaf7 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -64,6 +64,11 @@ pub struct InputUpdateConfig {
+     /// holds the 5.x line.
+     #[serde(default)]
+     pub version_regex: Option<String>,
++
++    /// Admit pre-release versions (`1.1.0-rc.1`). Off by default, as in
++    /// semver requirement matching.
++    #[serde(default)]
++    pub prerelease: bool,
+ }
+ 
+ impl UpdateConfig {
+diff --git a/src/forge/api.rs b/src/forge/api.rs
+index 1685ced..b5ae3dc 100644
+--- a/src/forge/api.rs
++++ b/src/forge/api.rs
+@@ -588,7 +588,8 @@ impl ForgeClient {
+                             .map(|name| IntermediaryTag { name })
+                             .collect(),
+                     );
+-                    let tags: Tags = inter.into();
++                    let mut tags: Tags = inter.into();
++                    tags.latest_release = repo.latest_release.as_ref().map(|r| r.tag_name.clone());
+                     let key = ("github.com".to_string(), owner.clone(), r.clone());
+                     self.tags_cache
+                         .lock()
+@@ -661,7 +662,7 @@ impl ForgeClient {
+                 first_was_full,
+                 first_has_semver
+             );
+-            return Ok(IntermediaryTags(all).into());
++            return self.with_github_latest_release(IntermediaryTags(all).into(), owner, repo);
+         }
+ 
+         tracing::debug!(
+@@ -683,7 +684,33 @@ impl ForgeClient {
+             }
+         }
+         tracing::debug!("Total tags fetched: {}", all.len());
+-        Ok(IntermediaryTags(all).into())
++        self.with_github_latest_release(IntermediaryTags(all).into(), owner, repo)
++    }
++
++    /// Attach the repository's latest-release marker to `tags`. A
++    /// repository without releases answers 404, which leaves the marker
++    /// unset; any other failure is the lookup's failure.
++    fn with_github_latest_release(
++        &self,
++        mut tags: Tags,
++        owner: &str,
++        repo: &str,
++    ) -> Result<Tags, ApiError> {
++        let headers = Headers::for_domain("github.com");
++        let url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
++        tags.latest_release = match self.http.get(&url, &headers) {
++            Ok(body) => {
++                let release: LatestRelease =
++                    serde_json::from_str(&body).map_err(|source| ApiError::Json {
++                        url: url.clone(),
++                        source,
++                    })?;
++                Some(release.tag_name)
++            }
++            Err(ApiError::NotFound { .. }) => None,
++            Err(e) => return Err(e),
++        };
++        Ok(tags)
+     }
+ 
+     fn fetch_github_branches(&self, owner: &str, repo: &str) -> Result<Branches, ApiError> {
+@@ -842,6 +869,7 @@ fn build_graphql_query(lookups: &[BatchLookup]) -> (String, Vec<(String, BatchLo
+                 // defends with a paginated fallback; the GraphQL
+                 // path has no equivalent, so the ordering hint is
+                 // load-bearing rather than cosmetic.
++                query.push_str("    latestRelease { tagName }\n");
+                 query.push_str(
+                     "    refs(refPrefix:\"refs/tags/\", first:100, \
+                      orderBy:{field: TAG_COMMIT_DATE, direction: DESC}) {\n",
+@@ -892,6 +920,20 @@ struct GraphQlResponse {
+ #[derive(Deserialize, Debug)]
+ struct GraphQlRepo {
+     refs: Option<GraphQlRefs>,
++    #[serde(rename = "latestRelease", default)]
++    latest_release: Option<GraphQlRelease>,
++}
++
++#[derive(Deserialize, Debug)]
++struct GraphQlRelease {
++    #[serde(rename = "tagName")]
++    tag_name: String,
++}
++
++/// REST `releases/latest`; only the tag is read.
++#[derive(Deserialize, Debug)]
++struct LatestRelease {
++    tag_name: String,
+ }
+ 
+ #[derive(Deserialize, Debug)]
+@@ -926,6 +968,9 @@ pub struct Tags {
+     /// Every tag name, parseable or not: a version regex extracts its own
+     /// version from names the default normalisation cannot read.
+     names: Vec<String>,
++    /// The forge's latest-release marker, when the repository publishes
++    /// releases: the maintainer's own answer to "which tag is current".
++    latest_release: Option<String>,
+ }
+ 
+ /// How [`Tags::select`] chooses among a repository's tags.
+@@ -935,6 +980,15 @@ pub struct TagSelection {
+     /// version compared. Anchored at both ends; see
+     /// [`crate::config::InputUpdateConfig::version_regex`].
+     pub version_regex: Option<regex::Regex>,
++    /// Admit pre-release versions.
++    pub prerelease: bool,
++}
++
++/// The scheme prefix of a tag: everything before its first digit, so
++/// `v1.2.3` is `v`, `bolt-v1.2.1` is `bolt-v`, `1.0` is empty.
++fn scheme_prefix(tag: &str) -> &str {
++    let tag = tag.strip_prefix("refs/tags/").unwrap_or(tag);
++    &tag[..tag.find(|c: char| c.is_ascii_digit()).unwrap_or(tag.len())]
+ }
+ 
+ impl Tags {
+@@ -947,19 +1001,46 @@ impl Tags {
+             .map(|tag| tag.original.clone())
+     }
+ 
+-    /// The tag `selection` chooses, or `None` when no tag qualifies.
+-    pub fn select(&self, selection: &TagSelection) -> Option<String> {
+-        let Some(regex) = &selection.version_regex else {
+-            return self.get_latest_tag();
+-        };
+-        self.names
++    /// The tag `selection` chooses for an input pinned at `current`, or
++    /// `None` when no tag qualifies.
++    ///
++    /// Candidates are the tags `selection`'s version regex matches, or
++    /// else the tags sharing `current`'s scheme prefix (any prefix for an
++    /// unpinned input); pre-releases are excluded unless admitted, as in
++    /// semver requirement matching. The forge's latest release wins when
++    /// it is a candidate, since a repository may tag beside its releases
++    /// (calendar builds, other products); otherwise the highest candidate.
++    pub fn select(&self, current: &str, selection: &TagSelection) -> Option<String> {
++        let prefix = scheme_prefix(current);
++        let candidates: Vec<(Version, &String)> = self
++            .names
+             .iter()
+             .filter_map(|name| {
+                 let tag = name.strip_prefix("refs/tags/").unwrap_or(name);
+-                let version = regex.captures(tag)?.get(1)?.as_str();
+-                let version = Version::parse(&normalize_semver(version)).ok()?;
+-                Some((version, name))
++                let version = match &selection.version_regex {
++                    Some(regex) => {
++                        let version = regex.captures(tag)?.get(1)?.as_str();
++                        Version::parse(&normalize_semver(version)).ok()?
++                    }
++                    None => {
++                        if !current.is_empty() && scheme_prefix(tag) != prefix {
++                            return None;
++                        }
++                        Version::parse(&parse_ref(tag, false).normalized_for_semver).ok()?
++                    }
++                };
++                (selection.prerelease || version.pre.is_empty()).then_some((version, name))
+             })
++            .collect();
++        if let Some(latest) = &self.latest_release
++            && let Some((_, name)) = candidates
++                .iter()
++                .find(|(_, name)| name.strip_prefix("refs/tags/").unwrap_or(name) == latest)
++        {
++            return Some((*name).clone());
++        }
++        candidates
++            .into_iter()
+             .max_by(|a, b| a.0.cmp_precedence(&b.0))
+             .map(|(_, name)| name.clone())
+     }
+@@ -1097,7 +1178,11 @@ impl From<IntermediaryTags> for Tags {
+                 }
+             }
+         }
+-        Tags { versions, names }
++        Tags {
++            versions,
++            names,
++            latest_release: None,
++        }
+     }
+ }
+ 
+@@ -1190,20 +1275,24 @@ mod tests {
+             toml::from_str(&format!("[update.inputs.x]\nversion_regex = '{pattern}'\n")).unwrap();
+         TagSelection {
+             version_regex: config.update.version_regexes().unwrap().remove("x"),
++            ..TagSelection::default()
+         }
+     }
+ 
+     #[test]
+     fn version_regex_holds_a_release_line() {
+         let tags = tags(&["v5.4.1", "v6.0.0", "v5.5.0"]);
+-        assert_eq!(tags.select(&regex(r"v(5\..*)")), Some("v5.5.0".to_string()));
++        assert_eq!(
++            tags.select("", &regex(r"v(5\..*)")),
++            Some("v5.5.0".to_string())
++        );
+     }
+ 
+     #[test]
+     fn version_regex_selects_one_product_of_a_repository() {
+         let tags = tags(&["bolt-v1.2.1", "pi-v2.0.0", "bolt-v1.3.0"]);
+         assert_eq!(
+-            tags.select(&regex("bolt-v(.*)")),
++            tags.select("", &regex("bolt-v(.*)")),
+             Some("bolt-v1.3.0".to_string())
+         );
+     }
+@@ -1214,14 +1303,97 @@ mod tests {
+         // the capture reads `1.4`.
+         let tags = tags(&["2.x-1.4", "2.x-1.10", "2.x-1.9"]);
+         assert_eq!(
+-            tags.select(&regex(r"2\.x-(.*)")),
++            tags.select("", &regex(r"2\.x-(.*)")),
+             Some("2.x-1.10".to_string())
+         );
+     }
+ 
+     #[test]
+     fn version_regex_without_a_match_selects_nothing() {
+-        assert_eq!(tags(&["v1.0.0"]).select(&regex("bolt-v(.*)")), None);
++        assert_eq!(tags(&["v1.0.0"]).select("", &regex("bolt-v(.*)")), None);
++    }
++
++    fn released(names: &[&str], latest: &str) -> Tags {
++        let mut tags = tags(names);
++        tags.latest_release = Some(latest.to_string());
++        tags
++    }
++
++    fn stable() -> TagSelection {
++        TagSelection::default()
++    }
++
++    // hermes-agent tags its releases beside canary builds, release
++    // candidates of another scheme and calendar versions.
++    const HERMES: &[&str] = &[
++        "v0.22.4",
++        "v0.23.2",
++        "rc.13-v0.23.2",
++        "v0.23.2+canary.4",
++        "v0.23.3",
++        "v2026.9.24",
++    ];
++
++    #[test]
++    fn the_latest_release_wins_among_mixed_tag_schemes() {
++        let tags = released(HERMES, "v0.23.3");
++        assert_eq!(
++            tags.select("v0.22.4", &stable()),
++            Some("v0.23.3".to_string())
++        );
++    }
++
++    #[test]
++    fn without_releases_the_highest_tag_of_the_same_prefix_wins() {
++        let tags = tags(&["rc.13-v0.23.2", "v0.23.2", "v0.22.4"]);
++        assert_eq!(
++            tags.select("v0.22.4", &stable()),
++            Some("v0.23.2".to_string())
++        );
++    }
++
++    #[test]
++    fn pre_releases_are_excluded_unless_admitted() {
++        let tags = tags(&["v0.8.1", "v0.9.0-rc.1", "v0.8.2"]);
++        assert_eq!(tags.select("v0.8.1", &stable()), Some("v0.8.2".to_string()));
++        let unstable = TagSelection {
++            prerelease: true,
++            ..stable()
++        };
++        assert_eq!(
++            tags.select("v0.8.1", &unstable),
++            Some("v0.9.0-rc.1".to_string())
++        );
++    }
++
++    #[test]
++    fn another_product_s_release_is_not_a_candidate() {
++        let tags = released(&["bolt-v1.2.1", "bolt-v1.3.0", "pi-v2.0.0"], "pi-v2.0.0");
++        assert_eq!(
++            tags.select("bolt-v1.2.1", &stable()),
++            Some("bolt-v1.3.0".to_string())
++        );
++    }
++
++    #[test]
++    fn a_release_outside_the_version_regex_is_not_a_candidate() {
++        let tags = released(&["v5.4.1", "v5.5.0", "v6.0.0"], "v6.0.0");
++        assert_eq!(
++            tags.select("v5.4.1", &regex(r"v(5\..*)")),
++            Some("v5.5.0".to_string())
++        );
++    }
++
++    #[test]
++    fn graphql_reads_the_latest_release() {
++        let repo: GraphQlRepo = serde_json::from_str(
++            r#"{"latestRelease": {"tagName": "v0.23.3"}, "refs": {"nodes": [{"name": "v0.23.3"}]}}"#,
++        )
++        .unwrap();
++        assert_eq!(repo.latest_release.unwrap().tag_name, "v0.23.3");
++        let repo: GraphQlRepo =
++            serde_json::from_str(r#"{"latestRelease": null, "refs": {"nodes": []}}"#).unwrap();
++        assert!(repo.latest_release.is_none());
+     }
+ 
+     #[test]
+diff --git a/src/forge/update.rs b/src/forge/update.rs
+index ee1bb37..0f6a4d8 100644
+--- a/src/forge/update.rs
++++ b/src/forge/update.rs
+@@ -562,7 +562,7 @@ fn compute_archive_change(
+                 return None;
+             }
+         };
+-        let latest = match tags.select(selection) {
++        let latest = match tags.select(current_ref, selection) {
+             Some(c) => c,
+             None => {
+                 tracing::error!(
+@@ -737,7 +737,7 @@ fn compute_semver_change(
+         }
+     };
+ 
+-    let change = match tags.select(selection) {
++    let change = match tags.select(maybe_version, selection) {
+         Some(c) => c,
+         None => {
+             tracing::error!("Could not find latest version for {}/{}", owner, repo);

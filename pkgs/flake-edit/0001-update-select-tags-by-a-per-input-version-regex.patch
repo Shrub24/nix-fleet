@@ -1,0 +1,526 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Saurabh Jhanjee <jhanjeesaurabh@gmail.com>
+Date: Fri, 20 Nov 2026 19:10:12 +1100
+Subject: [PATCH 1/2] update: select tags by a per-input version regex
+
+[update.inputs.<id>] version_regex filters an input's candidate tags
+and its single capture group is the version compared, as nix-update's
+--version-regex does. It holds a release line (v(5\..*)) or picks one
+product of a repository that tags several (bolt-v(.*)). The regex is
+validated when the config is loaded.
+---
+ Cargo.lock                 |   1 +
+ Cargo.toml                 |   1 +
+ src/app/commands/update.rs |  27 ++++++++-
+ src/config.rs              | 113 ++++++++++++++++++++++++++++++++++++-
+ src/forge/api.rs           |  85 +++++++++++++++++++++++++++-
+ src/forge/update.rs        |  40 +++++++++----
+ 6 files changed, 250 insertions(+), 17 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 81ce760..4aeb662 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -707,6 +707,7 @@ dependencies = [
+  "nix-uri",
+  "nucleo-matcher",
+  "ratatui",
++ "regex",
+  "rnix",
+  "roff",
+  "ropey",
+diff --git a/Cargo.toml b/Cargo.toml
+index 75e462e..42a40ea 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -63,6 +63,7 @@ nix-uri = "0.2.0"
+ ureq = { version = "3", default-features = false, features = ["rustls"] }
+ rnix = "0.14.0"
+ ropey = { version = "1.6.1" }
++regex = "1.12"
+ semver = "1.0.28"
+ serde = { version = "1.0.228", default-features = false, features = [
+   "derive",
+diff --git a/src/app/commands/update.rs b/src/app/commands/update.rs
+index 46b6907..015efb8 100644
+--- a/src/app/commands/update.rs
++++ b/src/app/commands/update.rs
+@@ -6,8 +6,13 @@
+ //! [`crate::forge::update::Updater`] seeds updates for inputs the lockfile
+ //! has not yet seen.
+ 
++use std::collections::HashMap;
++
+ use nix_uri::FlakeRef;
+ 
++use crate::forge::api::TagSelection;
++use crate::forge::update::Updater;
++
+ use crate::edit::{FlakeEdit, sorted_input_ids};
+ 
+ use super::super::editor::Editor;
+@@ -22,9 +27,25 @@ pub fn update(
+     init: bool,
+ ) -> Result<()> {
+     let inputs = flake_edit.list().clone();
++    // The config was validated when it was loaded.
++    let selections: HashMap<String, TagSelection> = state
++        .config
++        .update
++        .version_regexes()
++        .unwrap_or_default()
++        .into_iter()
++        .map(|(id, regex)| {
++            let selection = TagSelection {
++                version_regex: Some(regex),
++            };
++            (id, selection)
++        })
++        .collect();
++    let new_updater =
++        |inputs| -> Updater { updater(editor, inputs).with_selections(selections.clone()) };
+ 
+     if let Some(id) = id {
+-        let mut updater = updater(editor, inputs);
++        let mut updater = new_updater(inputs);
+         updater.update_inputs_to_latest_semver(&[id.as_str()], init);
+         let change = updater.get_changes();
+         editor.apply_or_diff(&change, state)?;
+@@ -61,13 +82,13 @@ pub fn update(
+                     .iter()
+                     .map(|s| s.split(" - ").next().unwrap_or(s))
+                     .collect();
+-                let mut updater = updater(editor, inputs.clone());
++                let mut updater = new_updater(inputs.clone());
+                 updater.update_inputs_to_latest_semver(&ids, init);
+                 updater.get_changes()
+             },
+         )?;
+     } else {
+-        let mut updater = updater(editor, inputs);
++        let mut updater = new_updater(inputs);
+         updater.update_all_to_latest_semver(init);
+         let change = updater.get_changes();
+         editor.apply_or_diff(&change, state)?;
+diff --git a/src/config.rs b/src/config.rs
+index e0baaac..0b3bfa3 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -23,6 +23,12 @@ pub enum ConfigError {
+         #[source]
+         source: toml::de::Error,
+     },
++    #[error("invalid version_regex for input '{input}' in '{}': {reason}", path.display())]
++    VersionRegex {
++        path: PathBuf,
++        input: String,
++        reason: String,
++    },
+ }
+ 
+ /// Filenames searched for project-level configuration, in priority order.
+@@ -34,6 +40,55 @@ const CONFIG_FILENAMES: &[&str] = &["flake-edit.toml", ".flake-edit.toml"];
+ pub struct Config {
+     #[serde(default)]
+     pub follow: FollowConfig,
++
++    #[serde(default)]
++    pub update: UpdateConfig,
++}
++
++/// `[update]`: how `flake-edit update` chooses an input's new tag.
++#[derive(Debug, Clone, Serialize, Deserialize, Default)]
++#[serde(deny_unknown_fields)]
++pub struct UpdateConfig {
++    /// Per-input tag selection, keyed by input id.
++    #[serde(default)]
++    pub inputs: HashMap<String, InputUpdateConfig>,
++}
++
++/// `[update.inputs.<id>]`.
++#[derive(Debug, Clone, Serialize, Deserialize, Default)]
++#[serde(deny_unknown_fields)]
++pub struct InputUpdateConfig {
++    /// Only tags this regex matches in full are candidates, and its single
++    /// capture group is the version compared, as nix-update's
++    /// `--version-regex`: `"jq-(.*)"` selects jq's own tags, `"v(5\\..*)"`
++    /// holds the 5.x line.
++    #[serde(default)]
++    pub version_regex: Option<String>,
++}
++
++impl UpdateConfig {
++    /// Compile each input's `version_regex`, anchored at both ends.
++    ///
++    /// # Errors
++    ///
++    /// Returns the input id and reason when a regex does not compile or does
++    /// not have exactly one capture group.
++    pub fn version_regexes(&self) -> Result<HashMap<String, regex::Regex>, (String, String)> {
++        let mut compiled = HashMap::new();
++        for (id, input) in &self.inputs {
++            let Some(pattern) = &input.version_regex else {
++                continue;
++            };
++            let regex = regex::Regex::new(&format!("^(?:{pattern})$"))
++                .map_err(|e| (id.clone(), e.to_string()))?;
++            // `captures_len` counts the implicit whole-match group.
++            if regex.captures_len() != 2 {
++                return Err((id.clone(), "needs exactly one capture group".to_string()));
++            }
++            compiled.insert(id.clone(), regex);
++        }
++        Ok(compiled)
++    }
+ }
+ 
+ /// `[follow]` section of [`Config`].
+@@ -157,10 +212,19 @@ impl Config {
+             path: path.to_path_buf(),
+             source: e,
+         })?;
+-        toml::from_str(&content).map_err(|e| ConfigError::Parse {
++        let config: Self = toml::from_str(&content).map_err(|e| ConfigError::Parse {
+             path: path.to_path_buf(),
+             source: e,
+-        })
++        })?;
++        config
++            .update
++            .version_regexes()
++            .map_err(|(input, reason)| ConfigError::VersionRegex {
++                path: path.to_path_buf(),
++                input,
++                reason,
++            })?;
++        Ok(config)
+     }
+ 
+     /// Path to the nearest project-level config file, walking upward from
+@@ -216,6 +280,51 @@ fn default_follow_aliases() -> HashMap<String, Vec<String>> {
+ mod tests {
+     use super::*;
+ 
++    fn update_config(toml: &str) -> UpdateConfig {
++        toml::from_str::<Config>(toml).expect("parses").update
++    }
++
++    #[test]
++    fn version_regex_is_read_per_input() {
++        let config = update_config(
++            r#"
++            [update.inputs.noctalia]
++            version_regex = 'v(5\..*)'
++            "#,
++        );
++        let regexes = config.version_regexes().expect("valid");
++        assert!(regexes["noctalia"].is_match("v5.5.0"));
++        assert!(!regexes["noctalia"].is_match("v6.0.0"));
++    }
++
++    #[test]
++    fn version_regex_matches_the_whole_tag() {
++        let config = update_config("[update.inputs.x]\nversion_regex = 'v(.*)'\n");
++        assert!(!config.version_regexes().unwrap()["x"].is_match("pi-v1.0.0"));
++    }
++
++    #[test]
++    fn version_regex_needs_exactly_one_capture_group() {
++        for pattern in ["v.*", "(v)(.*)"] {
++            let config =
++                update_config(&format!("[update.inputs.x]\nversion_regex = '{pattern}'\n"));
++            let (input, reason) = config.version_regexes().unwrap_err();
++            assert_eq!(input, "x");
++            assert_eq!(reason, "needs exactly one capture group", "{pattern}");
++        }
++    }
++
++    #[test]
++    fn invalid_version_regex_fails_loading() {
++        let dir = tempfile::tempdir().unwrap();
++        let path = dir.path().join("flake-edit.toml");
++        std::fs::write(&path, "[update.inputs.x]\nversion_regex = 'v('\n").unwrap();
++        assert!(matches!(
++            Config::load_from(Some(&path)),
++            Err(ConfigError::VersionRegex { input, .. }) if input == "x"
++        ));
++    }
++
+     #[test]
+     fn test_default_config_parses() {
+         let config: Config =
+diff --git a/src/forge/api.rs b/src/forge/api.rs
+index 27ca72c..1685ced 100644
+--- a/src/forge/api.rs
++++ b/src/forge/api.rs
+@@ -9,7 +9,7 @@ use serde::Deserialize;
+ use thiserror::Error;
+ use ureq::Agent;
+ 
+-use super::version::parse_ref;
++use super::version::{normalize_semver, parse_ref};
+ 
+ type SourceError = Box<dyn std::error::Error + Send + Sync + 'static>;
+ 
+@@ -923,6 +923,18 @@ pub struct Branches {
+ #[derive(Debug, Clone)]
+ pub struct Tags {
+     versions: Vec<TagVersion>,
++    /// Every tag name, parseable or not: a version regex extracts its own
++    /// version from names the default normalisation cannot read.
++    names: Vec<String>,
++}
++
++/// How [`Tags::select`] chooses among a repository's tags.
++#[derive(Debug, Clone, Default)]
++pub struct TagSelection {
++    /// Only tags this matches are candidates, and capture group 1 is the
++    /// version compared. Anchored at both ends; see
++    /// [`crate::config::InputUpdateConfig::version_regex`].
++    pub version_regex: Option<regex::Regex>,
+ }
+ 
+ impl Tags {
+@@ -934,6 +946,23 @@ impl Tags {
+             .max_by(|a, b| a.version.cmp_precedence(&b.version))
+             .map(|tag| tag.original.clone())
+     }
++
++    /// The tag `selection` chooses, or `None` when no tag qualifies.
++    pub fn select(&self, selection: &TagSelection) -> Option<String> {
++        let Some(regex) = &selection.version_regex else {
++            return self.get_latest_tag();
++        };
++        self.names
++            .iter()
++            .filter_map(|name| {
++                let tag = name.strip_prefix("refs/tags/").unwrap_or(name);
++                let version = regex.captures(tag)?.get(1)?.as_str();
++                let version = Version::parse(&normalize_semver(version)).ok()?;
++                Some((version, name))
++            })
++            .max_by(|a, b| a.0.cmp_precedence(&b.0))
++            .map(|(_, name)| name.clone())
++    }
+ }
+ 
+ #[derive(Deserialize, Debug)]
+@@ -1052,6 +1081,7 @@ fn resolve_forge_token(domain: &str) -> Option<String> {
+ impl From<IntermediaryTags> for Tags {
+     fn from(value: IntermediaryTags) -> Self {
+         let mut versions = vec![];
++        let names = value.0.iter().map(|tag| tag.name.clone()).collect();
+         for itag in value.0 {
+             let parsed = parse_ref(&itag.name, false);
+             let normalized = parsed.normalized_for_semver;
+@@ -1067,7 +1097,7 @@ impl From<IntermediaryTags> for Tags {
+                 }
+             }
+         }
+-        Tags { versions }
++        Tags { versions, names }
+     }
+ }
+ 
+@@ -1143,6 +1173,57 @@ mod tests {
+         }
+     }
+ 
++    fn tags(names: &[&str]) -> Tags {
++        IntermediaryTags(
++            names
++                .iter()
++                .map(|name| IntermediaryTag {
++                    name: (*name).to_string(),
++                })
++                .collect(),
++        )
++        .into()
++    }
++
++    fn regex(pattern: &str) -> TagSelection {
++        let config: crate::config::Config =
++            toml::from_str(&format!("[update.inputs.x]\nversion_regex = '{pattern}'\n")).unwrap();
++        TagSelection {
++            version_regex: config.update.version_regexes().unwrap().remove("x"),
++        }
++    }
++
++    #[test]
++    fn version_regex_holds_a_release_line() {
++        let tags = tags(&["v5.4.1", "v6.0.0", "v5.5.0"]);
++        assert_eq!(tags.select(&regex(r"v(5\..*)")), Some("v5.5.0".to_string()));
++    }
++
++    #[test]
++    fn version_regex_selects_one_product_of_a_repository() {
++        let tags = tags(&["bolt-v1.2.1", "pi-v2.0.0", "bolt-v1.3.0"]);
++        assert_eq!(
++            tags.select(&regex("bolt-v(.*)")),
++            Some("bolt-v1.3.0".to_string())
++        );
++    }
++
++    #[test]
++    fn version_regex_compares_the_captured_version() {
++        // The default normalisation reads the leading `2` of `2.x-1.4`;
++        // the capture reads `1.4`.
++        let tags = tags(&["2.x-1.4", "2.x-1.10", "2.x-1.9"]);
++        assert_eq!(
++            tags.select(&regex(r"2\.x-(.*)")),
++            Some("2.x-1.10".to_string())
++        );
++    }
++
++    #[test]
++    fn version_regex_without_a_match_selects_nothing() {
++        assert_eq!(tags(&["v1.0.0"]).select(&regex("bolt-v(.*)")), None);
++    }
++
+     #[test]
+     fn tags_parsing_with_refs_tags_prefix() {
+         let json = r#"[
+diff --git a/src/forge/update.rs b/src/forge/update.rs
+index a4875f6..ee1bb37 100644
+--- a/src/forge/update.rs
++++ b/src/forge/update.rs
+@@ -1,10 +1,10 @@
+ use nix_uri::{FlakeRef, RefKind};
+ use ropey::Rope;
+ use std::cmp::Ordering;
+-use std::collections::HashSet;
++use std::collections::{HashMap, HashSet};
+ use std::sync::Mutex;
+ 
+-use super::api::{BatchLookup, ForgeClient};
++use super::api::{BatchLookup, ForgeClient, TagSelection};
+ use super::archive::ArchiveUrl;
+ use super::channel::{
+     ChannelType, UpdateStrategy, channel_probe_candidates, detect_strategy, find_latest_channel,
+@@ -33,6 +33,8 @@ pub struct Updater {
+     /// Measured in *characters*, since ropey indexes by char.
+     offset: i32,
+     client: ForgeClient,
++    /// Tag selection per input id; inputs without an entry take the default.
++    selections: HashMap<String, TagSelection>,
+ }
+ 
+ /// Per-input outcome from the fetch phase.
+@@ -101,9 +103,16 @@ impl Updater {
+             text,
+             offset: 0,
+             client,
++            selections: HashMap::new(),
+         }
+     }
+ 
++    /// Choose each listed input's new tag by its [`TagSelection`].
++    pub fn with_selections(mut self, selections: HashMap<String, TagSelection>) -> Self {
++        self.selections = selections;
++        self
++    }
++
+     /// Char-index range of the URL string *contents* (without the surrounding `"`),
+     /// adjusted for earlier in-place edits.
+     fn url_char_range(&self, input: &UpdateInput) -> (usize, usize) {
+@@ -218,7 +227,7 @@ impl Updater {
+             );
+         }
+ 
+-        let results = parallel_fetch(&self.client, pending, init);
++        let results = parallel_fetch(&self.client, pending, init, &self.selections);
+ 
+         for (input, plan) in results {
+             let Some(plan) = plan else { continue };
+@@ -327,7 +336,11 @@ fn parallel_fetch(
+     client: &ForgeClient,
+     pending: Vec<(UpdateInput, String)>,
+     init: bool,
++    selections: &HashMap<String, TagSelection>,
+ ) -> Vec<(UpdateInput, Option<UpdatePlan>)> {
++    let default = TagSelection::default();
++    let selection =
++        |input: &UpdateInput| selections.get(input.input.id.as_str()).unwrap_or(&default);
+     let n = pending.len();
+     if n == 0 {
+         return Vec::new();
+@@ -339,7 +352,7 @@ fn parallel_fetch(
+     if cap <= 1 {
+         let mut results = Vec::with_capacity(n);
+         for (input, uri) in pending {
+-            let plan = compute_change(client, &uri, init);
++            let plan = compute_change(client, &uri, init, selection(&input));
+             results.push((input, plan));
+         }
+         return results;
+@@ -367,7 +380,7 @@ fn parallel_fetch(
+                 loop {
+                     let next = work.lock().expect("fetch work queue poisoned").pop();
+                     let Some((idx, input, uri)) = next else { break };
+-                    let plan = compute_change(client, &uri, init);
++                    let plan = compute_change(client, &uri, init, selection(&input));
+                     *slots[idx].lock().expect("fetch result slot poisoned") = Some((input, plan));
+                 }
+             });
+@@ -451,11 +464,16 @@ fn build_github_batch_lookups(pending: &[(UpdateInput, String)]) -> Vec<BatchLoo
+ /// `Updater::offset`. Per-input forge errors are logged via
+ /// `tracing` and returned as `None`, so one flaky input never
+ /// aborts the rest of the update run.
+-fn compute_change(client: &ForgeClient, uri: &str, init: bool) -> Option<UpdatePlan> {
++fn compute_change(
++    client: &ForgeClient,
++    uri: &str,
++    init: bool,
++    selection: &TagSelection,
++) -> Option<UpdatePlan> {
+     // `FlakeRef` exposes no owner/repo for tarball-archive URLs, so
+     // recover the parts from the URL string and resolve them here.
+     if let Some(archive) = ArchiveUrl::parse(uri) {
+-        return compute_archive_change(client, &archive, init);
++        return compute_archive_change(client, &archive, init, selection);
+     }
+ 
+     if let Some(channel) = ChannelTarballUrl::parse(uri) {
+@@ -495,7 +513,7 @@ fn compute_change(client: &ForgeClient, uri: &str, init: bool) -> Option<UpdateP
+             compute_channel_change(client, &parsed, &owner, &repo)
+         }
+         UpdateStrategy::SemverTags => {
+-            compute_semver_change(client, uri, &parsed, &owner, &repo, init)
++            compute_semver_change(client, uri, &parsed, &owner, &repo, init, selection)
+         }
+     }
+ }
+@@ -511,6 +529,7 @@ fn compute_archive_change(
+     client: &ForgeClient,
+     archive: &ArchiveUrl,
+     init: bool,
++    selection: &TagSelection,
+ ) -> Option<UpdatePlan> {
+     let owner = archive.owner();
+     let repo = archive.repo();
+@@ -543,7 +562,7 @@ fn compute_archive_change(
+                 return None;
+             }
+         };
+-        let latest = match tags.get_latest_tag() {
++        let latest = match tags.select(selection) {
+             Some(c) => c,
+             None => {
+                 tracing::error!(
+@@ -688,6 +707,7 @@ fn compute_semver_change(
+     owner: &str,
+     repo: &str,
+     init: bool,
++    selection: &TagSelection,
+ ) -> Option<UpdatePlan> {
+     let is_git = is_git_url(uri);
+     let maybe_version = parsed.ref_or_rev().unwrap_or_default();
+@@ -717,7 +737,7 @@ fn compute_semver_change(
+         }
+     };
+ 
+-    let change = match tags.get_latest_tag() {
++    let change = match tags.select(selection) {
+         Some(c) => c,
+         None => {
+             tracing::error!("Could not find latest version for {}/{}", owner, repo);

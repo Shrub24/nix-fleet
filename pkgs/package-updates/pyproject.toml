@@ -9,7 +9,7 @@ description = "Batch runner for the fleet package-update contract"
 requires-python = ">=3.11"
 
 [project.scripts]
-update-packages = "package_updates.cli:main"
+update-all = "package_updates.cli:main"
 update = "package_updates.interactive:main"
 
 [tool.setuptools]

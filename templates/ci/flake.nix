@@ -21,13 +21,7 @@
       };
       partitions.ci = {
         extraInputsFlake = ./ci;
-        module =
-          { inputs, ... }:
-          {
-            imports = [ inputs.nix-fleet.flakeModules.ci ];
-            # Updates beyond the two locks, proposed in the same pull request:
-            # perSystem.packageUpdates.lockfiles.cargo.ecosystem = "cargo";
-          };
+        module = ./modules/flake/ci.nix;
       };
 
       perSystem =
