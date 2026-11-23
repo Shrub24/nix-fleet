@@ -153,6 +153,14 @@ _: {
 
           # This provider owns the unit, so it registers the failure.
           services.notify.events.vector.failure = { };
+
+          # An unrecoverable buffer error (ENOSPC) makes Vector exit 0 after its
+          # graceful-shutdown limit, and Restart=always relaunches it into the
+          # same error: a minute-long cycle that nixpkgs' 5-in-10s start limit
+          # never trips, so the loop burns CPU and never reaches the failure
+          # event. The podman aspect's one-hour window trips it within six
+          # cycles; the window is forced because nixpkgs sets it unconditionally.
+          systemd.services.vector.unitConfig.StartLimitIntervalSec = lib.mkForce 3600;
         }
         {
           # The provider owns its own health listener, so it also registers the
