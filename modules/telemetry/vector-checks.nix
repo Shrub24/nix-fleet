@@ -136,6 +136,15 @@ in
           ok = !(wholeJournal.services.vector.settings.sources.journald ? include_units);
         }
         {
+          message = "a restart loop as slow as Vector's graceful-shutdown limit no longer trips the start limit";
+          ok =
+            let
+              limit = listedUnits.systemd.services.vector.unitConfig;
+              cycle = listedUnits.services.vector.gracefulShutdownLimitSecs + 2;
+            in
+            limit.StartLimitIntervalSec > limit.StartLimitBurst * cycle;
+        }
+        {
           message = "Vector no longer reads only the current boot";
           ok = listedUnits.services.vector.settings.sources.journald.current_boot_only;
         }
